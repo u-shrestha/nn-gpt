@@ -1,4 +1,4 @@
-# AI for Neural Network Code Generation
+# LLM-Based Neural Network Generator
 
 The original version of this project was created by <strong>...</strong> at the Computer Vision Laboratory, University of Würzburg, Germany.
 
@@ -18,7 +18,7 @@ If you find this project to be useful for your research, please consider citing:
 ```bibtex
 @misc{ABrain-One.NN-gen,
   author       = {... Ignatov, Dmitry and Timofte, Radu},
-  title        = {AI for Neural Network Code Generation},
+  title        = {LLM-Based Neural Network Generator},
   howpublished = {\url{https://github.com/ABrain-One/nn-gen}},
   year         = {2024},
 }
