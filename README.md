@@ -11,7 +11,7 @@ In addition to pip/conda package managers, all versions of this project are comp
 
 If you find this project to be useful for your research, please consider citing:
 ```bibtex
-@misc{nn-dataset,
+@misc{ABrain-One.NN-gen,
   author       = {... Ignatov, Dmitry and Timofte, Radu},
   title        = {AI for Neural Network Code Generation},
   howpublished = {\url{https://github.com/ABrain-One/nn-gen}},
