@@ -3,7 +3,7 @@
 The original version of this project was created by <strong>...</strong> at the Computer Vision Laboratory, University of Würzburg, Germany.
 
 <!--
-## Pip installation
+## Installation with pip
 pip install git+https://github.com/ABrain-One/nn-gen
 -->
 
