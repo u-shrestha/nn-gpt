@@ -2,6 +2,11 @@
 
 The original version of this project was created by <strong>...</strong> at the Computer Vision Laboratory, University of Würzburg, Germany.
 
+<!--
+## Pip installation
+pip install git+https://github.com/ABrain-One/nn-gen
+-->
+
 ## Environment
 
 In addition to pip/conda package managers, all versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be run inside a Docker image: <br/> 
