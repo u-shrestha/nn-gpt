@@ -1,7 +1,5 @@
 # LLM-Based Neural Network Generator
 
-The original version of this project was created by <strong>...</strong> at the Computer Vision Laboratory, University of Würzburg, Germany.
-
 <!--
 ## Installation with pip
 pip install git+https://github.com/ABrain-One/nn-gen
@@ -14,7 +12,7 @@ In addition to pip/conda package managers, all versions of this project are comp
 
 ## Citation
 
-If you find this project to be useful for your research, please consider citing:
+The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing:
 ```bibtex
 @misc{ABrain-One.NN-gen,
   author       = {... Ignatov, Dmitry and Timofte, Radu},
