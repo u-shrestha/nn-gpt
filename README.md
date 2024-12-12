@@ -33,4 +33,4 @@ This project is distributed under the following licensing terms:
 <li> all neural network models and their weights not covered by the above licenses, as well as all other files and assets in this project, are subject to the <a href="LICENSE.md">MIT license</a></li> 
 </ul>
 
-#### The Idea of Dr. Dmitry Ignatov
+#### The idea of Dr. Dmitry Ignatov
