@@ -1,22 +1,22 @@
 # LLM-Based Neural Network Generator
 
-<!--
-## Installation with pip
-pip install git+https://github.com/ABrain-One/nn-gen
--->
-
-## Environment
-### Pip package manager
-Create a virtual environment, activate it, and run the following command to install all the project dependencies: <br/> 
-<strong>pip install -r requirements.txt</strong>
-
-### Docker
-All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be run inside a Docker image: <br/> 
-<strong> docker run -v /a/mm:&#x003C;nn-gen path&#x003E;/ab/gen abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python train.py" </strong>
-
 ## Installation of the Latest Version of the NN-Dataset from GitHub
+
 ```bash
 pip install git+https://github.com/ABrain-One/nn-dataset.git
+```
+
+## Environment for NN-Gen Developers
+### Pip package manager
+Create a virtual environment, activate it, and run the following command to install all the project dependencies:
+```bash
+pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu124
+```
+
+### Docker
+All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be run inside a Docker image:
+```bash
+docker run -v /a/mm:<nn-gen path>/ab/gen abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python train_n_eval.py"
 ```
 
 ## Citation
