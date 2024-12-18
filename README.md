@@ -14,6 +14,9 @@ Create a virtual environment, activate it, and run the following command to inst
 All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be run inside a Docker image: <br/> 
 <strong> docker run -v /a/mm:&#x003C;nn-gen path&#x003E;/ab/gen abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python train.py" </strong>
 
+## Installation of the Latest Version of NN-Dataset
+pip install git+https://github.com/ABrain-One/nn-dataset
+
 ## Citation
 
 The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing:
