@@ -1,6 +1,6 @@
 # LLM-Based Neural Network Generator
 
-## Installation of the Latest Version of the NN-Dataset from GitHub
+## Installation of the Latest Version of the NN-Dataset
 
 ```bash
 pip install git+https://github.com/ABrain-One/nn-dataset.git
