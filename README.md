@@ -12,14 +12,14 @@ Create a virtual environment, activate it, and run the following command to inst
 
 ### Docker
 All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be run inside a Docker image: <br/> 
-<strong> docker run -v /a/mm:&#x003C;nn-dataset path&#x003E;/ab/nn abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python train.py" </strong>
+<strong> docker run -v /a/mm:&#x003C;nn-gen path&#x003E;/ab/gen abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python train.py" </strong>
 
 ## Citation
 
 The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing:
 ```bibtex
 @misc{ABrain-One.NN-Gen,
-  author       = {... Ignatov, Dmitry and Timofte, Radu},
+  author       = {Goodarzi, Arash and ...  and Ignatov, Dmitry and Timofte, Radu},
   title        = {LLM-Based Neural Network Generator},
   howpublished = {\url{https://github.com/ABrain-One/nn-gen}},
   year         = {2024},
