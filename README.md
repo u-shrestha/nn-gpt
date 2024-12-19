@@ -16,7 +16,7 @@ pip install -r requirements.txt --extra-index-url https://download.pytorch.org/w
 ### Docker
 All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be run inside a Docker image:
 ```bash
-docker run -v /a/mm:<nn-gen path>/ab/gen abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python train_n_eval.py"
+docker run -v /a/mm:<nn-gen path> abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python ab/gen/train_n_eval.py"
 ```
 
 ## Citation
