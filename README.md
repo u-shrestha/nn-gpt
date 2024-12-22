@@ -3,7 +3,7 @@
 ## Installation of the Latest Version of the NN-Dataset
 The NN-Gen project relies on the NN-Dataset. The most recent version of the NN-Dataset can be installed directly from GitHub:
 ```bash
-pip install git+https://github.com/ABrain-One/nn-dataset.git
+pip install git+https://github.com/ABrain-One/nn-dataset
 ```
 
 ## Environment for NN-Gen Developers
