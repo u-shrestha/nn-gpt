@@ -1,5 +1,9 @@
 # LLM-Based Neural Network Generator
 
+# Overview 📖
+
+This Python-based project leverages large language models to automate the creation of neural network architectures, streamlining the design process for machine learning practitioners.
+
 ## Installation of the Latest Version of the NN-Dataset
 The NN-Gen project relies on the NN-Dataset. The most recent version of the NN-Dataset can be installed directly from GitHub:
 ```bash
