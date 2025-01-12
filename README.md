@@ -7,14 +7,14 @@ This Python-based project leverages large language models to automate the creati
 ## Installation of the Latest Version of the NN-Dataset
 The NN-Gen project relies on the NN-Dataset. The most recent version of the NN-Dataset can be installed directly from GitHub:
 ```bash
-pip install git+https://github.com/ABrain-One/nn-dataset --upgrade --force
+pip install git+https://github.com/ABrain-One/nn-dataset --upgrade --force --extra-index-url https://download.pytorch.org/whl/cu124
 ```
 
 ## Environment for NN-Gen Developers
 ### Pip package manager
 Create a virtual environment, activate it, and run the following command to install all the project dependencies:
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu124
 ```
 
 ### Docker
