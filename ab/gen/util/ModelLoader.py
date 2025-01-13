@@ -1,5 +1,5 @@
-import os.path
 import os
+import os.path
 
 import torch.cuda
 from transformers import (
@@ -46,7 +46,7 @@ class ModelLoader:
             print("Tokenizer saved to: ", "./Tokenizers/" + self.model_path)
 
         # Load the model
-        if self.local_path is not None and os.path.exists(self.local_path):
+        if self.local_path and os.path.exists(self.local_path):
             print("Loading Model from local files:", "'" + self.local_path + "'")
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.local_path,

@@ -9,17 +9,19 @@ from transformers import BitsAndBytesConfig, TrainingArguments
 from torchvision.transforms import transforms
 from peft import LoraConfig
 
-from util.CVModelEvaluator import CVModelEvaluator
-from util.LoRATrainer import LoRATrainer, find_all_linear_names
-from util.preprocessors.CodePromptPreprocessor import CodePromptPreprocessor
-from util.Chatbot import ChatBot
-from util.ModelLoader import ModelLoader
+from ab.gen.util.CVModelEvaluator import CVModelEvaluator
+from ab.gen.util.LoRATrainer import LoRATrainer, find_all_linear_names
+from ab.gen.util.preprocessors.CodePromptPreprocessor import CodePromptPreprocessor
+from ab.gen.util.Chatbot import ChatBot
+from ab.gen.util.ModelLoader import ModelLoader
 
+access_token = None
+token_from_file = False
+if token_from_file:
+    with open("./token") as f:
+        access_token = f.readline()
 
-with open("./token") as f:
-    access_token = f.readline()
-
-base_model_name = "meta-llama/CodeLlama-7b-Instruct-hf"
+base_model_name = "deepseek-ai/deepseek-coder-1.3b-instruct" # "meta-llama/CodeLlama-7b-Instruct-hf"
 num_epochs = 100
 num_test_epochs = 2
 
