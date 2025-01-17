@@ -10,7 +10,7 @@ The NN Gen project relies on the NN Dataset. The most recent version of the NN D
 pip install git+https://github.com/ABrain-One/nn-dataset --upgrade --force --extra-index-url https://download.pytorch.org/whl/cu124
 ```
 
-## Environment for NN-Gen Developers
+## Environment for NN Gen Developers
 ### Pip package manager
 Create a virtual environment, activate it, and run the following command to install all the project dependencies:
 ```bash
@@ -20,7 +20,7 @@ pip install -r requirements.txt --extra-index-url https://download.pytorch.org/w
 ### Docker
 All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be run inside a Docker image:
 ```bash
-docker run -v /a/mm:<nn-gen path> abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python -m ab.gen.train_n_eval"
+docker run -v /a/mm:. abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python -m ab.gen.train_n_eval"
 ```
 
 ## Citation
