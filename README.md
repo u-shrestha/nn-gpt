@@ -1,4 +1,6 @@
-# LLM-Based Neural Network Generator
+# <img src='https://abrain.one/img/lemur-nn-icon-64x64.png' width='32px'/> LLM-Based Neural Network Generator
+
+<img src='https://abrain.one/img/lemur-nn-whit.jpg' width='25%'/>
 
 <h3>Overview 📖</h3>
 
