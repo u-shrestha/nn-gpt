@@ -28,7 +28,7 @@ num_test_epochs = 2
 
 # Deepspeed
 use_deepspeed = False
-ds_config = os.path.join("ab","gen","deepspeed_config.json")
+ds_config = os.path.join("conf","deepspeed_config.json")
 
 def main():
     bnb_config = BitsAndBytesConfig(
@@ -41,19 +41,34 @@ def main():
     # When using deepspeed, no Training arguments' initialization after model initialization, if pre-trained model is used 
     # Reference: https://huggingface.co/docs/transformers/deepspeed?zero-config=ZeRO-3
     # With the claim: "The TrainingArguments object must be created before calling the model from_pretrained()"
-    training_args = TrainingArguments(
-        report_to=None,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=4,
-        warmup_steps=2,
-        num_train_epochs=1,
-        learning_rate=2e-4,
-        fp16=True,
-        logging_steps=1,
-        output_dir="outputs",
-        optim="paged_adamw_8bit",
-        deepspeed=ds_config,
-    )
+    if use_deepspeed:
+        training_args = TrainingArguments(
+            report_to=None,
+            per_device_train_batch_size=1,
+            gradient_accumulation_steps=4,
+            warmup_steps=2,
+            num_train_epochs=1,
+            learning_rate=2e-4,
+            fp16=True,
+            logging_steps=1,
+            output_dir="outputs",
+            optim="paged_adamw_8bit",
+            deepspeed=ds_config,
+        )
+    else:
+        training_args = TrainingArguments(
+            report_to=None,
+            per_device_train_batch_size=1,
+            gradient_accumulation_steps=4,
+            warmup_steps=2,
+            num_train_epochs=1,
+            learning_rate=2e-4,
+            fp16=True,
+            logging_steps=1,
+            output_dir="outputs",
+            optim="paged_adamw_8bit",
+        )
+        
 
 
     # Load test prompts

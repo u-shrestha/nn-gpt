@@ -93,10 +93,8 @@ class ModelLoader:
                 print("Downloading Model...")
                 self.model = AutoModelForCausalLM.from_pretrained(
                     self.model_path,
-                    """
-                        Seems a conversion after downloading the model.
-                        This will cause error when running the script even not enabling deep speed.
-                    """
+                    # Seems a conversion after downloading the model.
+                    # This will cause error when running the script even not enabling deep speed.
                     # quantization_config=self.bnb_config, 
                     device_map="auto",
                     max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
