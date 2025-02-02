@@ -17,7 +17,8 @@ class ModelLoader:
                  bnb_config: BitsAndBytesConfig,
                  local_path=None,
                  max_memory: str = "24000MB",
-                 access_token=None
+                 access_token=None,
+                 use_deepspeed=False
                  ):
         self.model_path = model_path
         self.bnb_config = bnb_config
@@ -26,6 +27,7 @@ class ModelLoader:
         self.tokenizer = None
         self.model = None
         self.local_path = local_path
+        self.use_deepspeed = use_deepspeed
         self.initialize()
 
     def initialize(self):
@@ -46,33 +48,60 @@ class ModelLoader:
             print("Tokenizer saved to: ", "./Tokenizers/" + self.model_path)
 
         # Load the model
-        if self.local_path and os.path.exists(self.local_path):
-            print("Loading Model from local files:", "'" + self.local_path + "'")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.local_path,
-                device_map="auto",
-                max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                token=self.access_token
-            )
-        elif os.path.exists("./Models/" + self.model_path + "_raw"):
-            print("Loading Model from local files:", '"./Models' + self.model_path + '_raw"')
-            self.model = AutoModelForCausalLM.from_pretrained(
-                "./Models/" + self.model_path + "_raw",
-                device_map="auto",
-                max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                token=self.access_token
-            )
+        if self.use_deepspeed: # When using Deepspeed, device_map should not be given, for deepspeed automatically manages the device memory mapping
+            if self.local_path and os.path.exists(self.local_path):
+                print("Loading Model from local files:", "'" + self.local_path + "'")
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.local_path,
+                    max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
+                    token=self.access_token
+                )
+            elif os.path.exists("./Models/" + self.model_path + "_raw"):
+                print("Loading Model from local files:", '"./Models' + self.model_path + '_raw"')
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    "./Models/" + self.model_path + "_raw",
+                    max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
+                    token=self.access_token
+                )
+            else:
+                print("Downloading Model...")
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
+                    token=self.access_token
+                )
+                self.model.save_pretrained("./Models/" + self.model_path + "_raw", access_token=self.access_token)
+                print("Model saved to: ", "./Models/" + self.model_path + "_raw")
         else:
-            print("Downloading Model...")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_path,
-                quantization_config=self.bnb_config,
-                device_map="auto",
-                max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                token=self.access_token
-            )
-            self.model.save_pretrained("./Models/" + self.model_path + "_raw", access_token=self.access_token)
-            print("Model saved to: ", "./Models/" + self.model_path + "_raw")
+            if self.local_path and os.path.exists(self.local_path):
+                print("Loading Model from local files:", "'" + self.local_path + "'")
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.local_path,
+                    device_map="auto",
+                    max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
+                    token=self.access_token
+                )
+            elif os.path.exists("./Models/" + self.model_path + "_raw"):
+                print("Loading Model from local files:", '"./Models' + self.model_path + '_raw"')
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    "./Models/" + self.model_path + "_raw",
+                    device_map="auto",
+                    max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
+                    token=self.access_token
+                )
+            else:
+                print("Downloading Model...")
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    # Seems a conversion after downloading the model.
+                    # This will cause error when running the script even not enabling deep speed.
+                    # quantization_config=self.bnb_config, 
+                    device_map="auto",
+                    max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
+                    token=self.access_token
+                )
+                self.model.save_pretrained("./Models/" + self.model_path + "_raw", access_token=self.access_token)
+                print("Model saved to: ", "./Models/" + self.model_path + "_raw")
 
     def get_model(self) -> PreTrainedModel:
         return self.model

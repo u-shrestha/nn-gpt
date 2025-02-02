@@ -14,18 +14,9 @@ from transformers import (
     DataCollatorForLanguageModeling, PreTrainedModel, PreTrainedTokenizerBase
 )
 
-default_training_args = TrainingArguments(
-    per_device_train_batch_size=1,
-    gradient_accumulation_steps=4,
-    warmup_steps=2,
-    max_steps=20,
-    learning_rate=2e-4,
-    fp16=True,
-    logging_steps=1,
-    output_dir="outputs",
-    optim="paged_adamw_8bit",
-)
-
+# When using deepspeed, no Training arguments' initialization after model initialization, if pre-trained model is used 
+# Reference: https://huggingface.co/docs/transformers/deepspeed?zero-config=ZeRO-3
+# With the claim: "The TrainingArguments object must be created before calling the model from_pretrained()"
 
 def find_all_linear_names(model):
     cls = bnb.nn.Linear4bit
@@ -83,7 +74,7 @@ class LoRATrainer:
     def __init__(self,
                  model: PreTrainedModel,
                  tokenizer: PreTrainedTokenizerBase,
-                 training_args: TrainingArguments = default_training_args,
+                 training_args: TrainingArguments,
                  access_token=None,
                  peft_config=None
                  ):

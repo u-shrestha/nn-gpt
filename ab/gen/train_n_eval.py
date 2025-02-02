@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+import deepspeed
 
 import torch
 import torchvision
@@ -25,6 +26,9 @@ base_model_name = "deepseek-ai/deepseek-coder-1.3b-instruct" # "meta-llama/CodeL
 num_epochs = 100
 num_test_epochs = 2
 
+# Deepspeed
+use_deepspeed = False
+ds_config = os.path.join("conf","deepspeed_config.json")
 
 def main():
     bnb_config = BitsAndBytesConfig(
@@ -33,6 +37,38 @@ def main():
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=torch.bfloat16,
     )
+
+    # When using deepspeed, no Training arguments' initialization after model initialization, if pre-trained model is used 
+    # Reference: https://huggingface.co/docs/transformers/deepspeed?zero-config=ZeRO-3
+    # With the claim: "The TrainingArguments object must be created before calling the model from_pretrained()"
+    if use_deepspeed:
+        training_args = TrainingArguments(
+            report_to=None,
+            per_device_train_batch_size=1,
+            gradient_accumulation_steps=4,
+            warmup_steps=2,
+            num_train_epochs=1,
+            learning_rate=2e-4,
+            fp16=True,
+            logging_steps=1,
+            output_dir="outputs",
+            optim="paged_adamw_8bit",
+            deepspeed=ds_config,
+        )
+    else:
+        training_args = TrainingArguments(
+            report_to=None,
+            per_device_train_batch_size=1,
+            gradient_accumulation_steps=4,
+            warmup_steps=2,
+            num_train_epochs=1,
+            learning_rate=2e-4,
+            fp16=True,
+            logging_steps=1,
+            output_dir="outputs",
+            optim="paged_adamw_8bit",
+        )
+        
 
 
     # Load test prompts
@@ -50,9 +86,14 @@ def main():
         base_model_name,
         bnb_config,
         access_token=access_token,
+        use_deepspeed=use_deepspeed,
     )
 
     model, tokenizer = model_loader.get_model(), model_loader.get_tokenizer()
+
+    # initialize deepspeed before we do infer in ChatBot, for trainer is not initialized now.
+    if use_deepspeed:
+        engine = deepspeed.initialize(model=model, config_params=ds_config)
 
     print("Using Max Length:", model_loader.get_max_length())
     data_processor = CodePromptPreprocessor(model_loader.get_max_length(), tokenizer, "./Dataset")
@@ -61,19 +102,6 @@ def main():
     ds_updated = False
 
     print(dataset)
-
-    training_args = TrainingArguments(
-        report_to=None,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=4,
-        warmup_steps=2,
-        num_train_epochs=1,
-        learning_rate=2e-4,
-        fp16=True,
-        logging_steps=1,
-        output_dir="outputs",
-        optim="paged_adamw_8bit"
-    )
 
     peft_config = LoraConfig(
         r=64,  # dimension of the updated matrices
