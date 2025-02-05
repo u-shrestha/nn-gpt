@@ -1,18 +1,20 @@
-# LLM-Based Neural Network Generator
+# <img src='https://abrain.one/img/lemur-nn-icon-64x64.png' width='32px'/> LLM-Based Neural Network Generator
+
+<img src='https://abrain.one/img/lemur-nn-gen-whit.jpg' width='25%'/>
 
 <h3>Overview 📖</h3>
 
 This Python-based project leverages large language models to automate the creation of neural network architectures, streamlining the design process for machine learning practitioners.
 
-## Installation of the Latest Version of the NN-Dataset
-The NN-Gen project relies on the NN-Dataset. The most recent version of the NN-Dataset can be installed directly from GitHub:
+## Installation of the Latest Version of the NN Dataset
+The NN Gen project relies on the NN Dataset. The most recent version of the NN Dataset can be installed directly from GitHub:
 ```bash
 p uninstall nn-dataset -y
 rm -rf db
 pip install git+https://github.com/ABrain-One/nn-dataset --upgrade --force --extra-index-url https://download.pytorch.org/whl/cu124
 ```
 
-## Environment for NN-Gen Developers
+## Environment for NN Gen Developers
 ### Pip package manager
 Create a virtual environment, activate it, and run the following command to install all the project dependencies:
 ```bash
@@ -22,7 +24,7 @@ pip install -r requirements.txt --extra-index-url https://download.pytorch.org/w
 ### Docker
 All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be run inside a Docker image:
 ```bash
-docker run -v /a/mm:<nn-gen path> abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python -m ab.gen.train_n_eval"
+docker run -v /a/mm:. abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python -m ab.gen.train_n_eval"
 ```
 
 ## Citation
