@@ -59,7 +59,7 @@ This project is distributed under the following licensing terms:
     <li> Python code under the legacy ... license</li>
     <li> models with pretrained weights under the legacy ... license</li>
   </ul></li>
-<li> all neural network models and their weights not covered by the above licenses, as well as all other files and assets in this project, are subject to the <a href="LICENSE.md">MIT license</a></li> 
+<li> all neural network models and their weights not covered by the above licenses, as well as all other files and assets in this project, are subject to the <a href="LICENSE">MIT license</a></li> 
 </ul>
 
 #### The idea of Dr. Dmitry Ignatov
