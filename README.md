@@ -6,11 +6,23 @@
 
 This Python-based project leverages large language models to automate the creation of neural network architectures, streamlining the design process for machine learning practitioners.
 
-## Installation of the Latest Version of the NN Dataset
-The NN Gen project relies on the NN Dataset. The most recent version of the NN Dataset can be installed directly from GitHub:
+## Installation or Update of NN Dataset
+Remove old version of the LEMUR Dataset and its database:
 ```bash
-p uninstall nn-dataset -y
+pip uninstall nn-dataset -y
 rm -rf db
+```
+### Installing the stable version via pip
+Basic functionality:
+```bash
+pip install nn-dataset --upgrade --extra-index-url https://download.pytorch.org/whl/cu124
+```
+Includes functionality to export data to Excel files and generate plots for analyzing neural network performance:
+```bash
+pip install nn-dataset[stat] --upgrade --extra-index-url https://download.pytorch.org/whl/cu124
+```
+### Install from GitHub to get the most recent code and statistics updates:
+```bash
 pip install git+https://github.com/ABrain-One/nn-dataset --upgrade --force --extra-index-url https://download.pytorch.org/whl/cu124
 ```
 
