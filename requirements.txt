@@ -1,4 +1,3 @@
---extra-index-url https://download.pytorch.org/whl/cu124
 nn-dataset
 transformers~=4.48.0
 bitsandbytes~=0.45.0
