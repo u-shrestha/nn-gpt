@@ -26,9 +26,7 @@ setup(
     url="https://ABrain.one",
     packages=find_packages(include=["ab.*"]),
     install_requires=read_requirements(),
-    dependency_links=[
-        'https://download.pytorch.org/whl/cu124'
-    ],    
+    # dependency_links=['https://download.pytorch.org/whl/cu124'],    
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
