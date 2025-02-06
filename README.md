@@ -6,7 +6,7 @@
 
 This Python-based project leverages large language models to automate the creation of neural network architectures, streamlining the design process for machine learning practitioners.
 
-## Installation or Update of NN Dataset
+## Update of NN Dataset
 Remove old version of the LEMUR Dataset and its database:
 ```bash
 pip uninstall nn-dataset -y
