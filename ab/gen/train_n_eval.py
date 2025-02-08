@@ -72,6 +72,7 @@ def main():
         bnb_config,
         access_token=access_token,
         use_deepspeed=use_deepspeed,
+        base_path="../../"
     )
 
     model, tokenizer = model_loader.get_model(), model_loader.get_tokenizer()
