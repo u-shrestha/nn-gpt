@@ -43,7 +43,7 @@ docker run -v /a/mm:. abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python -m ab.
 The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing:
 ```bibtex
 @misc{ABrain-One.NN-Gen,
-  author       = {Goodarzi, Arash and ...  and Ignatov, Dmitry and Timofte, Radu},
+  author       = {... and Goodarzi, Arash Torabi and ... and Ignatov, Dmitry and Timofte, Radu},
   title        = {LLM-Based Neural Network Generator},
   howpublished = {\url{https://github.com/ABrain-One/nn-gen}},
   year         = {2024},
