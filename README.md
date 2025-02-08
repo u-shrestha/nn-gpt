@@ -25,6 +25,7 @@ pip install git+https://github.com/ABrain-One/nn-dataset --upgrade --force --ext
 ```
 Adding functionality to export data to Excel files and generate plots for <a href='https://github.com/ABrain-One/nn-stat'>analyzing neural network performance</a>:
 ```bash
+source .venv/bin/activate
 pip install nn-stat --upgrade --extra-index-url https://download.pytorch.org/whl/cu124
 ```
 
@@ -32,6 +33,7 @@ pip install nn-stat --upgrade --extra-index-url https://download.pytorch.org/whl
 ### Pip package manager
 Create a virtual environment, activate it, and run the following command to install all the project dependencies:
 ```bash
+source .venv/bin/activate
 pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu124
 ```
 
