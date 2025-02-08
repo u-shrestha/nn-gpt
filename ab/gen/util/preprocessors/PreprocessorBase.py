@@ -26,6 +26,7 @@ class PreprocessorBase:
             Implement this method such that it returns a pandas dataframe with the following columns:
             ["instruction", "context", "response", "category", "text"].
             It is recommended to keep the order but is not necessary.
+            Only the field "text" is tokenized and used in the fine-tuning.
         """
         pass
 
