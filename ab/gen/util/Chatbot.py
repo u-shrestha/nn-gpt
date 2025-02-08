@@ -1,57 +1,57 @@
-from transformers import PreTrainedTokenizerBase, PreTrainedModel
+import re
+
+from transformers import PreTrainedTokenizer, PreTrainedModel, pipeline
+
+extra_instructions = (
+    " Use PyTorch for the implementation. Keep the code short. Name the main class of the model \"Net\"."
+    " The model code must include default parameters for initialization in the constructor. "
+    "Provide only the code. Don't provide any explanation. Remove any text from this reply. "
+    "Don't include comments in the code."
+)
+
+example_prompt = (
+        "Write PyTorch code for an efficient classification model that includes self-attention blocks."
+        + extra_instructions
+)
 
 
 class ChatBot:
-    def __init__(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase):
+    def __init__(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, keep_memory=False):
         self.model = model
         self.tokenizer = tokenizer
+        self.__pipeline = pipeline(
+            "text-generation",
+            model=self.model,
+            tokenizer=self.tokenizer,
+        )
+        self.__keep_memory = keep_memory
+        if self.__keep_memory:
+            self.__messages = []
 
-    def chat(self, prompt: str, max_len=None, max_words=None, engineer_prompt=True) -> str:
+    def chat(self, prompt: str, max_len=None, max_words=None, engineer_prompt=True, code_only=True) -> str:
+        if engineer_prompt:
+            prompt += extra_instructions
 
-        # TODO: Uncomment and correct all following code if necessary.
+        if self.__keep_memory:
+            self.__messages.append({"role": "user", "content": prompt})
+            in_next = self.__messages
+        else:
+            in_next = [{"role": "user", "content": prompt}]
 
+        out = self.__pipeline(
+            in_next,
+            max_new_tokens=max_words,
+            max_len=max_len
+        )[0]["generated_text"][-1]['content']
+        assert isinstance(out, str)
 
-        # if engineer_prompt:
-        #     prompt += " Use PyTorch for the implementation. Keep the code short."
-        #     prompt += ' Name the main class of the model "Net".'
-        #     prompt += ' The model code must include default parameters for initialization in the constructor.'
-        #     prompt += " Provide only the code. Don't provide any explanation. "
-        #     prompt += "Remove any text from this reply. Don't include comments in the code."
-        # prompt = [{"role": "user", "content": prompt}]
-        # prompt = self.tokenizer.apply_chat_template(prompt, tokenize=False)
-        # input_ids = self.tokenizer.encode(prompt, return_tensors="pt")
-        # input_ids = input_ids.to('cuda')
-        #
-        # if max_len is None and max_words is None:
-        #     output = self.model.generate(input_ids, max_length=2048, num_beams=4, no_repeat_ngram_size=2)
-        # elif max_words is not None:
-        #     output = self.model.generate(input_ids, max_new_tokens=max_words, num_beams=4, no_repeat_ngram_size=2)
-        # elif max_len is not None:
-        #     output = self.model.generate(input_ids, max_length=max_len, num_beams=4, no_repeat_ngram_size=2)
-        # response = self.tokenizer.decode(output[0], skip_special_tokens=True)
+        if self.__keep_memory:
+            self.__messages.append({"role": "assistant", "content": out})
 
-        # response = str(response)
-        # print(response)
-        #
-        # out = response.split("[/INST] ")[1]
+        if code_only:
+            x = re.search("```((.|\s)*?)```", out)
+            if x:
+                out = x.group()
+                out = out.replace("```", "")
 
-        # TODO: Replace the following code with a more flexible solution, eliminating the hard-coded input_text value.
-        # Start: inserted code
-        input_text = "#Write PyTorch code for an efficient classification model that includes self-attention blocks. Use PyTorch for the implementation. Keep the code short. Name the main class of the model \"Net\". The model code must include default parameters for initialization in the constructor. Provide only the code. Don't provide any explanation. Remove any text from this reply. Don't include comments in the code."
-        inputs = self.tokenizer(input_text, return_tensors="pt").to(self.model.device)
-        outputs = self.model.generate(**inputs, max_length=1024)
-        out = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-        # End: inserted code
-
-        good_code = ''
-        in_code = False
-        for idx, line in enumerate(out.splitlines()):
-            if "```" in str(line) and not in_code:
-                in_code = True
-                continue
-            if "```" in str(line) and in_code:
-                in_code = False
-            if in_code:
-                good_code += str(line) + "\n"
-
-        return good_code if good_code != '' else out
+        return out

@@ -16,7 +16,6 @@ class CodePromptPreprocessor(PreprocessorBase):
 
     @override
     def get_raw_dataset(self) -> DataFrame:
-
         """
         :return:
             pandas.Dataframe object with columns described in nn_api.data()
