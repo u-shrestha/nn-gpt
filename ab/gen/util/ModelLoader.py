@@ -6,8 +6,8 @@ from transformers import (
     BitsAndBytesConfig,
     AutoTokenizer,
     AutoModelForCausalLM,
-    PreTrainedTokenizerBase, PreTrainedModel
-
+    PreTrainedTokenizer,
+    PreTrainedModel
 )
 
 
@@ -106,7 +106,7 @@ class ModelLoader:
     def get_model(self) -> PreTrainedModel:
         return self.model
 
-    def get_tokenizer(self) -> PreTrainedTokenizerBase:
+    def get_tokenizer(self) -> PreTrainedTokenizer:
         return self.tokenizer
 
     def get_max_length(self) -> int:

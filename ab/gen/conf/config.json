@@ -1,0 +1,7 @@
+{
+  "base_model_name": "deepseek-ai/deepseek-coder-1.3b-instruct",
+  "num_epochs": 100,
+  "num_test_epochs": 2,
+  "use_deepspeed": "False",
+  "token_from_file": "False"
+}

@@ -16,18 +16,22 @@ from ab.gen.util.preprocessors.CodePromptPreprocessor import CodePromptPreproces
 from ab.gen.util.Chatbot import ChatBot
 from ab.gen.util.ModelLoader import ModelLoader
 
+with open("./conf/config.json") as config_file:
+    config = json.load(config_file)
+assert isinstance(config, dict)
+
+token_from_file = bool(config["token_from_file"])
+base_model_name = config["base_model_name"]
+num_epochs = int(config["num_epochs"])
+num_test_epochs = int(config["num_test_epochs"])
+use_deepspeed = bool(config["use_deepspeed"])
+
 access_token = None
-token_from_file = False
 if token_from_file:
     with open("./token") as f:
         access_token = f.readline()
 
-base_model_name = "deepseek-ai/deepseek-coder-1.3b-instruct" # "meta-llama/CodeLlama-7b-Instruct-hf"
-num_epochs = 100
-num_test_epochs = 2
-
 # Deepspeed
-use_deepspeed = False
 ds_config = os.path.join("conf","deepspeed_config.json")
 
 def main():
@@ -38,9 +42,6 @@ def main():
         bnb_4bit_compute_dtype=torch.bfloat16,
     )
 
-    # When using deepspeed, no Training arguments' initialization after model initialization, if pre-trained model is used 
-    # Reference: https://huggingface.co/docs/transformers/deepspeed?zero-config=ZeRO-3
-    # With the claim: "The TrainingArguments object must be created before calling the model from_pretrained()"
     training_args = TrainingArguments(
         report_to=None,
         per_device_train_batch_size=1,
@@ -75,7 +76,7 @@ def main():
 
     model, tokenizer = model_loader.get_model(), model_loader.get_tokenizer()
 
-    # initialize deepspeed before we do infer in ChatBot, for trainer is not initialized now.
+    # initialize deepspeed before we do infer in ChatBot, since trainer is not initialized now.
     if use_deepspeed:
         engine = deepspeed.initialize(model=model, config_params=ds_config)
 
@@ -85,10 +86,8 @@ def main():
     print("Dataset length:", len(dataset))
     ds_updated = False
 
-    print(dataset)
-
     peft_config = LoraConfig(
-        r=64,  # dimension of the updated matrices
+        r=32,  # dimension of the updated matrices
         lora_alpha=64,  # parameter for scaling
         target_modules=find_all_linear_names(model),
         lora_dropout=0.1,  # dropout probability for layers
@@ -117,7 +116,7 @@ def main():
 
     # loop train and eval cycles
     for epoch in range(num_epochs):
-        out_path = "./Models/epochs64/A" + str(epoch) + "/"
+        out_path = "./Models/epochs/A" + str(epoch) + "/"
 
         chat_bot = ChatBot(model, tokenizer)
 
@@ -175,7 +174,7 @@ def main():
 
         # fine tune model for 1 epoch / Using training_args and save copy
         if ds_updated:
-            data_processor = CodePromptPreprocessor(model_loader.get_max_length(), tokenizer, "./Dataset")
+            data_processor = CodePromptPreprocessor(model_loader.get_max_length(), tokenizer)
             dataset = data_processor.get_dataset()
             ds_updated = False
 
