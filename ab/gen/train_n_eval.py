@@ -105,18 +105,18 @@ def main():
         ]
     )
     train_set = torchvision.datasets.CIFAR10(
-        root='./data', train=True,
+        root='../../data', train=True,
         download=True, transform=transform
     )
     test_set = torchvision.datasets.CIFAR10(
-        root='./data', train=False,
+        root='../../data', train=False,
         download=True, transform=transform
     )
 
 
     # loop train and eval cycles
     for epoch in range(num_epochs):
-        out_path = "./Models/epochs/A" + str(epoch) + "/"
+        out_path = "../../Models/epochs/A" + str(epoch) + "/"
 
         chat_bot = ChatBot(model, tokenizer)
 
