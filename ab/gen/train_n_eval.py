@@ -41,35 +41,19 @@ def main():
     # When using deepspeed, no Training arguments' initialization after model initialization, if pre-trained model is used 
     # Reference: https://huggingface.co/docs/transformers/deepspeed?zero-config=ZeRO-3
     # With the claim: "The TrainingArguments object must be created before calling the model from_pretrained()"
-    if use_deepspeed:
-        training_args = TrainingArguments(
-            report_to=None,
-            per_device_train_batch_size=1,
-            gradient_accumulation_steps=4,
-            warmup_steps=2,
-            num_train_epochs=1,
-            learning_rate=2e-4,
-            fp16=True,
-            logging_steps=1,
-            output_dir="outputs",
-            optim="paged_adamw_8bit",
-            deepspeed=ds_config,
-        )
-    else:
-        training_args = TrainingArguments(
-            report_to=None,
-            per_device_train_batch_size=1,
-            gradient_accumulation_steps=4,
-            warmup_steps=2,
-            num_train_epochs=1,
-            learning_rate=2e-4,
-            fp16=True,
-            logging_steps=1,
-            output_dir="outputs",
-            optim="paged_adamw_8bit",
-        )
-        
-
+    training_args = TrainingArguments(
+        report_to=None,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=4,
+        warmup_steps=2,
+        num_train_epochs=1,
+        learning_rate=2e-4,
+        fp16=True,
+        logging_steps=1,
+        output_dir="outputs",
+        optim="paged_adamw_8bit",
+        deepspeed=ds_config if use_deepspeed else None
+    )
 
     # Load test prompts
     with open('./util/test_prompts.json') as prompt_file:
@@ -96,7 +80,7 @@ def main():
         engine = deepspeed.initialize(model=model, config_params=ds_config)
 
     print("Using Max Length:", model_loader.get_max_length())
-    data_processor = CodePromptPreprocessor(model_loader.get_max_length(), tokenizer, "./Dataset")
+    data_processor = CodePromptPreprocessor(model_loader.get_max_length(), tokenizer)
     dataset = data_processor.get_dataset()
     print("Dataset length:", len(dataset))
     ds_updated = False
