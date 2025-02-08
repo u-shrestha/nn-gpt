@@ -37,15 +37,13 @@ class PreprocessorBase:
         # Remove 'instruction', 'context', 'response', 'category' fields
         _preprocessing_function = partial(preprocess_batch, max_length=self.max_len, tokenizer=self.tokenizer)
 
-        # TODO: Uncomment and correct all following code if necessary.
-
-        # dataset = dataset.map(
-        #     _preprocessing_function,
-        #     batched=True,
-        #     remove_columns=["instruction", "context", "response", "text", "category"],
-        # )
+        dataset = dataset.map(
+            _preprocessing_function,
+            batched=True,
+            remove_columns=["instruction", "context", "response", "text", "category"],
+        )
         # Filter out samples that have input_ids exceeding max_length
-        # dataset = dataset.filter(lambda sample: len(sample["input_ids"]) < self.max_len)
+        dataset = dataset.filter(lambda sample: len(sample["input_ids"]) < self.max_len)
 
         # Shuffle dataset
         dataset = dataset.shuffle(seed=seed) if seed else dataset.shuffle()
