@@ -17,7 +17,7 @@ def read_readme():
 
 setup(
     name="nn-gen",
-    version="1.0.3",
+    version="1.0.4",
     description="LLM-Based Neural Network Generator",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
