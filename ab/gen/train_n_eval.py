@@ -20,11 +20,11 @@ with open("./conf/config.json") as config_file:
     config = json.load(config_file)
 assert isinstance(config, dict)
 
-token_from_file = True if (config["token_from_file"]) == "True" else False
+token_from_file = True if config["token_from_file"] == "True" else False
 base_model_name = config["base_model_name"]
 num_epochs = int(config["num_epochs"])
 num_test_epochs = int(config["num_test_epochs"])
-use_deepspeed = True if (config["use_deepspeed"]) == "True" else False
+use_deepspeed = True if config["use_deepspeed"] == "True" else False
 
 access_token = None
 if token_from_file:

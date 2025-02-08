@@ -11,7 +11,9 @@ from peft import (
 from transformers import (
     Trainer,
     TrainingArguments,
-    DataCollatorForLanguageModeling, PreTrainedModel, PreTrainedTokenizerBase
+    DataCollatorForLanguageModeling,
+    PreTrainedModel,
+    PreTrainedTokenizerBase
 )
 
 # When using deepspeed, no Training arguments' initialization after model initialization, if pre-trained model is used 
@@ -19,7 +21,7 @@ from transformers import (
 # With the claim: "The TrainingArguments object must be created before calling the model from_pretrained()"
 
 def find_all_linear_names(model):
-    cls = bnb.nn.Linear4bit
+    cls = torch.nn.modules.linear.Linear
     lora_module_names = set()
     for name, module in model.named_modules():
         if isinstance(module, cls):
