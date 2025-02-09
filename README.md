@@ -31,7 +31,7 @@ pip install nn-stat --upgrade --extra-index-url https://download.pytorch.org/whl
 and export/generate:
 ```bash
 source .venv/bin/activate
-python -m ab.plot.export
+python -m ab.stat.export
 ```
 
 ## Environment for NN Gen Developers
