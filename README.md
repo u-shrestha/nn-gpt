@@ -27,7 +27,6 @@ Adding functionality to export data to Excel files and generate plots for <a hre
 ```bash
 source .venv/bin/activate
 pip install nn-stat --upgrade --extra-index-url https://download.pytorch.org/whl/cu124
-pip uninstall nn-dataset -y
 ```
 and export/generate:
 ```bash
