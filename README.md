@@ -1,4 +1,6 @@
 # <img src='https://abrain.one/img/lemur-nn-icon-64x64.png' width='32px'/> LLM-Based Neural Network Generator
+<sub><a href='https://pypi.python.org/pypi/nn-eng'><img src='https://img.shields.io/pypi/v/nn-eng.svg'/></a><br/>
+short alias  <a href='https://pypi.python.org/pypi/lmure'>lmure</a></sub>
 
 <img src='https://abrain.one/img/lemur-nn-gen-whit.jpg' width='25%'/>
 
