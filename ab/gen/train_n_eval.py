@@ -142,10 +142,11 @@ def main():
             if os.path.isdir(out_path + "synth_cv_models/" + cv_model):
                 for tries in range(2):
                     try:
-                        evaluator = CVModelEvaluator("Models.epochs.A" + str(epoch) + ".synth_cv_models." + cv_model, train_set, test_set)
-                        accuracy = evaluator.evaluate(num_test_epochs)
+                        evaluator = CVModelEvaluator("../../Models/epochs/A" + str(epoch) + "/synth_cv_models/" + cv_model)
+                        accuracy = evaluator.evaluate()
                         accuracies = {
-                            str(evaluator.get_args()): (accuracy, num_test_epochs)
+                            # str(evaluator.get_args()): (accuracy, num_test_epochs)
+                            str(evaluator.get_args()): (accuracy)
                         }
                         with open(out_path + "synth_cv_models/" + cv_model + "/accuracies.json", "w+") as acc_file:
                             json.dump(accuracies, acc_file)
