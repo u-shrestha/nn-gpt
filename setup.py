@@ -21,7 +21,7 @@ def version():
     return v
 
 setup(
-    name="nn-gen",
+    name="nn-gpt",
     version=version(),
     description="LLM-Based Neural Network Generator",
     long_description=read_readme(),
