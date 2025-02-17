@@ -4,8 +4,7 @@ import ab.nn.api as api
 from ab.nn.util.Util import read_py_file_as_string
 
 class CVModelEvaluator:
-    def __init__(self, model_source_package: str, task='img-classification', dataset='cifar-10', metric='acc', prm={'lr': 0.01, 'batch': 10, 'dropout': 0.2, 'momentum': 0.9,
-                             'transform': 'norm_256_flip', 'epoch': 1}, save_to_db=False):
+    def __init__(self, model_source_package: str, task='img-classification', dataset='cifar-10', metric='acc', prm=None, save_to_db=False):
         """
         Evaluates a given model on a specified dataset for classification
         :param model_source_package: The package name of the model to evaluate
@@ -15,6 +14,9 @@ class CVModelEvaluator:
         :param prm: The parameters to evaluate the model on
         :param save_to_db: Whether to save the results to the database
         """
+        if prm is None:
+            prm = {'lr': 0.01, 'batch': 10, 'dropout': 0.2, 'momentum': 0.9,
+                   'transform': 'norm_256_flip', 'epoch': 1}
         self.model_package = model_source_package
         self.task = task
         self.dataset = dataset

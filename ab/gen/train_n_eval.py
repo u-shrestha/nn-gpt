@@ -79,7 +79,7 @@ def main():
 
     # initialize deepspeed before we do infer in ChatBot, since trainer is not initialized now.
     if use_deepspeed:
-        engine = deepspeed.initialize(model=model, config_params=ds_config)
+        deepspeed.initialize(model=model, config_params=ds_config)
 
     print("Using Max Length:", model_loader.get_max_length())
     data_processor = CodePromptPreprocessor(model_loader.get_max_length(), tokenizer)
