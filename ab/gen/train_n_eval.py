@@ -130,7 +130,7 @@ def main():
                         accuracy = evaluator.evaluate()
                         accuracies = {
                             # str(evaluator.get_args()): (accuracy, num_test_epochs)
-                            str(evaluator.get_args()): (accuracy)
+                            str(evaluator.get_args()): accuracy
                         }
                         with open(out_path + "synth_cv_models/" + cv_model + "/accuracies.json", "w+") as acc_file:
                             json.dump(accuracies, acc_file)
