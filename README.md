@@ -1,4 +1,4 @@
-# <img src='https://abrain.one/img/lemur-nn-icon-64x64.png' width='32px'/> GPT-Driven Neural Network Generation
+# <img src='https://abrain.one/img/lemur-nn-icon-64x64.png' width='32px'/> GPT-Driven Neural Network Generator
 <sub><a href='https://pypi.python.org/pypi/nn-gpt'><img src='https://img.shields.io/pypi/v/nn-gpt.svg'/></a><br/>
 short alias  <a href='https://pypi.python.org/pypi/lmurg'>lmurg</a></sub>
 
@@ -36,7 +36,7 @@ source .venv/bin/activate
 python -m ab.stat.export
 ```
 
-## Environment for NN Gen Developers
+## Environment for NN GPT Developers
 ### Pip package manager
 Create a virtual environment, activate it, and run the following command to install all the project dependencies:
 ```bash
@@ -55,10 +55,10 @@ docker run -v /a/mm:. abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python -m ab.
 
 The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing:
 ```bibtex
-@misc{ABrain-One.NN-Gen,
+@misc{ABrain-One.NN-GPT,
   author       = {... and Goodarzi, Arash Torabi and ... and Ignatov, Dmitry and Timofte, Radu},
-  title        = {LLM-Based Neural Network Generator},
-  howpublished = {\url{https://github.com/ABrain-One/nn-gen}},
+  title        = {GPT-Driven Neural Network Generator},
+  howpublished = {\url{https://github.com/ABrain-One/nn-gpt}},
   year         = {2024},
 }
 ```
