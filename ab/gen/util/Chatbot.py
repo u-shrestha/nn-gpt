@@ -52,6 +52,7 @@ class ChatBot:
             x = re.search("```((.|\s)*?)```", out)
             if x:
                 out = x.group()
+                out = out.replace("```python", "")
                 out = out.replace("```", "")
 
         return out

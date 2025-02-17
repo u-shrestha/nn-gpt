@@ -96,25 +96,6 @@ def main():
         task_type="CAUSAL_LM",
     )
 
-    # data for CV
-    transform = transforms.Compose(
-        [
-            transforms.Resize(299),
-            transforms.CenterCrop(299),
-            transforms.ToTensor(),
-            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-        ]
-    )
-    train_set = torchvision.datasets.CIFAR10(
-        root='../../data', train=True,
-        download=True, transform=transform
-    )
-    test_set = torchvision.datasets.CIFAR10(
-        root='../../data', train=False,
-        download=True, transform=transform
-    )
-
-
     # loop train and eval cycles
     for epoch in range(num_epochs):
         out_path = "../../Models/epochs/A" + str(epoch) + "/"
