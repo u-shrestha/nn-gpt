@@ -4,7 +4,7 @@ from overrides import override
 from pandas import DataFrame
 from transformers import PreTrainedTokenizerBase
 
-from ab.gen.util.preprocessors.PreprocessorBase import PreprocessorBase
+from ab.gpt.util.preprocessors.PreprocessorBase import PreprocessorBase
 
 
 class CodePromptPreprocessor(PreprocessorBase):

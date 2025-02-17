@@ -10,11 +10,11 @@ from transformers import BitsAndBytesConfig, TrainingArguments
 from torchvision.transforms import transforms
 from peft import LoraConfig
 
-from ab.gen.util.CVModelEvaluator import CVModelEvaluator
-from ab.gen.util.LoRATrainer import LoRATrainer, find_all_linear_names
-from ab.gen.util.preprocessors.CodePromptPreprocessor import CodePromptPreprocessor
-from ab.gen.util.Chatbot import ChatBot
-from ab.gen.util.ModelLoader import ModelLoader
+from ab.gpt.util.CVModelEvaluator import CVModelEvaluator
+from ab.gpt.util.LoRATrainer import LoRATrainer, find_all_linear_names
+from ab.gpt.util.preprocessors.CodePromptPreprocessor import CodePromptPreprocessor
+from ab.gpt.util.Chatbot import ChatBot
+from ab.gpt.util.ModelLoader import ModelLoader
 
 with open("./conf/config.json") as config_file:
     config = json.load(config_file)
