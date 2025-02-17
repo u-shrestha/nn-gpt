@@ -108,7 +108,9 @@ def main():
             code_file.parent.mkdir(exist_ok=True, parents=True)
             code = chat_bot.chat(
                 prompt,
-                engineer_prompt=True, code_only=True, max_words=500
+                engineer_prompt=True,
+                code_only=True,
+                max_words=500
             )
             with open(code_file, 'w') as file:
                 file.write(code)
