@@ -109,7 +109,7 @@ def main():
             code = chat_bot.chat(
                 prompt,
                 engineer_prompt=True,
-                code_only=True,
+                code_only=False,
                 max_words=500
             )
             with open(code_file, 'w') as file:
