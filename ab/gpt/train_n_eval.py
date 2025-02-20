@@ -110,15 +110,10 @@ def main():
                 prompt,
                 engineer_prompt=True,
                 code_only=False,
-                max_words=500
+                max_words=5000
             )
             with open(code_file, 'w') as file:
                 file.write(code)
-
-            args_file = Path(out_path + "synth_cv_models/B" + str(idx) + "/args.py")
-            args_file.parent.mkdir(exist_ok=True, parents=True)
-            with open(args_file, 'w') as file:
-                file.write("")
 
         # evaluate produced CV models
         for cv_model in os.listdir(out_path + "synth_cv_models"):
@@ -136,7 +131,6 @@ def main():
                             json.dump(accuracies, acc_file)
                         Path("./Dataset/A" + str(epoch) + cv_model).mkdir(parents=True, exist_ok=True)
                         shutil.copyfile(out_path + "synth_cv_models/" + cv_model + "/code.py", "./Dataset/A" + str(epoch) + cv_model)
-                        shutil.copyfile(out_path + "synth_cv_models/" + cv_model + "/args.py", "./Dataset/A" + str(epoch) + cv_model)
                         shutil.copyfile(out_path + "synth_cv_models/" + cv_model + "/accuracies.json", "./Dataset/A" + str(epoch) + cv_model)
                         ds_updated = True
                         break
