@@ -16,6 +16,8 @@ from ab.gpt.util.preprocessors.CodePromptPreprocessor import CodePromptPreproces
 from ab.gpt.util.Chatbot import ChatBot
 from ab.gpt.util.ModelLoader import ModelLoader
 
+import ab.nn.api as nn_dataset
+
 with open("./conf/config.json") as config_file:
     config = json.load(config_file)
 assert isinstance(config, dict)
@@ -62,9 +64,40 @@ def main():
     assert isinstance(prompt_dict, dict)
 
     prompts = []
-    for val in prompt_dict.values():
-        for pr in val:
-            prompts.append(pr)
+    for key in prompt_dict.keys():
+        # Legency test_prompts handling
+        if prompt_dict[key]['single_row']:
+            for pr in prompt_dict[key]['prompts']:
+                prompts.append(pr)
+        else:
+            prompt = ""
+            for pr in prompt_dict[key]['prompts']:
+                prompt+=pr+"\n"
+            # Get nn-dataset codes
+            if prompt_dict[key]['task']=="all":
+                data = nn_dataset.data(only_best_accuracy=True).groupby(by="nn").sample(n=1)
+            elif prompt_dict[key]['task']=="":
+                data = None
+            else:
+                data = nn_dataset.data(only_best_accuracy=True,task=prompt_dict[key]['task']).groupby(by="nn").sample(n=1)
+            # Get addon nn-dataset codes
+            if prompt_dict[key]['addon_task']=="all":
+                addon_data = nn_dataset.data(only_best_accuracy=True).sample(n=1).iloc[0]
+            elif prompt_dict[key]['addon_task']=="":
+                addon_data = None
+            else:
+                addon_data = nn_dataset.data(only_best_accuracy=True,task=prompt_dict[key]['addon_task']).sample(n=1).iloc[0]
+            if data is None:
+                prompts.append(prompt)
+            else:
+                for _, row in data.iterrows():
+                    para_dict = dict()
+                    for it in prompt_dict[key]["input_list"]:
+                        para_dict[it['para']]=row[it['value']]
+                    if not (addon_data is None):
+                        for it in prompt_dict[key]["addon_list"]:
+                            para_dict[it['para']]=addon_data[it['value']]
+                    prompts.append(prompt.format(**para_dict))
 
     # Load model and tokenizer
     model_loader = ModelLoader(
