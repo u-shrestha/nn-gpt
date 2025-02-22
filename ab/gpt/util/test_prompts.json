@@ -2,13 +2,14 @@
     "improvement_classification_codeonly":{
         "comment":[
             "single_row is used for handling legency prompts in test_prompt.json.",
-            "para: where you fill in content, value: where data come from (key in api.data() DataFrame).",
+            "para: where you fill in content, value: where data come from (colum key in api.data() DataFrame).",
             "task(only in addon_list): which task the additional content come from.",
             "comment: explain the usage of this file"
         ],
         "input_list":[{"para":"nn_code","value":"nn_code"}],
         "addon_list":[],
         "task":"img-classification",
+        "addon_task":"",
         "single_row":false,
         "prompts":[
             "Improve the following implementation to make it a better performance on image classification tasks.",
@@ -23,8 +24,9 @@
 
     "improvement_segmentation_codeonly":{
         "input_list":[{"para":"nn_code","value":"nn_code"}],
-        "addon_list":[{"para":"addon_nn_code","value":"nn_code","task":"img-classification"}],
+        "addon_list":[{"para":"addon_nn_code","value":"nn_code"}],
         "task":"img-segmentation",
+        "addon_task":"img-classification",
         "single_row":false,
         "prompts":[
             "Improve the following implementation to make it a better performance on image segmentation tasks given another backbone implementation.",
@@ -43,6 +45,7 @@
         "input_list":[],
         "addon_list":[],
         "task":"",
+        "addon_task":"",
         "single_row":true,
         "prompts":[
             "Write PyTorch code for an efficient classification model that includes self-attention blocks.",
@@ -58,6 +61,7 @@
         "input_list":[],
         "addon_list":[],
         "task":"",
+        "addon_task":"",
         "single_row":true,
         "prompts":[
             "Design a model for image classification that resembles torchvision approaches, ensure that the generated model is complete. After generating the code, review your previous answer and identify any issues. Based on your critique, improve the code to address those issues.",
@@ -72,6 +76,7 @@
         "input_list":[],
         "addon_list":[],
         "task":"",
+        "addon_task":"",
         "single_row":true,
         "prompts":[
             "Start by generating a basic implementation of computer vision model. Make sure it initializes layers correctly and contains an appropriate forward function. In the next step, provide a more novel solution by introducing additional features.",
@@ -86,6 +91,7 @@
         "input_list":[],
         "addon_list":[],
         "task":"",
+        "addon_task":"",
         "single_row":true,
         "prompts":[
             "Adopt the persona of a cutting-edge AI researcher at Google. Design a model for image classification task. Make sure it is composed of all modules needed in such model.",
@@ -100,6 +106,7 @@
         "input_list":[],
         "addon_list":[],
         "task":"",
+        "addon_task":"",
         "single_row":true,
         "prompts":[
             "Let's think step by step and design a model for image classification task. The solution should include full usable model. Start by outlining the needed components and then implement the code.",
