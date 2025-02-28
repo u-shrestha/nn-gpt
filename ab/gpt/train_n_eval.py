@@ -68,7 +68,8 @@ def main():
         # Legency test_prompts handling
         if prompt_dict[key]['single_row']:
             for pr in prompt_dict[key]['prompts']:
-                prompts.append(pr)
+                # Assume all legancy tasks are img-classification tasks.
+                prompts.append((pr,"img-classification","cifar-10","acc"))
         else:
             prompt = ""
             for pr in prompt_dict[key]['prompts']:
@@ -82,22 +83,29 @@ def main():
                 data = nn_dataset.data(only_best_accuracy=True,task=prompt_dict[key]['task']).groupby(by="nn").sample(n=1)
             # Get addon nn-dataset codes
             if prompt_dict[key]['addon_task']=="all":
-                addon_data = nn_dataset.data(only_best_accuracy=True).sample(n=1).iloc[0]
+                addon_data = nn_dataset.data(only_best_accuracy=True)
             elif prompt_dict[key]['addon_task']=="":
                 addon_data = None
+            elif prompt_dict[key]['addon_task']==prompt_dict[key]['task']:
+                addon_data = data # When they are the same, avoid sampling twice
             else:
-                addon_data = nn_dataset.data(only_best_accuracy=True,task=prompt_dict[key]['addon_task']).sample(n=1).iloc[0]
+                addon_data = nn_dataset.data(only_best_accuracy=True,task=prompt_dict[key]['addon_task'])
             if data is None:
-                prompts.append(prompt)
+                ## For task without providing types, assume img-classification
+                prompts.append((pr,"img-classification","cifar-10","acc"))
             else:
                 for _, row in data.iterrows():
                     para_dict = dict()
                     for it in prompt_dict[key]["input_list"]:
                         para_dict[it['para']]=row[it['value']]
                     if not (addon_data is None):
+                        ## Avoid sampling the same nn_code
+                        addon_row = addon_data.loc[addon_data.nn!=row['nn']].sample(n=1).iloc[0]
                         for it in prompt_dict[key]["addon_list"]:
-                            para_dict[it['para']]=addon_data[it['value']]
-                    prompts.append(prompt.format(**para_dict))
+                            para_dict[it['para']]=addon_row[it['value']]
+                    ## Use the same dataset and metric for corresponding tasks
+                    ## We cannot use 'acc' metric with 'cifar-10' dataset on segmentation tasks.
+                    prompts.append((prompt.format(**para_dict),row['task'],row['dataset'],row['metric']))
 
     # Load model and tokenizer
     model_loader = ModelLoader(
@@ -137,7 +145,8 @@ def main():
 
         # produce new CV models
         for idx, prompt in enumerate(prompts):
-            code_file = Path(out_path + "synth_cv_models/B" + str(idx) + "/code.py")
+            prompt, task, dataset, metric = prompt # Decouple the prompts
+            code_file = Path(out_path + "synth_cv_models/B" + str(idx) + "+" + task + "+" + dataset + "+" + metric + "/code.py")
             code_file.parent.mkdir(exist_ok=True, parents=True)
             code = chat_bot.chat(
                 prompt,
@@ -154,7 +163,9 @@ def main():
             if os.path.isdir(out_path + "synth_cv_models/" + cv_model):
                 for tries in range(2):
                     try:
-                        evaluator = CVModelEvaluator("../../Models/epochs/A" + str(epoch) + "/synth_cv_models/" + cv_model)
+                        config = cv_model.split("+")
+                        evaluator = CVModelEvaluator("../../Models/epochs/A" + str(epoch) + "/synth_cv_models/" + cv_model,
+                                                     task = config[1],dataset=config[2],metric=config[3])
                         accuracy = evaluator.evaluate()
                         accuracies = {
                             # str(evaluator.get_args()): (accuracy, num_test_epochs)
@@ -178,7 +189,8 @@ def main():
                             '" was occurred in the following code. fix this problem. '
                             "Provide only the code. Don't provide any explanation. Remove any text from this reply. + \n " +
                             code_txt,
-                            engineer_prompt=False
+                            engineer_prompt=False,
+                            max_words=5000
                         )
                         os.remove(out_path + "synth_cv_models/" + cv_model + "/code.py")
                         with open(out_path + "synth_cv_models/" + cv_model + "/code.py", 'w') as file:
