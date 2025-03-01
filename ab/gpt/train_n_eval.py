@@ -3,6 +3,7 @@ import os
 import shutil
 from pathlib import Path
 import deepspeed
+import pandas as pd
 
 import torch
 import torchvision
@@ -68,8 +69,7 @@ def main():
         # Legency test_prompts handling
         if prompt_dict[key]['single_row']:
             for pr in prompt_dict[key]['prompts']:
-                # Assume all legancy tasks are img-classification tasks.
-                prompts.append((pr,"img-classification","cifar-10","acc"))
+                prompts.append((pr,None))
         else:
             prompt = ""
             for pr in prompt_dict[key]['prompts']:
@@ -91,8 +91,7 @@ def main():
             else:
                 addon_data = nn_dataset.data(only_best_accuracy=True,task=prompt_dict[key]['addon_task'])
             if data is None:
-                ## For task without providing types, assume img-classification
-                prompts.append((pr,"img-classification","cifar-10","acc"))
+                prompts.append((pr,None))
             else:
                 for _, row in data.iterrows():
                     para_dict = dict()
@@ -103,9 +102,7 @@ def main():
                         addon_row = addon_data.loc[addon_data.nn!=row['nn']].sample(n=1).iloc[0]
                         for it in prompt_dict[key]["addon_list"]:
                             para_dict[it['para']]=addon_row[it['value']]
-                    ## Use the same dataset and metric for corresponding tasks
-                    ## We cannot use 'acc' metric with 'cifar-10' dataset on segmentation tasks.
-                    prompts.append((prompt.format(**para_dict),row['task'],row['dataset'],row['metric']))
+                    prompts.append((prompt.format(**para_dict),row))
 
     # Load model and tokenizer
     model_loader = ModelLoader(
@@ -145,8 +142,8 @@ def main():
 
         # produce new CV models
         for idx, prompt in enumerate(prompts):
-            prompt, task, dataset, metric = prompt # Decouple the prompts
-            code_file = Path(out_path + "synth_cv_models/B" + str(idx) + "+" + task + "+" + dataset + "+" + metric + "/code.py")
+            prompt, origdf = prompt
+            code_file = Path(out_path + "synth_cv_models/B" + str(idx) + "/code.py")
             code_file.parent.mkdir(exist_ok=True, parents=True)
             code = chat_bot.chat(
                 prompt,
@@ -156,6 +153,13 @@ def main():
             )
             with open(code_file, 'w') as file:
                 file.write(code)
+            df_file = Path(out_path + "synth_cv_models/B" + str(idx) + "/dataframe.df")
+            if origdf is None:
+                if os.path.isfile(df_file): # Clean up dataframe.df, if no additional information generated this time.
+                    os.remove(df_file)
+            else:
+                # Store DataFrame information, mainly for passing parameters to evaluator.
+                origdf.to_pickle(df_file)
 
         # evaluate produced CV models
         for cv_model in os.listdir(out_path + "synth_cv_models"):
@@ -163,9 +167,13 @@ def main():
             if os.path.isdir(out_path + "synth_cv_models/" + cv_model):
                 for tries in range(2):
                     try:
-                        config = cv_model.split("+")
-                        evaluator = CVModelEvaluator("../../Models/epochs/A" + str(epoch) + "/synth_cv_models/" + cv_model,
-                                                     task = config[1],dataset=config[2],metric=config[3])
+                        df_file = Path(out_path + "synth_cv_models/" + cv_model + "/dataframe.df")
+                        if os.path.isfile(df_file):
+                            df = pd.read_pickle(df_file)
+                            evaluator = CVModelEvaluator("../../Models/epochs/A" + str(epoch) + "/synth_cv_models/" + cv_model,
+                                                     task = df['task'],dataset=df['dataset'],metric=df['metric'],prm=df['prm'])
+                        else:
+                            evaluator = CVModelEvaluator("../../Models/epochs/A" + str(epoch) + "/synth_cv_models/" + cv_model)
                         accuracy = evaluator.evaluate()
                         accuracies = {
                             # str(evaluator.get_args()): (accuracy, num_test_epochs)
