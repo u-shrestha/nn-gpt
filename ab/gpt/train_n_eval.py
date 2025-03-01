@@ -163,10 +163,6 @@ def main():
 
         # evaluate produced CV models
         for cv_model in os.listdir(out_path + "synth_cv_models"):
-            ### SKIP EVALUATION
-            if first_loop:
-                break
-            ### SKIP EVALUATION
             cv_model = str(os.fsdecode(cv_model))
             if os.path.isdir(out_path + "synth_cv_models/" + cv_model):
                 for tries in range(2):
