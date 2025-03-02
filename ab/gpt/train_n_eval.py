@@ -168,8 +168,10 @@ def main():
                         df_file = Path(out_path + "synth_cv_models/" + cv_model + "/dataframe.df")
                         if os.path.isfile(df_file):
                             df = pd.read_pickle(df_file)
+                            prm = df['prm']
+                            prm['epoch'] = df['epoch']
                             evaluator = CVModelEvaluator("../../Models/epochs/A" + str(epoch) + "/synth_cv_models/" + cv_model,
-                                                     task = df['task'],dataset=df['dataset'],metric=df['metric'],prm=df['prm'])
+                                                     task = df['task'],dataset=df['dataset'],metric=df['metric'],prm=prm)
                         else:
                             evaluator = CVModelEvaluator("../../Models/epochs/A" + str(epoch) + "/synth_cv_models/" + cv_model)
                         accuracy = evaluator.evaluate()
