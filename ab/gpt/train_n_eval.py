@@ -2,22 +2,19 @@ import json
 import os
 import shutil
 from pathlib import Path
-import deepspeed
-import pandas as pd
-
-import torch
-import torchvision
-from transformers import BitsAndBytesConfig, TrainingArguments
-from torchvision.transforms import transforms
-from peft import LoraConfig
-
-from ab.gpt.util.CVModelEvaluator import CVModelEvaluator
-from ab.gpt.util.LoRATrainer import LoRATrainer, find_all_linear_names
-from ab.gpt.util.preprocessors.CodePromptPreprocessor import CodePromptPreprocessor
-from ab.gpt.util.Chatbot import ChatBot
-from ab.gpt.util.ModelLoader import ModelLoader
 
 import ab.nn.api as nn_dataset
+import deepspeed
+import pandas as pd
+import torch
+from peft import LoraConfig
+from transformers import BitsAndBytesConfig, TrainingArguments
+
+from ab.gpt.util.CVModelEvaluator import CVModelEvaluator
+from ab.gpt.util.Chatbot import ChatBot
+from ab.gpt.util.LoRATrainer import LoRATrainer, find_all_linear_names
+from ab.gpt.util.ModelLoader import ModelLoader
+from ab.gpt.util.preprocessors.CodePromptPreprocessor import CodePromptPreprocessor
 
 with open("./conf/config.json") as config_file:
     config = json.load(config_file)
@@ -66,7 +63,7 @@ def main():
 
     prompts = []
     for key in prompt_dict.keys():
-        # Legency test_prompts handling
+        # Legacy test_prompts handling
         if prompt_dict[key]['single_row']:
             for pr in prompt_dict[key]['prompts']:
                 prompts.append((pr,None))
@@ -151,6 +148,7 @@ def main():
                 code_only=False,
                 max_words=5000
             )
+            print(code)
             with open(code_file, 'w') as file:
                 file.write(code)
             df_file = Path(out_path + "synth_cv_models/B" + str(idx) + "/dataframe.df")
