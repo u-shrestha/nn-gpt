@@ -145,7 +145,7 @@ def main():
             code = chat_bot.chat(
                 prompt,
                 engineer_prompt=True,
-                code_only=False,
+                code_only=True,
                 max_words=5000
             )
             print(code)
