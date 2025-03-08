@@ -8,6 +8,15 @@ short alias  <a href='https://pypi.python.org/pypi/lmurg'>lmurg</a></sub>
 
 This Python-based project leverages large language models to automate the creation of neural network architectures, streamlining the design process for machine learning practitioners.
 
+## Create and Activate a Virtual Environment (recommended):
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate   # Linux/Mac
+   .venv\Scripts\activate      # Windows
+   ```
+
+All subsequent commands are provided for Linux/Mac OS. For Windows, please replace ```source .venv/bin/activate``` with ```.venv\Scripts\activate```.
+
 ## Update of NN Dataset
 Remove old version of the LEMUR Dataset and its database:
 ```bash
