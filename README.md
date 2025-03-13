@@ -45,7 +45,7 @@ source .venv/bin/activate
 python -m ab.stat.export
 ```
 
-## Environment for NN GPT Developers
+## Environment for NNGPT Developers
 ### Pip package manager
 Create a virtual environment, activate it, and run the following command to install all the project dependencies:
 ```bash
