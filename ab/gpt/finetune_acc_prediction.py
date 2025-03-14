@@ -11,6 +11,8 @@ from util.LoRATrainer import LoRATrainer, find_all_linear_names
 from util.ModelLoader import ModelLoader
 import torch
 
+# todo: This is a specific fine-tuning implementation by Yashkumar Dhameliya and Yash Kathiriya, expected to be merged into the common pipeline.
+
 class ModelFinetuner:
     def __init__(self, config_path="./conf/config.json"):
         self.config = self._load_config(config_path)
