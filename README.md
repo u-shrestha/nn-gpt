@@ -22,6 +22,15 @@ For Windows:
 
 All subsequent commands are provided for Linux/Mac OS. For Windows, please replace ```source .venv/bin/activate``` with ```.venv\Scripts\activate```.
 
+## Environment for NNGPT Developers
+### Pip package manager
+Create a virtual environment, activate it, and run the following command to install all the project dependencies:
+```bash
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu124
+```
+
 ## Update of NN Dataset
 Remove old version of the LEMUR Dataset and its database:
 ```bash
@@ -48,15 +57,6 @@ and export/generate:
 ```bash
 source .venv/bin/activate
 python -m ab.stat.export
-```
-
-## Environment for NNGPT Developers
-### Pip package manager
-Create a virtual environment, activate it, and run the following command to install all the project dependencies:
-```bash
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu124
 ```
 
 ### Docker
