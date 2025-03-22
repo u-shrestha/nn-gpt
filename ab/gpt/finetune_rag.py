@@ -11,7 +11,7 @@ import json
 import random
 import torch
 
-os.environ["DS_CUDA_VERSION"] = "12.4"
+os.environ["DS_CUDA_VERSION"] = torch.version.cuda
 os.environ["WANDB_MODE"] = "disabled"
 os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"

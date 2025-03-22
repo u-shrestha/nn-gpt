@@ -2,7 +2,7 @@
 
 import os
 import subprocess
-from config.config import GITHUB_REPO_DIR, DATASET_DESC_DIR
+from ab.gpt.conf.config import GITHUB_REPO_DIR, DATASET_DESC_DIR
 
 def ensure_repo_cloned(repo_url, local_name, branch="main"):
     """
