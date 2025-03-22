@@ -49,6 +49,8 @@ class ChatBot:
             self.__messages.append({"role": "assistant", "content": out})
 
         if code_only:
+            if len([match.start() for match in re.finditer("```", out)]) < 2:
+                return out
             x = re.search("```((.|\s)*?)```", out)
             if x:
                 out = x.group()
