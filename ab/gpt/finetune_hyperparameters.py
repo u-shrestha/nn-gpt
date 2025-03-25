@@ -13,7 +13,7 @@ import os
 import sys
 import random
 import warnings
-from dataset_preparation import DatasetPreparation
+from lemur_dataset_preparation import DatasetPreparation
 
 os.environ["WANDB_MODE"] = "disabled"
 device = torch.device("cuda" if torch.cuda.is_available()  else "cpu")
