@@ -56,7 +56,6 @@ def main(tuned_model_version, dataset_path):
         1: "deepseek-ai/DeepSeek-Coder-V2-Lite-Base",
         2: "deepseek-ai/deepseek-coder-1.3b-base",
         3: "deepseek-ai/deepseek-coder-1.3b-base",
-        3.5: "deepseek-ai/deepseek-coder-1.3b-base",
         4: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
         5: "deepseek-ai/deepseek-coder-7b-base-v1.5",
         6: "deepseek-ai/deepseek-math-7b-base",
@@ -178,10 +177,10 @@ def main(tuned_model_version, dataset_path):
 
     print(f"Using device: {device}")
 
-    # Variant I: Fine-tuning of the model from the start
+    # Option I: Fine-tuning of the model from the start
     trainer.train()
 
-    # # Variant II: Resume fine-tuning of the model from the checkpoint
+    # # Option II: Resume fine-tuning of the model from the checkpoint
     # resume_from_checkpoint = f"Finetuned_models/tuned_model_v{tuned_model_version}/output/checkpoint-????"
     # if resume_from_checkpoint:
     #     if os.path.exists(resume_from_checkpoint):
@@ -202,12 +201,11 @@ def main(tuned_model_version, dataset_path):
     # print(f"\nTraining log saved to {log_filename}")
 
 
-def generating_response_cycle_model_finetuned(tuned_model_version, input_file_path, output_file_path, logs_file):
+def generate_model_responses(tuned_model_version, input_file_path, output_file_path, logs_file_path):
     hf_directories = {
         1: "deepseek-ai/DeepSeek-Coder-V2-Lite-Base",
         2: "deepseek-ai/deepseek-coder-1.3b-base",
         3: "deepseek-ai/deepseek-coder-1.3b-base",
-        3.5: "deepseek-ai/deepseek-coder-1.3b-base",
         4: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
         5: "deepseek-ai/deepseek-coder-7b-base-v1.5",
         6: "deepseek-ai/deepseek-math-7b-base",
@@ -234,12 +232,10 @@ def generating_response_cycle_model_finetuned(tuned_model_version, input_file_pa
     with open(input_file_path, "r") as f:
         data = json.load(f)
 
-    i = 0
-    data_len = len(data)
     random.shuffle(data)
     processed_data = []
 
-    with open(logs_file, "w") as output_file:
+    with open(logs_file_path, "w") as output_file:
         for i, entry in enumerate(data):
             hyperparameters = entry['prm']
             prm_names = ", ".join(hyperparameters.keys())
@@ -274,7 +270,7 @@ def generating_response_cycle_model_finetuned(tuned_model_version, input_file_pa
 
             print(f"Got {i + 1} responses out of {len(data)}")
 
-    print(f"All responses are saved in {logs_file}")
+    print(f"All responses are saved in {logs_file_path}")
 
     with open(output_file_path, "w") as f:
         json.dump(processed_data, f, indent=4)
@@ -287,40 +283,36 @@ def generating_response_cycle_model_finetuned(tuned_model_version, input_file_pa
 if __name__ == "__main__":
     tuned_model_version = 1
 
-    dataset_raw = f"Dataset/LEMUR_raw_2.json"
-    dataset_prepared_prompt = f"Dataset/LEMUR_prepared_2.json"
+    dataset_raw = f"Dataset/LEMUR_raw.json"
+    dataset_prepared_prompt = f"Dataset/LEMUR_prepared.json"
 
 
-    # ---------- 1. DATASET PREPARATION STAGE ----------
+    # ---------- 1. LEMUR DATASET PREPARATION STAGE ----------
     dataset_prep = DatasetPreparation()
-    # all_data = dataset_prep.collect_all_data()
-    # dataset_prep.save_as_json(all_data, 'Dataset/Dataset_FT_2.json')
-
-        # Create a raw LEMUR dataset
+        # Create a raw LEMUR Dataset JSON-file
     # dataset_prep.test_api(dataset_raw)
-        # Convert a LEMUR raw dataset to a prompt
-    # dataset_prep.update_json_with_nn_code(dataset_raw, f"Dataset/LEMUR_raw_2_500nn.json")
-
-    # dataset_prep.create_new_dataset_for_training_once(
-    #     "Dataset/FINE_all_data_RAW_for_evaluation_Max_Accuracy_prepared.json",
-    #     "Dataset/FINE_all_data_RAW_for_evaluation_Max_Accuracy_prepared.json")
-
-    # DatasetPreparation.count_code_lines()
+        # Convert a raw LEMUR Dataset JSON-file to a LLM prompt format
+    # dataset_prep.prepare_json_dataset_for_llm_format("Dataset/LEMUR_raw.json", "Dataset/LEMUR_prepared.json")
+        # Other
+    # dataset_prep.add_nn_code_field_to_json(dataset_raw, f"Dataset/LEMUR_raw_500.json")
 
 
-    # ---------- 3. DEEPSEEK-CODER FINE-TUNING STAGE ----------
+    # ---------- 2. LLM FINE-TUNING STAGE ----------
     main(tuned_model_version, dataset_prepared_prompt)
 
-    # ---------- 4. DEEPSEEK-CODER TESTING & RECEIVING RESPONSES STAGE ----------
-    # Dataset 500 Models
-    # dataset_raw_500 = f"Dataset/LEMUR_raw_2_500.json"
+
+    # ---------- 3. LLM TESTING & RECEIVING RESPONSES STAGE ----------
+    # Dataset 500 Models (Only 500 responses to speed up)
+    # dataset_raw_500 = f"Dataset/LEMUR_raw_500.json"
 
     # Base Model Paths
     # output_file_path = "Dataset/ds_responses_1coder-v2-base-lite_500.json"
     # logs_file = f"Logs/logs_responses_1coder-v2-base-lite_500.txt"
 
     # Fine-tuned Model Paths
-    # output_file_path = "Dataset/ds_responses_1ft_500.json"
-    # logs_file = f"Logs/logs_responses_1ft_500.txt"
+    # output_file_path = f"Dataset/ds_responses_{tuned_model_version}ft_500.json"
+    # logs_file_path = f"Logs/logs_responses_{tuned_model_version}ft_500.txt"
 
-    # generating_response_cycle_model_finetuned(tuned_model_version, dataset_raw_500, output_file_path, logs_file)
+    # generate_model_responses(tuned_model_version, dataset_raw_500, output_file_path, logs_file_path)
+
+
