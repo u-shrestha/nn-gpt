@@ -72,24 +72,22 @@ def main(tuned_model_version, dataset_path):
     tokenizer.pad_token_id = 0
     tokenizer.padding_side = "right"
 
-    # quantization_config_4bit = BitsAndBytesConfig(
-    #     load_in_4bit=True,
-    #     bnb_4bit_compute_dtype = torch.float16
-    # )
+    quantization_config_4bit = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype = torch.float16
+    )
 
     quantization_config_8bit = BitsAndBytesConfig(
         load_in_8bit=True,
         bnb_8bit_compute_dtype=torch.float16
     )
 
-    # quantization_config_16bit = BitsAndBytesConfig(
-    #     load_in_16bit=True
-    # )
-
     model = AutoModelForCausalLM.from_pretrained(hf_directory,
                                                  trust_remote_code=True,
                                                  device_map="auto",
-                                                 quantization_config=quantization_config_8bit)
+                                                 quantization_config=quantization_config_4bit,
+                                                 torch_dtype=torch.float16
+                                                )
 
     # trying to load mapped datasets
     try:
@@ -121,6 +119,7 @@ def main(tuned_model_version, dataset_path):
     # put model back into training mode
     model.train()
     model = prepare_model_for_kbit_training(model)
+    model.config.use_cache = False
 
     # LoRA config
     peft_config = LoraConfig(
@@ -152,7 +151,7 @@ def main(tuned_model_version, dataset_path):
         per_device_eval_batch_size=1,
         gradient_accumulation_steps=8,
         lr_scheduler_type="cosine",
-        gradient_checkpointing=False,
+        gradient_checkpointing=True,
         fp16=True,
         eval_strategy="epoch",
         save_strategy="epoch",
