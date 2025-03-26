@@ -68,6 +68,12 @@ docker run -v /a/mm:. abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python -m ab.
 
 Some recently added dependencies might be missing in the <b>AI Linux</b>. In this case, you can create a container from the Docker image ```abrainone/ai-linux```, install the missing packages (preferably using ```pip install <package name>```), and then create a new image from the container using ```docker commit <container name> <new image name>```. You can use this new image locally or push it to the registry for deployment on the computer cluster.
 
+## Usage
+
+Use `generate.py` to generate initial modified CV models, specify by argument `-e` to determine the number of epochs for initial CV model generation.
+
+Use `train_n_eval.py` to perform generation and evaluation of CV model, evaluate and fine-tune the LLM. Use argument `-s` to colaborate with `generate.py`, with `-s` for number of epochs to skip the CV model generation.
+
 ## Citation
 
 The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing:
