@@ -17,6 +17,7 @@ example_prompt = (
 
 class ChatBot:
     def __init__(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, keep_memory=False):
+        self.show_additional_info = False
         self.model = model
         self.tokenizer = tokenizer
         self.__pipeline = pipeline(
@@ -41,6 +42,7 @@ class ChatBot:
         out = self.__pipeline(
             in_next,
             max_new_tokens=max_words,
+            do_sample=True, # Allow Random answer
             max_len=max_len
         )[0]["generated_text"][-1]['content']
         assert isinstance(out, str)
@@ -49,12 +51,15 @@ class ChatBot:
             self.__messages.append({"role": "assistant", "content": out})
 
         if code_only:
-            if len([match.start() for match in re.finditer("```", out)]) < 2:
-                return out
-            x = re.search("```((.|\s)*?)```", out)
-            if x:
-                out = x.group()
-                out = out.replace("```python", "")
-                out = out.replace("```", "")
-
+            if out.count("```")>1:
+                if self.show_additional_info:
+                    print(f"[INFO]Reply seemly contain full codes, got {out.count('```')} '```'s.")
+                x = re.search("```((.|\s)*?)```", out)
+                if x:
+                    out = x.group()
+                    out = out.replace("```python", "")
+                    out = out.replace("```", "")
+            else:
+                if self.show_additional_info:
+                    print(f"[WARN]Reply seemly contain imcomplete codes, got {out.count('```')} '```'s.")
         return out
