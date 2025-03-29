@@ -70,9 +70,9 @@ The recently added dependencies might be missing in the <b>AI Linux</b>. In this
 
 ## Usage
 
-Use `generate.py` to generate initial modified CV models, specify by argument `-e` to determine the number of epochs for initial CV model generation.
+Use `initial_generation_chg.py` to generate initial modified CV models, specify by argument `-e` to determine the number of epochs for initial CV model generation.
 
-Use `train_n_eval.py` to perform generation and evaluation of CV model, evaluate and fine-tune the LLM. Use argument `-s` to colaborate with `generate.py`, with `-s` for number of epochs to skip the CV model generation.
+Use `train_n_eval_chg.py` to perform generation and evaluation of CV model, evaluate and fine-tune the LLM. Use argument `-s` to colaborate with `generate.py`, with `-s` for number of epochs to skip the CV model generation.
 
 ## Citation
 
