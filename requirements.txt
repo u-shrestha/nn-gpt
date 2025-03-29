@@ -1,6 +1,14 @@
 nn-dataset>=1.1.0
 transformers~=4.48.0
+accelerate
+flash_attn==2.7.4.post1
 bitsandbytes~=0.45.0
 peft~=0.14.0
 deepspeed~=0.16.3
+sentence-transformers==3.3.1
+faiss-cpu
+mpi4py
+dotenv
 overrides~=7.7.0
+wheel
+packaging
