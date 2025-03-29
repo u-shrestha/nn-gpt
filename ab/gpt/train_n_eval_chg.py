@@ -76,7 +76,7 @@ def main():
     )
 
     # Load test prompts
-    with open('./util/test_prompts.json') as prompt_file:
+    with open('./util/test_prompts_chg.json') as prompt_file:
         prompt_dict = json.load(prompt_file)
     assert isinstance(prompt_dict, dict)
 
