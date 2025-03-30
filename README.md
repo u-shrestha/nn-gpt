@@ -74,6 +74,8 @@ Use `initial_generation_chg.py` to generate initial modified CV models, specify 
 
 Use `finetune_nn_gen.py` to perform generation and evaluation of CV model, evaluate and fine-tune the LLM. Use argument `-s` to colaborate with `generate.py`, with `-s` for number of epochs to skip the CV model generation.
 
+<a href='https://huggingface.co/ABrain'><strong>Pretrained LLM weights</strong></a>
+
 ## Citation
 
 The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing:
@@ -89,12 +91,8 @@ The original version of this project was created at the Computer Vision Laborato
 ## Licenses
 
 This project is distributed under the following licensing terms:
-<ul><li>for neural network models adopted from other projects
-  <ul>
-    <li> Python code under the legacy ... license</li>
-    <li> models with pretrained weights under the legacy ... license</li>
-  </ul></li>
+<ul><li>models with pretrained weights under the legacy <a href="https://github.com/ABrain-One/nn-dataset/blob/main/Doc/Licenses/LICENSE-DEEPSEEK-LLM-V2">DeepSeek LLM V2</a> license</li>
 <li> all neural network models and their weights not covered by the above licenses, as well as all other files and assets in this project, are subject to the <a href="LICENSE">MIT license</a></li> 
 </ul>
 
-#### The idea of Dr. Dmitry Ignatov
+#### The idea and leadership of Dr. Ignatov
