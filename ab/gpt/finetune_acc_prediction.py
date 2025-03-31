@@ -1,22 +1,26 @@
 import json
-import pandas as pd
 from pathlib import Path
-from peft import LoraConfig
-from transformers import TrainingArguments
-from util import ModelLoader, LoRATrainer
-from util.preprocessors.CodePromptPreprocessor import CodePromptPreprocessor
+
+import torch
 from ab.nn.api import data as data
+from ab.nn.util.Const import out_dir
+from peft import LoraConfig
 from transformers import BitsAndBytesConfig
+from transformers import TrainingArguments
+
+from ab.gpt.util.Const import conf_dir
+from util import ModelLoader, LoRATrainer
 from util.LoRATrainer import LoRATrainer, find_all_linear_names
 from util.ModelLoader import ModelLoader
-import torch
+from util.preprocessors.CodePromptPreprocessor import CodePromptPreprocessor
+
 
 # todo: This is a specific fine-tuning implementation by Yashkumar Dhameliya and Yash Kathiriya, expected to be merged into the common pipeline.
 
 class ModelFinetuner:
-    def __init__(self, config_path="./conf/config.json"):
+    def __init__(self, config_path=conf_dir / 'config.json'):
         self.config = self._load_config(config_path)
-        self.output_dir = Path("model_results")
+        self.output_dir = out_dir / 'model_results'
         self.output_dir.mkdir(exist_ok=True)
         
     def _load_config(self, path):
@@ -114,7 +118,7 @@ class ModelFinetuner:
                 dataset = preprocessor.get_dataset()
                 
                 # Configure model-specific output directory
-                model_output_dir = f"finetuned_models/{arch_name}"
+                model_output_dir = out_dir / f"finetuned_models/{arch_name}"
                 
                 # Configure and run training for this architecture
                 trainer = LoRATrainer(
@@ -141,7 +145,7 @@ class ModelFinetuner:
                 trainer.train(dataset, output_dir="finetuned_models")
                 
                 # Save the model for this architecture
-                trainer.save_model(f"{model_output_dir}/final")
+                trainer.save_model(model_output_dir / 'final')
                 print(f"Finished training for architecture: {arch_name}")
                 
             except Exception as e:

@@ -1,19 +1,20 @@
+import json
+import os
+import random
+
+import torch
+from ab.nn.util.Const import out_dir
+from datasets import load_dataset, load_from_disk
+from peft import (
+    get_peft_model, LoraConfig, PeftModel,
+    prepare_model_for_kbit_training
+)
 from transformers import (
     Trainer, TrainingArguments, AutoTokenizer, AutoModelForCausalLM,
     BitsAndBytesConfig, DataCollatorForSeq2Seq, EarlyStoppingCallback
 )
-from peft import (
-    get_peft_model, LoraConfig, PeftModel,
-    prepare_model_for_kbit_training, set_peft_model_state_dict
-)
-from datasets import load_dataset, load_from_disk
-import torch
-import json
-import os
-import sys
-import random
-import warnings
-from lemur_dataset_preparation import DatasetPreparation
+
+from ab.gpt.util.lemur_dataset_preparation import DatasetPreparation
 
 os.environ["WANDB_MODE"] = "disabled"
 device = torch.device("cuda" if torch.cuda.is_available()  else "cpu")
@@ -42,6 +43,9 @@ def tokenize(prompt, tokenizer):
         padding=False,
         return_tensors=None,
     )
+
+def tuned_dir_f(tuned_model_version):
+    return out_dir / 'Finetuned_models' / f"tuned_model_v{tuned_model_version}"
 
 def main(tuned_model_version, dataset_path):
     """
@@ -90,11 +94,14 @@ def main(tuned_model_version, dataset_path):
                                                 )
 
     # trying to load mapped datasets
+    
+    tuned_dir = tuned_dir_f(tuned_model_version)
+    train_dir = tuned_dir /  'tokenized_train_dataset'
+    val_dir = tuned_dir /  'tokenized_val_dataset'
+    model_dir = tuned_dir / 'model'
     try:
-        tokenized_train_dataset = load_from_disk(
-            f"Finetuned_models/tuned_model_v{tuned_model_version}/tokenized_train_dataset")
-        tokenized_val_dataset = load_from_disk(
-            f"Finetuned_models/tuned_model_v{tuned_model_version}/tokenized_val_dataset")
+        tokenized_train_dataset = load_from_disk(train_dir)
+        tokenized_val_dataset = load_from_disk(val_dir)
         print("Datasets loaded successfully.")
     except Exception as e:
         print(f"Dataset loading failed: {e}")
@@ -110,10 +117,8 @@ def main(tuned_model_version, dataset_path):
         tokenized_val_dataset = eval_dataset.map(lambda data_point: tokenize(create_prompt(data_point), tokenizer),
                                                  num_proc=num_proc)
 
-        tokenized_train_dataset.save_to_disk(f"Finetuned_models/tuned_model_v{tuned_model_version}/"
-                                             f"tokenized_train_dataset")
-        tokenized_val_dataset.save_to_disk(f"Finetuned_models/tuned_model_v{tuned_model_version}/"
-                                           f"tokenized_val_dataset")
+        tokenized_train_dataset.save_to_disk(train_dir)
+        tokenized_val_dataset.save_to_disk(val_dir)
         print("Datasets have been processed and saved.")
 
     # put model back into training mode
@@ -155,8 +160,8 @@ def main(tuned_model_version, dataset_path):
         fp16=True,
         eval_strategy="epoch",
         save_strategy="epoch",
-        output_dir=f"./Finetuned_models/tuned_model_v{tuned_model_version}/output",
-        logging_dir=f"./Finetuned_models/tuned_model_v{tuned_model_version}/logs",
+        output_dir=tuned_dir / 'output',
+        logging_dir=tuned_dir / 'logs',
         weight_decay=0.01,
         save_total_limit=3,
         load_best_model_at_end=True
@@ -192,8 +197,8 @@ def main(tuned_model_version, dataset_path):
     eval_results = trainer.evaluate()
     print("Evaluation results:", eval_results)
 
-    model.save_pretrained(f"./Finetuned_models/tuned_model_v{tuned_model_version}/model")
-    tokenizer.save_pretrained(f"./Finetuned_models/tuned_model_v{tuned_model_version}/tokenizer")
+    model.save_pretrained(model_dir)
+    tokenizer.save_pretrained(tuned_dir / 'tokenizer')
 
     # sys.stdout.close()
     # sys.stdout = sys.__stdout__
@@ -225,8 +230,7 @@ def generate_model_responses(tuned_model_version, input_file_path, output_file_p
                                                  device_map="auto",
                                                  quantization_config=quantization_config_8bit)
     tokenizer = AutoTokenizer.from_pretrained(hf_directory)
-    output_dir = f"./Finetuned_models/tuned_model_v{tuned_model_version}/model"
-    model = PeftModel.from_pretrained(model, output_dir)
+    model = PeftModel.from_pretrained(model, tuned_dir_f(tuned_model_version) / 'model')
 
     with open(input_file_path, "r") as f:
         data = json.load(f)

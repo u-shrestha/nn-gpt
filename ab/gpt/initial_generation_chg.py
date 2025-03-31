@@ -1,38 +1,24 @@
-import json
-import re
-import ab.nn.api as nn_dataset
-import pandas as pd
-
 import argparse
-
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
-
-from tqdm import tqdm
-
-import shutil
-import traceback
-
-from ab.gpt.util.CVModelEvaluator import CVModelEvaluator
-
 import json
 import os
-from pathlib import Path
-import pandas as pd
-
-import torch
+import re
 
 import ab.nn.api as nn_dataset
+import torch
+from tqdm import tqdm
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+from ab.gpt.util.Const import conf_dir, epoch_dir
+
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-e', '--epochs', type=int, default=8,
-                        help="Maximum number of generation epochs.")
+    parser.add_argument('-e', '--epochs', type=int, default=8, help="Maximum number of generation epochs.")
     args = parser.parse_args()
     limit_epoch = args.epochs
 
     # Load test prompts
-    with open('./util/test_nn_chg_prompts_generation.json') as prompt_file:
+    with open(conf_dir / 'test_nn_chg_prompts_generation.json') as prompt_file:
         prompt_dict = json.load(prompt_file)
     assert isinstance(prompt_dict, dict)
 
@@ -42,8 +28,9 @@ def main():
     model = AutoModelForCausalLM.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-7B", trust_remote_code=True, torch_dtype=torch.bfloat16).cuda()
     print("Load Model Complete, Start Loop...")
 
+
     for epoch in range(limit_epoch):
-        out_path = "../../Models/epochs/A" + str(epoch) + "/"
+        out_path = epoch_dir(epoch)
 
         # Generate Prompts
         prompts = []
@@ -82,15 +69,17 @@ def main():
                         if not (addon_data is None):
                             ## Avoid sampling the same nn_code
                             addon_row = addon_data.loc[addon_data.nn!=row['nn']].sample(n=1).iloc[0]
-                            for it in prompt_dict[key]["addon_list"]:
+                            for it in prompt_dict[key]['addon_list']:
                                 para_dict[it['para']]=addon_row[it['value']]
                         prompts.append((prompt.format(**para_dict),row))
-        
+
         # produce new CV models
         B_index = 0
+        b_dir = out_path / 'synth_cv_models' / f"B{B_index}"
+        code_file = b_dir / 'code.py'
+        df_file = b_dir / 'dataframe.df'
         for idx, prompt in tqdm(enumerate(prompts),desc="Generate Codes"):
             prompt, origdf = prompt
-            code_file = Path(out_path + "synth_cv_models/B" + str(B_index) + "/code.py")
             inputs = tokenizer.apply_chat_template([{ 'role': 'user', 'content': prompt},], add_generation_prompt=True, return_tensors="pt").to(model.device)
             # tokenizer.eos_token_id is the id of <｜end▁of▁sentence｜>  token
             outputs = model.generate(inputs, max_new_tokens=10000, do_sample=True, temperature=0.6, top_k=50, top_p=0.95, num_return_sequences=1, eos_token_id=tokenizer.eos_token_id)
@@ -108,7 +97,6 @@ def main():
                 out = out.replace("```", "")
                 with open(code_file, 'w') as file:
                     file.write(out)
-                df_file = Path(out_path + "synth_cv_models/B" + str(B_index) + "/dataframe.df")
                 if origdf is None:
                     if os.path.isfile(df_file): # Clean up dataframe.df, if no additional information generated this time.
                         os.remove(df_file)

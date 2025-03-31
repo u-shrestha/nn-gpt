@@ -10,6 +10,7 @@ import os
 import json
 import random
 import torch
+from ab.nn.util.Const import out_dir
 
 os.environ["DS_CUDA_VERSION"] = torch.version.cuda
 os.environ["WANDB_MODE"] = "disabled"
@@ -247,7 +248,8 @@ def main():
         "gradient_accumulation_steps": 2,
         "zero_allow_untested_optimizer": True
     }
-    with open("ds_config.json", "w") as f:
+    ds_conf = out_dir / 'ds_config.json'
+    with open(ds_conf, "w") as f:
         json.dump(ds_config, f, indent=2)
 
     # 3.11: Training args
@@ -267,7 +269,7 @@ def main():
         report_to="none",
         bf16=True,
         optim="adamw_bnb_8bit",
-        deepspeed="./ds_config.json"
+        deepspeed=ds_conf
     )
 
     trainer = Trainer(

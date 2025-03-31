@@ -1,5 +1,6 @@
 import os
 import os.path
+from ab.nn.util.Const import out_dir
 
 import torch.cuda
 from transformers import (
@@ -19,8 +20,7 @@ class ModelLoader:
                  max_memory: str = "24000MB",
                  access_token=None,
                  use_deepspeed=False,
-                 base_path="./"
-                 ):
+                 base_path=out_dir):
         self.model_path = model_path
         self.bnb_config = bnb_config
         self.max_memory = max_memory
@@ -34,11 +34,11 @@ class ModelLoader:
 
     def initialize(self):
         # Load the tokenizer
-        if os.path.exists(self.base_path + "Tokenizers/" + self.model_path):
-            print("Loading Tokenizer from local files:", f'"{self.base_path}Tokenizers/' + self.model_path + '"')
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.base_path + "Tokenizers/" + self.model_path, token=self.access_token
-            )
+        tok_fl_nm = self.base_path / 'Tokenizers' / self.model_path
+        raw_fl_nm = self.base_path / "Models" / (self.model_path + "_raw")
+        if os.path.exists(tok_fl_nm):
+            print("Loading Tokenizer from local files:", tok_fl_nm)
+            self.tokenizer = AutoTokenizer.from_pretrained(tok_fl_nm, token=self.access_token)
         else:
             print("Downloading Tokenizer...")
             self.tokenizer = AutoTokenizer.from_pretrained(
@@ -46,8 +46,8 @@ class ModelLoader:
             )
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.padding_side = "right"
-            self.tokenizer.save_pretrained(self.base_path + "Tokenizers/" + self.model_path, access_token=self.access_token)
-            print("Tokenizer saved to: ", f"{self.base_path}Tokenizers/" + self.model_path)
+            self.tokenizer.save_pretrained(tok_fl_nm, access_token=self.access_token)
+            print("Tokenizer saved to: ", tok_fl_nm)
 
         # Load the model
         if self.use_deepspeed: # When using Deepspeed, device_map should not be given, for deepspeed automatically manages the device memory mapping
@@ -56,24 +56,19 @@ class ModelLoader:
                 self.model = AutoModelForCausalLM.from_pretrained(
                     self.local_path,
                     max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                    token=self.access_token
-                )
-            elif os.path.exists(self.base_path + "Models/" + self.model_path + "_raw"):
-                print("Loading Model from local files:", f'"{self.base_path}Models' + self.model_path + '_raw"')
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.base_path + "Models/" + self.model_path + "_raw",
-                    max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                    token=self.access_token
-                )
+                    token=self.access_token)
+            elif os.path.exists(raw_fl_nm):
+                print("Loading Model from local files:", raw_fl_nm)
+                self.model = AutoModelForCausalLM.from_pretrained(raw_fl_nm, max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
+                    token=self.access_token)
             else:
                 print("Downloading Model...")
                 self.model = AutoModelForCausalLM.from_pretrained(
                     self.model_path,
                     max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                    token=self.access_token
-                )
-                self.model.save_pretrained(self.base_path + "Models/" + self.model_path + "_raw", access_token=self.access_token)
-                print("Model saved to: ", f"{self.base_path}Models/" + self.model_path + "_raw")
+                    token=self.access_token)
+                self.model.save_pretrained(raw_fl_nm, access_token=self.access_token)
+                print("Model saved to: ", raw_fl_nm)
         else:
             if self.local_path and os.path.exists(self.local_path):
                 print("Loading Model from local files:", "'" + self.local_path + "'")
@@ -81,16 +76,13 @@ class ModelLoader:
                     self.local_path,
                     device_map="auto",
                     max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                    token=self.access_token
-                )
-            elif os.path.exists(self.base_path + "Models/" + self.model_path + "_raw"):
-                print("Loading Model from local files:", f'"{self.base_path}Models' + self.model_path + '_raw"')
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.base_path + "Models/" + self.model_path + "_raw",
+                    token=self.access_token)
+            elif os.path.exists(raw_fl_nm):
+                print("Loading Model from local files:", raw_fl_nm)
+                self.model = AutoModelForCausalLM.from_pretrained(raw_fl_nm,
                     device_map="auto",
                     max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                    token=self.access_token
-                )
+                    token=self.access_token)
             else:
                 print("Downloading Model...")
                 self.model = AutoModelForCausalLM.from_pretrained(
@@ -100,10 +92,9 @@ class ModelLoader:
                     # quantization_config=self.bnb_config, 
                     device_map="auto",
                     max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                    token=self.access_token
-                )
-                self.model.save_pretrained(self.base_path + "Models/" + self.model_path + "_raw", access_token=self.access_token)
-                print("Model saved to: ", f"{self.base_path}Models/" + self.model_path + "_raw")
+                    token=self.access_token)
+                self.model.save_pretrained(raw_fl_nm, access_token=self.access_token)
+                print("Model saved to: ", raw_fl_nm)
 
     def get_model(self) -> PreTrainedModel:
         return self.model
