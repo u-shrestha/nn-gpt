@@ -27,18 +27,17 @@ It is also assumed that CUDA 12.6 is installed. If you have a different version,
 ### Pip package manager
 
 #### Prerequisites for mpi4py package:
-* On Fedora/RHEL systems, run:
-  
-         sudo dnf install mpich-devel     # for MPICH
-  
-         sudo dnf install openmpi-devel   # for Open MPI
-  
 * On Debian/Ubuntu systems, run:
   
          sudo apt install libmpich-dev    # for MPICH
   
          sudo apt install libopenmpi-dev  # for Open MPI
+
+* On Fedora/RHEL systems, run:
   
+         sudo dnf install mpich-devel     # for MPICH
+  
+         sudo dnf install openmpi-devel   # for Open MPI
   
 Create a virtual environment, activate it, and run the following command to install all the project dependencies:
 ```bash
