@@ -46,6 +46,8 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu126
 ```
 
+If there are installation problems, install the dependencies from the 'requirements.txt' file one by one.
+
 ## Update of NN Dataset
 Remove old version of the LEMUR Dataset and its database:
 ```bash
