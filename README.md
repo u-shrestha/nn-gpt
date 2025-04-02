@@ -55,15 +55,15 @@ source .venv/bin/activate
 pip uninstall nn-dataset -y
 rm -rf db
 ```
-Installing the stable version:
-```bash
-source .venv/bin/activate
-pip install nn-dataset --upgrade --extra-index-url https://download.pytorch.org/whl/cu126
-```
 Installing from GitHub to get the most recent code and statistics updates:
 ```bash
 source .venv/bin/activate
 pip install git+https://github.com/ABrain-One/nn-dataset --upgrade --force --extra-index-url https://download.pytorch.org/whl/cu126
+```
+Installing the stable version:
+```bash
+source .venv/bin/activate
+pip install nn-dataset --upgrade --extra-index-url https://download.pytorch.org/whl/cu126
 ```
 Adding functionality to export data to Excel files and generate plots for <a href='https://github.com/ABrain-One/nn-stat'>analyzing neural network performance</a>:
 ```bash
