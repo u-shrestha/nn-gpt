@@ -6,7 +6,7 @@ short alias  <a href='https://pypi.python.org/pypi/lmurg'>lmurg</a></sub>
 
 <h3>Overview 📖</h3>
 
-This Python-based project leverages large language models to automate the creation of neural network architectures, streamlining the design process for machine learning practitioners.
+This Python-based <a href='https://github.com/ABrain-One/nn-gpt'>NNGPT</a> project leverages large language models (LLMs) to automate the creation of neural network architectures, streamlining the design process for machine learning practitioners. It leverages various neural networks from the <a href="https://github.com/ABrain-One/nn-dataset">LEMUR Dataset</a> to fine-tune LLMs and provide insights into potential architectures during the creation of new neural network models.
 
 ## Create and Activate a Virtual Environment (recommended)
 For Linux/Mac:
