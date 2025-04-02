@@ -83,7 +83,7 @@ class CVModelEvaluator:
     #     return model_accuracy
     def evaluate(self):
         os.listdir(self.model_package)
-        code = read_py_file_as_string(self.model_package+'/code.py')
+        code = read_py_file_as_string(self.model_package / 'code.py')
         res = api.check_nn(code, self.task, self.dataset, self.metric, self.prm, self.save_to_db, self.prefix, self.save_path)
         return res
         
