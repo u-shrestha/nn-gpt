@@ -118,7 +118,7 @@ def main():
         print(f"[INFO]Start Epoch {epoch}")
         out_path = epoch_dir(epoch)
         # Move inside the loop to create new prompt with newly created models.
-        print("Prepairing prompts for generation, this might take a while...")
+        print("Preparing prompts for generation, this might take a while...")
         prompts = []
         for key in prompt_dict.keys():
             if epoch < skip_epoch:

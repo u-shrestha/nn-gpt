@@ -1,5 +1,5 @@
 {
-  "base_model_name": "deepseek-ai/deepseek-coder-1.3b-instruct",
+  "base_model_name": "ABrain/NNGPT-DeepSeek-Coder-1.3B-Instruct",
   "num_epochs": 100,
   "num_test_epochs": 2,
   "use_deepspeed": "False",
