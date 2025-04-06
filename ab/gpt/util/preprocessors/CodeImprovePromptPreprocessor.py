@@ -10,7 +10,7 @@ import json
 
 class CodeImprovePromptPreprocessor(PreprocessorBase):
     """
-    Assumes the existance of accuracies.json and folder based dataset
+    Assumes the existence of accuracies.json and folder based dataset
     """
     def __init__(self, max_len: int, tokenizer: PreTrainedTokenizerBase, prompts_path):
         super().__init__(max_len, tokenizer)

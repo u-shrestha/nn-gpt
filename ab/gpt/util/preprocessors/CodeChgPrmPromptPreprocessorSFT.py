@@ -39,22 +39,22 @@ class CodeChgPrmPromptPreprocessor(PreprocessorBase):
             # Get nn-dataset codes
             print("Preparing Data(s)...")
             if prompt_dict[key]['task'] == "all":
-                data = lemur.data(only_best_accuracy=True).query("epoch==1")
+                data = lemur.data(only_best_accuracy=True) # .query("epoch==1")
             elif prompt_dict[key]['task'] == "":
                 data = None
             else:
-                data = lemur.data(only_best_accuracy=True, task=prompt_dict[key]['task']).query("epoch==1")
-            print("Data accquration complete")
+                data = lemur.data(only_best_accuracy=True, task=prompt_dict[key]['task'])# .query("epoch==1")
+            print("Data acquisition complete")
             # Get addon nn-dataset codes
             if prompt_dict[key]['addon_task'] == "all":
-                addon_data = lemur.data(only_best_accuracy=True).query("epoch==1")
+                addon_data = lemur.data(only_best_accuracy=True)# .query("epoch==1")
             elif prompt_dict[key]['addon_task'] == "":
                 addon_data = None
             elif prompt_dict[key]['addon_task'] == prompt_dict[key]['task']:
                 addon_data = data  # When they are the same, avoid sampling twice
             else:
-                addon_data = lemur.data(only_best_accuracy=True, task=prompt_dict[key]['addon_task']).query("epoch==1")
-            print("Addon-Data accquration complete")
+                addon_data = lemur.data(only_best_accuracy=True, task=prompt_dict[key]['addon_task'])# .query("epoch==1")
+            print("Addon-Data acquisition complete")
             if data is None:
                 assert ValueError("Task must be specified (or set to 'all')")
             else:

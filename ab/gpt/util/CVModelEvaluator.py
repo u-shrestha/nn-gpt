@@ -81,18 +81,17 @@ class CVModelEvaluator:
     #     self.model.to('cpu')
 
     #     return model_accuracy
-    def evaluate(self):
+    def evaluate(self, nn_file):
         os.listdir(self.model_package)
-        code = read_py_file_as_string(self.model_package / 'code.py')
+        code = read_py_file_as_string(nn_file)
         res = api.check_nn(code, self.task, self.dataset, self.metric, self.prm, self.save_to_db, self.prefix, self.save_path)
         return res
         
     def get_args(self):
-        args = {
+        return {
             'model_package': self.model_package,
             'task': self.task,
             'dataset': self.dataset,
             'metric': self.metric,
             'prm': self.prm,
         }
-        return args

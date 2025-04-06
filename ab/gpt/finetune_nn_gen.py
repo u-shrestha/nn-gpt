@@ -3,11 +3,14 @@ import json
 import os
 import shutil
 import traceback
+from os.path import isfile
 from pathlib import Path
+from ab.nn.util.Util import release_memory
+from ab.gpt.util.Util import nn_accepted, verify_nn_code
 
 import ab.nn.api as nn_dataset
-from ab.gpt.util.Const import conf_dir, epoch_dir
-from ab.nn.util.Const import ab_root_path, out_dir
+from ab.gpt.util.Const import conf_dir, epoch_dir, new_nn_file, nngpt_dir, synth_dir
+from ab.nn.util.Const import ab_root_path
 import deepspeed
 import pandas as pd
 import torch
@@ -39,6 +42,8 @@ if token_from_file:
 # Deepspeed
 ds_config = conf_dir / 'deepspeed_config.json'
 
+max_nn = 10
+max_epoch = 1
 
 def main():
     parser = argparse.ArgumentParser()
@@ -65,7 +70,7 @@ def main():
         learning_rate=2e-4,
         fp16=True,
         logging_steps=1,
-        output_dir=out_dir / 'outputs',
+        output_dir=nngpt_dir / 'outputs',
         optim='paged_adamw_8bit',
         deepspeed=ds_config if use_deepspeed else None,
     )
@@ -81,7 +86,6 @@ def main():
         bnb_config,
         access_token=access_token,
         use_deepspeed=use_deepspeed,
-        base_path=out_dir,
     )
     model, tokenizer = model_loader.get_model(), model_loader.get_tokenizer()
     if not (peft_path is None):
@@ -137,7 +141,7 @@ def main():
                 elif prompt_dict[key]['task'] == "":
                     data = None
                 else:
-                    data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['task']).groupby(by="nn").sample(n=1)
+                    data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['task'], max_rows=max_nn).groupby(by="nn").sample(n=1)
                 # Get addon nn-dataset codes
                 if prompt_dict[key]['addon_task'] == "all":
                     addon_data = nn_dataset.data(only_best_accuracy=True)
@@ -146,7 +150,7 @@ def main():
                 elif prompt_dict[key]['addon_task'] == prompt_dict[key]['task']:
                     addon_data = data  # When they are the same, avoid sampling twice
                 else:
-                    addon_data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['addon_task'])
+                    addon_data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['addon_task'], max_rows=max_nn)
                 if data is None:
                     prompts.append((pr, None))
                 else:
@@ -157,20 +161,20 @@ def main():
                         if not (addon_data is None):
                             ## Avoid sampling the same nn_code
                             addon_row = addon_data.loc[addon_data.nn != row['nn']].sample(n=1).iloc[0]
-                            for it in prompt_dict[key]["addon_list"]:
+                            for it in prompt_dict[key]['addon_list']:
                                 para_dict[it['para']] = addon_row[it['value']]
                         prompts.append((prompt.format(**para_dict), row))
 
         from tqdm import tqdm
         # produce new CV models
-        models_dir = out_path / 'synth_cv_models'
+        models_dir = synth_dir(out_path)
         for idx, prompt in tqdm(enumerate(prompts)):
             if epoch < skip_epoch:
                 print(f"Skipped Epoch {epoch}")
                 continue  # Skipped
             model_dir = models_dir / f"B{idx}"
             prompt, origdf = prompt
-            code_file = Path(model_dir / 'code.py')
+            code_file = model_dir / new_nn_file
             code_file.parent.mkdir(exist_ok=True, parents=True)
             code = chat_bot.chat(
                 prompt,
@@ -182,88 +186,90 @@ def main():
                 file.write(code)
             df_file = model_dir / 'dataframe.df'
             if origdf is None:
-                if os.path.isfile(df_file):  # Clean up dataframe.df, if no additional information generated this time.
+                if isfile(df_file):  # Clean up dataframe.df, if no additional information generated this time.
                     os.remove(df_file)
                     print(f"[DEBUG]Removed unmatched file: {df_file}")
             else:
-                orig_code_file = model_dir / f"code_{origdf['nn']}.py"
+                orig_code_file = model_dir / f"original_{origdf['nn']}.py"
                 with open(orig_code_file, 'w') as file:
                     file.write(origdf['nn_code'])
                 # Store DataFrame information, mainly for passing parameters to evaluator.
                 origdf.to_pickle(df_file)
-
         # evaluate produced CV models
         for cv_model in os.listdir(models_dir):
             cv_model = str(os.fsdecode(cv_model))
-            cv_model_dir = models_dir / cv_model
-            if os.path.isdir(cv_model_dir):
+            gen_nn_dir = models_dir / cv_model
+            code_file = gen_nn_dir / new_nn_file
+            if verify_nn_code(gen_nn_dir, code_file):
                 for tries in range(2):
                     try:
                         df = None
-                        df_file = cv_model_dir / 'dataframe.df'
-                        if os.path.isfile(df_file):  # The code has additional information provided
+                        df_file = gen_nn_dir / 'dataframe.df'
+                        if isfile(df_file):  # The code has additional information provided
                             df = pd.read_pickle(df_file)
                             prm = df['prm']
                             # prm['epoch'] = df['epoch']
-                            prm['epoch'] = 5  # Force evaluation being 5
+                            prm['epoch'] = max_epoch  # Force evaluation being 5
                             # Reduce Memory Usage
-                            if prm['transform'].__contains__("512"):
-                                prm['transform'].replace("512", "128")
-                            elif prm['transform'].__contains__("256"):
-                                prm['transform'].replace("256", "128")
-                            elif prm['transform'].__contains__("299"):
-                                prm['transform'].replace("299", "128")
+                            # if prm['transform'].__contains__("512"):
+                            #     prm['transform'].replace("512", "128")
+                            # elif prm['transform'].__contains__("256"):
+                            #     prm['transform'].replace("256", "128")
+                            # elif prm['transform'].__contains__("299"):
+                            #     prm['transform'].replace("299", "128")
                             print(f"Determining {cv_model} with prm{prm}")
-                            print(f"Model Path:{cv_model_dir}")
-                            evaluator = CVModelEvaluator(cv_model_dir, task=df['task'], dataset=df['dataset'], metric=df['metric'], prm=prm, save_to_db=True,
-                                                         prefix=df['nn'].split('-')[0], save_path=cv_model_dir)
+                            print(f"Model Path:{gen_nn_dir}")
+                            evaluator = CVModelEvaluator(gen_nn_dir, task=df['task'], dataset=df['dataset'], metric=df['metric'], prm=prm, save_to_db=True,
+                                                         prefix=df['nn'].split('-')[0], save_path=gen_nn_dir)
                         else:
-                            evaluator = CVModelEvaluator(cv_model_dir)
-                        accuracy = evaluator.evaluate()
-                        accuracies = {
-                            # str(evaluator.get_args()): (accuracy, num_test_epochs)
-                            str(evaluator.get_args()): accuracy
-                        }
-                        name, _a, _b = accuracy
-                        with open(cv_model_dir / 'accuracies.json', "w+") as acc_file:
-                            json.dump(accuracies, acc_file)
-                        dataset_dir = out_dir / 'Dataset' / 'nn'
-                        nn_dir = dataset_dir / 'nn'
-                        stat_dir = dataset_dir / 'stat'
-                        Path(nn_dir).mkdir(parents=True, exist_ok=True)
-                        shutil.copyfile(cv_model_dir / 'code.py', nn_dir / f"{name}.py")
-                        nn_model_dir = stat_dir / name
-                        if df is None:
-                            Path(nn_model_dir).mkdir(parents=True, exist_ok=True)
-                            for epo in range(prm['epoch']):
-                                f_nm = f"{epo + 1}.json"
-                                shutil.copyfile(cv_model_dir / f_nm, nn_model_dir / f_nm)
-                        else:
-                            dr_nm = stat_dir / f"{df['task']}_{df['dataset']}_{df['metric']}_{name}"
-                            Path(dr_nm).mkdir(parents=True, exist_ok=True)
-                            for epo in range(prm['epoch']):
-                                f_nm = f"{epo + 1}.json"
-                                shutil.copyfile(cv_model_dir / f_nm, dr_nm / f_nm)
-                        ds_updated = True
-                        break
+                            evaluator = CVModelEvaluator(gen_nn_dir)
+                        eval_results = evaluator.evaluate(code_file)
+                        eval_info = {str(evaluator.get_args()): eval_results}
+                        name, new_accuracy, code_quality = eval_results
+                        with open(gen_nn_dir / 'eval_info.json', "w+") as f:
+                            json.dump(eval_info, f)
+                        if nn_accepted(gen_nn_dir):
+                            dataset_dir = nngpt_dir / 'new_lemur'
+                            nn_dir = dataset_dir / 'nn'
+                            stat_dir = dataset_dir / 'stat'
+                            Path(nn_dir).mkdir(parents=True, exist_ok=True)
+                            shutil.copyfile(gen_nn_dir / new_nn_file, nn_dir / f"{name}.py")
+                            nn_model_dir = stat_dir / name
+                            if df is None:
+                                Path(nn_model_dir).mkdir(parents=True, exist_ok=True)
+                                for epo in range(prm['epoch']):
+                                    f_nm = f"{epo + 1}.json"
+                                    shutil.copyfile(gen_nn_dir / f_nm, nn_model_dir / f_nm)
+                            else:
+                                dr_nm = stat_dir / f"{df['task']}_{df['dataset']}_{df['metric']}_{name}"
+                                Path(dr_nm).mkdir(parents=True, exist_ok=True)
+                                for epo in range(prm['epoch']):
+                                    f_nm = f"{epo + 1}.json"
+                                    shutil.copyfile(gen_nn_dir / f_nm, dr_nm / f_nm)
+                            ds_updated = True
+                            break
                     except Exception as error:
                         print("failed to determine accuracy for", cv_model)
-                        with open(cv_model_dir / f"error_{tries}.txt", "w+") as error_file:
+                        with open(gen_nn_dir / f"error_{tries}.txt", "w+") as error_file:
                             error_file.write(str(traceback.format_exc()))  # Track traceback to have rich information on the exception.
-                        with open(cv_model_dir / 'code.py', "r") as code_file:
-                            code_txt = code_file.read()
-                        new_code = chat_bot.chat(
-                            'The error "' + str(error) +
-                            '" was occurred in the following code. fix this problem. '
-                            "Provide only the code. Don't provide any explanation. Remove any text from this reply. + \n " +
-                            code_txt,
-                            engineer_prompt=False,
-                            max_words=5000
-                        )
-                        code_fl = cv_model_dir / 'code.py'
+                        with open(code_file, "r") as f:
+                            code_txt = f.read()
+                        release_memory()
+                        try:
+                            new_code = chat_bot.chat(
+                                'The error "' + str(error) +
+                                '" was occurred in the following code. fix this problem. '
+                                "Provide only the code. Don't provide any explanation. Remove any text from this reply. + \n " +
+                                code_txt,
+                                engineer_prompt=False,
+                                max_words=5000)
+                        except Exception:
+                            new_code = ''
+                        code_fl = gen_nn_dir / new_nn_file
                         os.remove(code_fl)
                         with open(code_fl, 'w') as file:
                             file.write(new_code)
+                        release_memory()
 
         # fine tune model for 1 epoch / Using training_args and save copy
         print(f"[DEBUG]Perform finetune at epoch {epoch}.")

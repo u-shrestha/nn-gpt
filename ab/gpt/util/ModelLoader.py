@@ -1,6 +1,6 @@
 from os.path import exists
 from ab.nn.util.Const import out_dir
-from ab.gpt.util.Const import llm_weights_dir, llm_tokenizer_dir
+from ab.gpt.util.Const import llm_dir, llm_tokenizer_dir
 
 import torch.cuda
 from transformers import (
@@ -35,7 +35,7 @@ class ModelLoader:
     def initialize(self):
         # Load the tokenizer
         tok_fl_nm = llm_tokenizer_dir(self.base_path, self.model_path)
-        raw_fl_nm = llm_weights_dir(self.base_path, self.model_path)
+        raw_fl_nm = llm_dir(self.base_path, self.model_path)
         if exists(tok_fl_nm):
             print("Loading Tokenizer from local files:", tok_fl_nm)
             self.tokenizer = AutoTokenizer.from_pretrained(tok_fl_nm, token=self.access_token)

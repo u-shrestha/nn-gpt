@@ -1,9 +1,9 @@
 import json
-from pathlib import Path
+from os import makedirs
 
 import torch
 from ab.nn.api import data as data
-from ab.nn.util.Const import out_dir
+from ab.gpt.util.Const import acgpt_dir
 from peft import LoraConfig
 from transformers import BitsAndBytesConfig
 from transformers import TrainingArguments
@@ -20,8 +20,8 @@ from util.preprocessors.CodePromptPreprocessor import CodePromptPreprocessor
 class ModelFinetuner:
     def __init__(self, config_path=conf_dir / 'config.json'):
         self.config = self._load_config(config_path)
-        self.output_dir = out_dir / 'model_results'
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_dir = acgpt_dir / 'model_results'
+        makedirs(self.output_dir, exist_ok=True)
         
     def _load_config(self, path):
         with open(path) as f:
@@ -71,7 +71,7 @@ class ModelFinetuner:
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_compute_dtype=torch.bfloat16
             ),
-            access_token=out_dir / 'token' if self.config['token_from_file'] else None)
+            access_token=acgpt_dir / 'token' if self.config['token_from_file'] else None)
         model, tokenizer = model_loader.get_model(), model_loader.get_tokenizer()
         max_len = model_loader.get_max_length()
         
@@ -117,7 +117,7 @@ class ModelFinetuner:
                 dataset = preprocessor.get_dataset()
                 
                 # Configure model-specific output directory
-                model_output_dir = out_dir / f"finetuned_models/{arch_name}"
+                model_output_dir = acgpt_dir / f"finetuned_models/{arch_name}"
                 
                 # Configure and run training for this architecture
                 trainer = LoRATrainer(

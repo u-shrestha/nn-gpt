@@ -8,7 +8,7 @@ import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from ab.gpt.util.Const import conf_dir, epoch_dir
+from ab.gpt.util.Const import conf_dir, epoch_dir, new_nn_file, synth_dir
 
 
 def main():
@@ -75,8 +75,8 @@ def main():
 
         # produce new CV models
         B_index = 0
-        b_dir = out_path / 'synth_cv_models' / f"B{B_index}"
-        code_file = b_dir / 'code.py'
+        b_dir = synth_dir(out_path) / f"B{B_index}"
+        code_file = b_dir / new_nn_file
         df_file = b_dir / 'dataframe.df'
         for idx, prompt in tqdm(enumerate(prompts),desc="Generate Codes"):
             prompt, origdf = prompt
