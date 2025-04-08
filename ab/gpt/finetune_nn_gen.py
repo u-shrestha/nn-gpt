@@ -42,7 +42,7 @@ if token_from_file:
 # Deepspeed
 ds_config = conf_dir / 'deepspeed_config.json'
 
-max_nn = 10
+max_nn = 20
 max_epoch = 1
 
 def main():
@@ -288,7 +288,7 @@ def main():
             already_peft=already_peft
         )
         already_peft = True
-        model = lora_tuner.train(dataset, out_path / f"{base_model_name}_tuned")
+        model = lora_tuner.train(dataset, out_path / base_model_name)
 
         # del model
         # del tokenizer

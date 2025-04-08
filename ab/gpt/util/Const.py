@@ -22,7 +22,7 @@ def synth_dir(base):
 
 
 def tokenizer_dir(base):
-    return base / 'tokenizers'
+    return base / 'tokenizer'
 
 
 nngpt_model = out_dir

@@ -11,7 +11,7 @@ from ab.gpt.util.preprocessors.PreprocessorBase import PreprocessorBase
 
 class CodeChgPrmPromptPreprocessor(PreprocessorBase):
     """
-    Assumes the existance of accuracies.json and folder based dataset
+    Assumes the existence of accuracies.json and folder based dataset
     """
 
     def __init__(self, max_len: int, tokenizer: PreTrainedTokenizerBase, prompts_path=conf_dir / 'train_nn_change_prm_prompts.json'):
