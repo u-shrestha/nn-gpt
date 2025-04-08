@@ -1,7 +1,7 @@
 import json
 import os
 import random
-
+from ab.gpt.util.Const import llm_tokenizer_out
 import torch
 from ab.nn.util.Const import out_dir
 from datasets import load_dataset, load_from_disk
@@ -198,7 +198,7 @@ def main(tuned_model_version, dataset_path):
     print("Evaluation results:", eval_results)
 
     model.save_pretrained(model_dir)
-    tokenizer.save_pretrained(tuned_dir / 'tokenizer')
+    tokenizer.save_pretrained(llm_tokenizer_out)
 
     # sys.stdout.close()
     # sys.stdout = sys.__stdout__

@@ -9,7 +9,7 @@ from ab.nn.util.Util import release_memory
 from ab.gpt.util.Util import nn_accepted, verify_nn_code
 
 import ab.nn.api as nn_dataset
-from ab.gpt.util.Const import conf_dir, epoch_dir, new_nn_file, nngpt_dir, synth_dir
+from ab.gpt.util.Const import conf_dir, epoch_dir, new_nn_file, nngpt_dir, synth_dir, config_file
 from ab.nn.util.Const import ab_root_path
 import deepspeed
 import pandas as pd
@@ -24,15 +24,15 @@ from ab.gpt.util.LoRATrainer import LoRATrainer, find_all_linear_names
 from ab.gpt.util.ModelLoader import ModelLoader
 from ab.gpt.util.preprocessors.CodeChgPrmPromptPreprocessorSFT import CodeChgPrmPromptPreprocessor as CodePromptPreprocessor
 
-with open(conf_dir / 'config.json') as config_file:
-    config = json.load(config_file)
+with open(config_file) as f:
+    config = json.load(f)
 assert isinstance(config, dict)
 
-token_from_file = True if config["token_from_file"] == "True" else False
-base_model_name = config["base_model_name"]
-num_epochs = int(config["num_epochs"])
-num_test_epochs = int(config["num_test_epochs"])
-use_deepspeed = True if config["use_deepspeed"] == "True" else False
+token_from_file = True if config['token_from_file'] == 'True' else False
+base_model_name = config['base_model_name']
+num_epochs = int(config['num_epochs'])
+num_test_epochs = int(config['num_test_epochs'])
+use_deepspeed = True if config['use_deepspeed'] == 'True' else False
 
 access_token = None
 if token_from_file:
@@ -47,12 +47,12 @@ max_epoch = 1
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-s', '--skip', type=int, default=-1, help="Number of epoches to skip the generation.")
-    parser.add_argument('-p', '--peft', type=str, default=None, help="Path to saved lora layers.")
+    parser.add_argument('-s', '--skip', type=int, default=-1, help='Number of epoches to skip the generation.')
+    parser.add_argument('-p', '--peft', type=str, default=None, help='Path to saved lora layers.')
     args = parser.parse_args()
     skip_epoch = args.skip
     peft_path = args.peft
-    print(f"[DEBUG]Argument Information:\nSkip generation until Epoch: {skip_epoch}\nPath to saved LoRA Layers: {peft_path}")
+    print(f'[DEBUG]Argument Information:\nSkip generation until Epoch: {skip_epoch}\nPath to saved LoRA Layers: {peft_path}')
 
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -89,7 +89,7 @@ def main():
     )
     model, tokenizer = model_loader.get_model(), model_loader.get_tokenizer()
     if not (peft_path is None):
-        print(f"Load saved LoRA layer from path:{peft_path}")
+        print(f'Load saved LoRA layer from path: {peft_path}')
         model = PeftModel.from_pretrained(model, peft_path)
         model = model.merge_and_unload()
 
@@ -97,10 +97,10 @@ def main():
     if use_deepspeed:
         deepspeed.initialize(model=model, config_params=ds_config)
 
-    print("Using Max Length:", model_loader.get_max_length())
+    print('Using Max Length:', model_loader.get_max_length())
     data_processor = CodePromptPreprocessor(model_loader.get_max_length(), tokenizer)
     dataset = data_processor.get_dataset()
-    print("Dataset length:", len(dataset))
+    print('Dataset length:', len(dataset))
     ds_updated = False
 
     peft_config = LoraConfig(
@@ -108,8 +108,8 @@ def main():
         lora_alpha=64,  # parameter for scaling
         target_modules=find_all_linear_names(model),
         lora_dropout=0.1,  # dropout probability for layers
-        bias="none",
-        task_type="CAUSAL_LM",
+        bias='none',
+        task_type='CAUSAL_LM',
         use_dora=True,
         inference_mode=False
     )
@@ -119,10 +119,10 @@ def main():
     chat_bot = ChatBot(model, tokenizer)  # Only initialize ONCE
 
     for epoch in range(num_epochs):
-        print(f"[INFO]Start Epoch {epoch}")
+        print(f'[INFO]Start Epoch {epoch}')
         out_path = epoch_dir(epoch)
         # Move inside the loop to create new prompt with newly created models.
-        print("Preparing prompts for generation, this might take a while...")
+        print('Preparing prompts for generation, this might take a while...')
         prompts = []
         for key in prompt_dict.keys():
             if epoch < skip_epoch:
@@ -132,20 +132,20 @@ def main():
                 for pr in prompt_dict[key]['prompts']:
                     prompts.append((pr, None))
             else:
-                prompt = ""
+                prompt = ''
                 for pr in prompt_dict[key]['prompts']:
-                    prompt += pr + "\n"
+                    prompt += pr + '\n'
                 # Get nn-dataset codes
-                if prompt_dict[key]['task'] == "all":
-                    data = nn_dataset.data(only_best_accuracy=True).groupby(by="nn").sample(n=1)
-                elif prompt_dict[key]['task'] == "":
+                if prompt_dict[key]['task'] == 'all':
+                    data = nn_dataset.data(only_best_accuracy=True).groupby(by='nn').sample(n=1)
+                elif prompt_dict[key]['task'] == '':
                     data = None
                 else:
-                    data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['task'], max_rows=max_nn).groupby(by="nn").sample(n=1)
+                    data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['task'], max_rows=max_nn).groupby(by='nn').sample(n=1)
                 # Get addon nn-dataset codes
-                if prompt_dict[key]['addon_task'] == "all":
+                if prompt_dict[key]['addon_task'] == 'all':
                     addon_data = nn_dataset.data(only_best_accuracy=True)
-                elif prompt_dict[key]['addon_task'] == "":
+                elif prompt_dict[key]['addon_task'] == '':
                     addon_data = None
                 elif prompt_dict[key]['addon_task'] == prompt_dict[key]['task']:
                     addon_data = data  # When they are the same, avoid sampling twice
@@ -156,7 +156,7 @@ def main():
                 else:
                     for _, row in data.iterrows():
                         para_dict = dict()
-                        for it in prompt_dict[key]["input_list"]:
+                        for it in prompt_dict[key]['input_list']:
                             para_dict[it['para']] = row[it['value']]
                         if not (addon_data is None):
                             ## Avoid sampling the same nn_code
@@ -170,9 +170,9 @@ def main():
         models_dir = synth_dir(out_path)
         for idx, prompt in tqdm(enumerate(prompts)):
             if epoch < skip_epoch:
-                print(f"Skipped Epoch {epoch}")
+                print(f'Skipped Epoch {epoch}')
                 continue  # Skipped
-            model_dir = models_dir / f"B{idx}"
+            model_dir = models_dir / f'B{idx}'
             prompt, origdf = prompt
             code_file = model_dir / new_nn_file
             code_file.parent.mkdir(exist_ok=True, parents=True)
@@ -188,7 +188,7 @@ def main():
             if origdf is None:
                 if isfile(df_file):  # Clean up dataframe.df, if no additional information generated this time.
                     os.remove(df_file)
-                    print(f"[DEBUG]Removed unmatched file: {df_file}")
+                    print(f'[DEBUG]Removed unmatched file: {df_file}')
             else:
                 orig_code_file = model_dir / f"original_{origdf['nn']}.py"
                 with open(orig_code_file, 'w') as file:
@@ -211,14 +211,14 @@ def main():
                             # prm['epoch'] = df['epoch']
                             prm['epoch'] = max_epoch  # Force evaluation being 5
                             # Reduce Memory Usage
-                            # if prm['transform'].__contains__("512"):
-                            #     prm['transform'].replace("512", "128")
-                            # elif prm['transform'].__contains__("256"):
-                            #     prm['transform'].replace("256", "128")
-                            # elif prm['transform'].__contains__("299"):
-                            #     prm['transform'].replace("299", "128")
-                            print(f"Determining {cv_model} with prm{prm}")
-                            print(f"Model Path:{gen_nn_dir}")
+                            # if prm['transform'].__contains__('512'):
+                            #     prm['transform'].replace('512', '128')
+                            # elif prm['transform'].__contains__('256'):
+                            #     prm['transform'].replace('256', '128')
+                            # elif prm['transform'].__contains__('299'):
+                            #     prm['transform'].replace('299', '128')
+                            print(f'Determining {cv_model} with prm{prm}')
+                            print(f'Model Path:{gen_nn_dir}')
                             evaluator = CVModelEvaluator(gen_nn_dir, task=df['task'], dataset=df['dataset'], metric=df['metric'], prm=prm, save_to_db=True,
                                                          prefix=df['nn'].split('-')[0], save_path=gen_nn_dir)
                         else:
@@ -226,33 +226,33 @@ def main():
                         eval_results = evaluator.evaluate(code_file)
                         eval_info = {str(evaluator.get_args()): eval_results}
                         name, new_accuracy, code_quality = eval_results
-                        with open(gen_nn_dir / 'eval_info.json', "w+") as f:
+                        with open(gen_nn_dir / 'eval_info.json', 'w+') as f:
                             json.dump(eval_info, f)
                         if nn_accepted(gen_nn_dir):
                             dataset_dir = nngpt_dir / 'new_lemur'
                             nn_dir = dataset_dir / 'nn'
                             stat_dir = dataset_dir / 'stat'
                             Path(nn_dir).mkdir(parents=True, exist_ok=True)
-                            shutil.copyfile(gen_nn_dir / new_nn_file, nn_dir / f"{name}.py")
+                            shutil.copyfile(gen_nn_dir / new_nn_file, nn_dir / f'{name}.py')
                             nn_model_dir = stat_dir / name
                             if df is None:
                                 Path(nn_model_dir).mkdir(parents=True, exist_ok=True)
                                 for epo in range(prm['epoch']):
-                                    f_nm = f"{epo + 1}.json"
+                                    f_nm = f'{epo + 1}.json'
                                     shutil.copyfile(gen_nn_dir / f_nm, nn_model_dir / f_nm)
                             else:
                                 dr_nm = stat_dir / f"{df['task']}_{df['dataset']}_{df['metric']}_{name}"
                                 Path(dr_nm).mkdir(parents=True, exist_ok=True)
                                 for epo in range(prm['epoch']):
-                                    f_nm = f"{epo + 1}.json"
+                                    f_nm = f'{epo + 1}.json'
                                     shutil.copyfile(gen_nn_dir / f_nm, dr_nm / f_nm)
                             ds_updated = True
                             break
                     except Exception as error:
-                        print("failed to determine accuracy for", cv_model)
-                        with open(gen_nn_dir / f"error_{tries}.txt", "w+") as error_file:
+                        print('failed to determine accuracy for', cv_model)
+                        with open(gen_nn_dir / f'error_{tries}.txt', 'w+') as error_file:
                             error_file.write(str(traceback.format_exc()))  # Track traceback to have rich information on the exception.
-                        with open(code_file, "r") as f:
+                        with open(code_file, 'r') as f:
                             code_txt = f.read()
                         release_memory()
                         try:
@@ -272,9 +272,9 @@ def main():
                         release_memory()
 
         # fine tune model for 1 epoch / Using training_args and save copy
-        print(f"[DEBUG]Perform finetune at epoch {epoch}.")
+        print(f'[DEBUG]Perform finetune at epoch {epoch}.')
         if ds_updated:
-            print(f"Epoch{epoch}[DEBUG]Regenerate dataset...")
+            print(f'Epoch{epoch}[DEBUG]Regenerate dataset...')
             data_processor = CodePromptPreprocessor(model_loader.get_max_length(), tokenizer)
             dataset = data_processor.get_dataset()
             ds_updated = False
@@ -297,12 +297,12 @@ def main():
         #     base_model_name,
         #     bnb_config,
         #     access_token=access_token,
-        #     local_path=out_path + base_model_name + "_tuned"
+        #     local_path=out_path + base_model_name + '_tuned'
         # )
         #
         # # use updated model for next round
         # model, tokenizer = model_loader.get_model(), model_loader.get_tokenizer()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

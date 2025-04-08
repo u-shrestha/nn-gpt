@@ -4,7 +4,7 @@ import shutil
 import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from ab.gpt.util.Const import small_llm, nngpt_model, epoch_dir, llm_tokenizer_out, nngpt_upload
+from ab.gpt.util.Const import base_llm, nngpt_model, epoch_dir, llm_tokenizer_out, nngpt_upload
 
 
 def add_tokenizer(llm_path, tokenizer_path, full_llm_path, model_name):
@@ -44,8 +44,8 @@ def merge_hp_llm():
 
 
 def merge_nn_llm():
-    add_tokenizer(nngpt_model, llm_tokenizer_out, nngpt_upload, small_llm)
-    merge(nngpt_upload / small_llm, epoch_dir(0) / small_llm, nngpt_upload / small_llm)
+    add_tokenizer(nngpt_model, llm_tokenizer_out, nngpt_upload, base_llm)
+    merge(nngpt_upload / base_llm, epoch_dir(0) / base_llm, nngpt_upload / base_llm)
 
 
 if __name__ == "__main__":

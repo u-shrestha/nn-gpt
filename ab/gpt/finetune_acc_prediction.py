@@ -8,7 +8,7 @@ from peft import LoraConfig
 from transformers import BitsAndBytesConfig
 from transformers import TrainingArguments
 
-from ab.gpt.util.Const import conf_dir
+from ab.gpt.util.Const import config_file
 from util import ModelLoader, LoRATrainer
 from util.LoRATrainer import LoRATrainer, find_all_linear_names
 from util.ModelLoader import ModelLoader
@@ -18,7 +18,7 @@ from util.preprocessors.CodePromptPreprocessor import CodePromptPreprocessor
 # todo: This is a specific fine-tuning implementation by Yashkumar Dhameliya and Yash Kathiriya, expected to be merged into the common pipeline.
 
 class ModelFinetuner:
-    def __init__(self, config_path=conf_dir / 'config.json'):
+    def __init__(self, config_path=config_file):
         self.config = self._load_config(config_path)
         self.output_dir = acgpt_dir / 'model_results'
         makedirs(self.output_dir, exist_ok=True)
