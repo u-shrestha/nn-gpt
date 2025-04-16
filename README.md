@@ -90,13 +90,12 @@ Use `finetune_nn_gen.py` to perform generation and evaluation of CV model, evalu
 The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing our articles for NNGPT framework and <a target='_blank' href='https://arxiv.org/pdf/2504.06006'>hyperparameter tuning</a>:
 ```bibtex
 @misc{ABrain.NNGPT,
-  author       = {Qin, Furui and Kochnev, Roman and Khalid, Waleed and Goodarzi, Arash Torabi and Zhang, Xi and Dhameliya, Yashkumar Sanjaybhai and Ignatov, Dmitry and Timofte, Radu},
   title        = {GPT-Driven Neural Network Generator},
+  author       = {Qin, Furui and Kochnev, Roman and Khalid, Waleed and Goodarzi, Arash Torabi and Zhang, Xi and Dhameliya, Yashkumar Sanjaybhai and Ignatov, Dmitry and Timofte, Radu},
   howpublished = {\url{https://github.com/ABrain-One/nn-gpt}},
   year         = {2024},
 }
-```
-```bibtex
+
 @article{ABrain.HPGPT,
   title={Optuna vs Code Llama: Are LLMs a New Paradigm for Hyperparameter Tuning?},
   author={Kochnev, Roman and Goodarzi, Arash Torabi and Bentyn, Zofia Antonina and Ignatov, Dmitry and Timofte, Radu},
