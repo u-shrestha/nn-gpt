@@ -91,7 +91,7 @@ The original version of this project was created at the Computer Vision Laborato
 ```bibtex
 @misc{ABrain.NNGPT,
   title        = {GPT-Driven Neural Network Generator},
-  author       = {Qin, Furui and Kochnev, Roman and Khalid, Waleed and Goodarzi, Arash Torabi and Zhang, Xi and Dhameliya, Yashkumar Sanjaybhai and Ignatov, Dmitry and Timofte, Radu},
+  author       = {Kochnev, Roman and Qin, Furui and Khalid, Waleed and Goodarzi, Arash Torabi and Zhang, Xi and Dhameliya, Yashkumar Sanjaybhai and Ignatov, Dmitry and Timofte, Radu},
   howpublished = {\url{https://github.com/ABrain-One/nn-gpt}},
   year         = {2024},
 }
