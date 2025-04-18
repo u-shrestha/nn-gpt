@@ -2,6 +2,7 @@ import json
 import os
 import random
 from ab.gpt.util.Const import llm_tokenizer_out
+from ab.gpt.util.LLMUtil import quantization_config_4bit
 import torch
 from ab.nn.util.Const import out_dir
 from datasets import load_dataset, load_from_disk
@@ -75,16 +76,6 @@ def main(tuned_model_version, dataset_path):
     tokenizer.add_eos_token = True
     tokenizer.pad_token_id = 0
     tokenizer.padding_side = "right"
-
-    quantization_config_4bit = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype = torch.float16
-    )
-
-    quantization_config_8bit = BitsAndBytesConfig(
-        load_in_8bit=True,
-        bnb_8bit_compute_dtype=torch.float16
-    )
 
     model = AutoModelForCausalLM.from_pretrained(hf_directory,
                                                  trust_remote_code=True,

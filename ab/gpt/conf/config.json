@@ -1,5 +1,5 @@
 {
-  "base_model_name": "ABrain/NNGPT-DeepSeek-Coder-1.3B-Instruct",
+  "base_model_name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
   "num_epochs": 100,
   "num_test_epochs": 2,
   "use_deepspeed": "False",

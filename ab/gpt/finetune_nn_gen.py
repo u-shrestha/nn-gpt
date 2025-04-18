@@ -5,23 +5,23 @@ import shutil
 import traceback
 from os.path import isfile
 from pathlib import Path
-from ab.nn.util.Util import release_memory
-from ab.gpt.util.Util import nn_accepted, verify_nn_code
 
 import ab.nn.api as nn_dataset
-from ab.gpt.util.Const import conf_dir, epoch_dir, new_nn_file, nngpt_dir, synth_dir, config_file
-from ab.nn.util.Const import ab_root_path
 import deepspeed
 import pandas as pd
-import torch
+from ab.nn.util.Const import ab_root_path
+from ab.nn.util.Util import release_memory
 from peft import LoraConfig
 from peft import PeftModel
-from transformers import BitsAndBytesConfig, TrainingArguments
+from transformers import TrainingArguments
 
 from ab.gpt.util.CVModelEvaluator import CVModelEvaluator
 from ab.gpt.util.Chatbot import ChatBot
-from ab.gpt.util.LoRATrainer import LoRATrainer, find_all_linear_names
+from ab.gpt.util.Const import conf_dir, epoch_dir, new_nn_file, nngpt_dir, synth_dir, config_file
+from ab.gpt.util.LLMUtil import quantization_config_4bit
+from ab.gpt.util.LoRATrainer import LoRATrainer
 from ab.gpt.util.ModelLoader import ModelLoader
+from ab.gpt.util.Util import nn_accepted, verify_nn_code
 from ab.gpt.util.preprocessors.CodeChgPrmPromptPreprocessorSFT import CodeChgPrmPromptPreprocessor as CodePromptPreprocessor
 
 with open(config_file) as f:
@@ -54,13 +54,6 @@ def main():
     peft_path = args.peft
     print(f'[DEBUG]Argument Information:\nSkip generation until Epoch: {skip_epoch}\nPath to saved LoRA Layers: {peft_path}')
 
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type='nf4',
-        bnb_4bit_compute_dtype=torch.bfloat16,
-    )
-
     training_args = TrainingArguments(
         report_to=None,
         per_device_train_batch_size=1,
@@ -83,11 +76,12 @@ def main():
     # Load model and tokenizer
     model_loader = ModelLoader(
         base_model_name,
-        bnb_config,
+        quantization_config_4bit,
         access_token=access_token,
         use_deepspeed=use_deepspeed,
     )
     model, tokenizer = model_loader.get_model(), model_loader.get_tokenizer()
+    # print(model)
     if not (peft_path is None):
         print(f'Load saved LoRA layer from path: {peft_path}')
         model = PeftModel.from_pretrained(model, peft_path)
@@ -104,10 +98,14 @@ def main():
     ds_updated = False
 
     peft_config = LoraConfig(
-        r=64,  # dimension of the updated matrices
-        lora_alpha=64,  # parameter for scaling
-        target_modules=find_all_linear_names(model),
-        lora_dropout=0.1,  # dropout probability for layers
+        r=8,  # dimension of the updated matrices
+        lora_alpha=32,  # parameter for scaling
+        target_modules=[
+            "q_proj",
+            "k_proj",
+        ],
+        layers_to_transform=list(range(19, 24)),
+        lora_dropout=0.05,  # dropout probability for layers
         bias='none',
         task_type='CAUSAL_LM',
         use_dora=True,

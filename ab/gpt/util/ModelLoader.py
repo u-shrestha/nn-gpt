@@ -1,6 +1,7 @@
-from os.path import exists
 from ab.nn.util.Const import out_dir
 from ab.gpt.util.Const import llm_dir, llm_tokenizer_dir
+from ab.gpt.util.LLMUtil import quantization_config_4bit
+from ab.gpt.util.Util import exists
 
 import torch.cuda
 from transformers import (
@@ -21,78 +22,62 @@ class ModelLoader:
                  access_token=None,
                  use_deepspeed=False,
                  base_path=out_dir):
-        self.model_path = model_path
-        self.bnb_config = bnb_config
-        self.max_memory = max_memory
-        self.access_token = access_token
-        self.tokenizer = None
-        self.model = None
-        self.local_path = local_path
-        self.use_deepspeed = use_deepspeed
-        self.base_path = base_path
-        self.initialize()
-
-    def initialize(self):
         # Load the tokenizer
-        tok_fl_nm = llm_tokenizer_dir(self.base_path, self.model_path)
-        raw_fl_nm = llm_dir(self.base_path, self.model_path)
+        tok_fl_nm = llm_tokenizer_dir(base_path, model_path)
+        raw_fl_nm = llm_dir(base_path, model_path)
         if exists(tok_fl_nm):
             print("Loading Tokenizer from local files:", tok_fl_nm)
-            self.tokenizer = AutoTokenizer.from_pretrained(tok_fl_nm, token=self.access_token)
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                tok_fl_nm, token=access_token,
+                quantization_config=quantization_config_4bit,
+                torch_dtype=torch.float16,
+                device_map="auto",
+            )
         else:
             print("Downloading Tokenizer...")
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True, token=self.access_token)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True, token=access_token)
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.padding_side = "right"
-            self.tokenizer.save_pretrained(tok_fl_nm, access_token=self.access_token)
+            self.tokenizer.save_pretrained(tok_fl_nm, access_token=access_token)
             print("Tokenizer saved to: ", tok_fl_nm)
 
         # Load the model
-        if self.use_deepspeed: # When using Deepspeed, device_map should not be given, for deepspeed automatically manages the device memory mapping
-            if self.local_path and exists(self.local_path):
-                print("Loading Model from local files:", "'" + self.local_path + "'")
+        if use_deepspeed:  # When using Deepspeed, device_map should not be given, for deepspeed automatically manages the device memory mapping
+            if local_path and exists(local_path):
+                print("Loading Model from local files:", "'" + local_path + "'")
                 self.model = AutoModelForCausalLM.from_pretrained(
-                    self.local_path,
-                    max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                    token=self.access_token)
+                    local_path,
+                    max_memory={i: max_memory for i in range(torch.cuda.device_count())},
+                    token=access_token)
             elif exists(raw_fl_nm):
                 print("Loading Model from local files:", raw_fl_nm)
-                self.model = AutoModelForCausalLM.from_pretrained(raw_fl_nm, max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                    token=self.access_token)
+                self.model = AutoModelForCausalLM.from_pretrained(raw_fl_nm, max_memory={i: max_memory for i in range(torch.cuda.device_count())},
+                                                                  token=access_token)
             else:
                 print("Downloading Model...")
                 self.model = AutoModelForCausalLM.from_pretrained(
-                    self.model_path,
-                    max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                    token=self.access_token)
-                self.model.save_pretrained(raw_fl_nm, access_token=self.access_token)
+                    model_path,
+                    max_memory={i: max_memory for i in range(torch.cuda.device_count())},
+                    token=access_token)
+                self.model.save_pretrained(raw_fl_nm, access_token=access_token)
                 print("Model saved to: ", raw_fl_nm)
         else:
-            if self.local_path and exists(self.local_path):
-                print("Loading Model from local files:", "'" + self.local_path + "'")
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.local_path,
-                    device_map="auto",
-                    max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                    token=self.access_token)
-            elif exists(raw_fl_nm):
-                print("Loading Model from local files:", raw_fl_nm)
-                self.model = AutoModelForCausalLM.from_pretrained(raw_fl_nm,
-                    device_map="auto",
-                    max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                    token=self.access_token)
-            else:
-                print("Downloading Model...")
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.model_path,
-                    # Seems a conversion after downloading the model.
-                    # This will cause error when running the script even not enabling deep speed.
-                    # quantization_config=self.bnb_config, 
-                    device_map="auto",
-                    max_memory={i: self.max_memory for i in range(torch.cuda.device_count())},
-                    token=self.access_token)
-                self.model.save_pretrained(raw_fl_nm, access_token=self.access_token)
-                print("Model saved to: ", raw_fl_nm)
+           self.model = AutoModelForCausalLM.from_pretrained(
+                local_path if exists(local_path) else raw_fl_nm if exists(raw_fl_nm) else model_path,
+                trust_remote_code=True,
+                device_map="auto",
+                max_memory={i: max_memory for i in range(torch.cuda.device_count())},
+                token=access_token,
+                quantization_config=bnb_config,
+                torch_dtype=torch.float16,
+            )
+           if exists(local_path):
+               print("Loading Model from local files:", "'" + local_path + "'")
+           elif exists(raw_fl_nm):
+               print(f"Loading Raw Model from local files: '{raw_fl_nm}'")
+           else:
+               self.model.save_pretrained(raw_fl_nm, access_token=access_token)
+               print("Model saved to: ", raw_fl_nm)
 
     def get_model(self) -> PreTrainedModel:
         return self.model

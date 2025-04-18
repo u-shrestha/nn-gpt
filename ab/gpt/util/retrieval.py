@@ -3,6 +3,7 @@
 import os
 import faiss
 from sentence_transformers import SentenceTransformer
+from ab.gpt.util.Util import exists
 
 class CodeRetrieval:
     def __init__(self, model_name, batch_size=8, index_path=None):
@@ -36,7 +37,7 @@ class CodeRetrieval:
         """
         Loads an existing FAISS index from disk.
         """
-        if not os.path.exists(index_path):
+        if not exists(index_path):
             raise FileNotFoundError(f"{index_path} not found. Build the index first.")
         print(f"Loading FAISS index from {index_path}")
         self.index = faiss.read_index(index_path)
