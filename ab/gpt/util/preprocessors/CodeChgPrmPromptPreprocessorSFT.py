@@ -15,15 +15,15 @@ models_with_the_same_prefix=False
 
 class CodeChgPrmPromptPreprocessor(PreprocessorBase):
     """
-    Assumes the existence of accuracies.json and folder based dataset
+    Assumes the existence of accuracies.json and folder-based dataset
     """
 
-    def __init__(self, max_len: int, tokenizer: PreTrainedTokenizerBase, prompts_path=conf_dir / 'train_nn_change_prm_prompts.json'):
+    def __init__(self, max_len: int, tokenizer: PreTrainedTokenizerBase, prompts_path):
         super().__init__(max_len, tokenizer)
         self.prompts_path = prompts_path
 
     @override
-    def get_raw_dataset(self) -> DataFrame:
+    def get_raw_dataset(self, only_best_accuracy) -> DataFrame:
         """
         :return:
             pandas.Dataframe object with columns described in nn_api.data()
@@ -41,7 +41,7 @@ class CodeChgPrmPromptPreprocessor(PreprocessorBase):
             # Get nn-dataset codes
             print('Preparing Data(s)...')
             if prompt_dict[key]['task'] == '':
-                data = lemur.data() 
+                data = lemur.data(only_best_accuracy=only_best_accuracy)
             else:
                 data = lemur.data(task=prompt_dict[key]['task'])
             data = shuffle_data(data)

@@ -21,7 +21,7 @@ class PreprocessorBase:
         self.max_len = max_len
         self.tokenizer = tokenizer
 
-    def get_raw_dataset(self) -> DataFrame:
+    def get_raw_dataset(self, only_best_accuracy) -> DataFrame:
         """
             Implement this method such that it returns a pandas dataframe with the following columns:
             ["instruction", "context", "response", "category", "text"].
@@ -30,8 +30,8 @@ class PreprocessorBase:
         """
         pass
 
-    def get_dataset(self, seed=None):
-        dataset = Dataset.from_pandas(self.get_raw_dataset())
+    def get_dataset(self, only_best_accuracy=False, seed=None):
+        dataset = Dataset.from_pandas(self.get_raw_dataset(only_best_accuracy))
         print("Preprocessing dataset...")
 
         # Apply preprocessing to each batch of the dataset

@@ -71,7 +71,7 @@ class ModelFinetuner:
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_compute_dtype=torch.bfloat16
             ),
-            access_token=acgpt_dir / 'token' if self.config['token_from_file'] else None)
+            access_token=acgpt_dir / 'token' if self.config['token_from_file'] is not None else None)
         model, tokenizer = model_loader.get_model(), model_loader.get_tokenizer()
         max_len = model_loader.get_max_length()
         

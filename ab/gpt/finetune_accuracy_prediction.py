@@ -117,7 +117,7 @@ class EnhancedModelFinetuner:
             model_loader = ModelLoader(
                 model_path=self.config['base_model_name'],
                 bnb_config=quantization_config,
-                access_token=Path(out_dir) / 'token' if self.config.get('token_from_file') else None
+                access_token=Path(out_dir) / 'token' if self.config.get('token_from_file') is not None else None
             )
             model, tokenizer = model_loader.get_model(), model_loader.get_tokenizer()
             

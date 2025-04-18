@@ -1,0 +1,40 @@
+{
+    "improvement_classification_codeonly":{
+        "type":"change_parameters",
+        "is_generation":false,
+        "task":"",
+        "addon_task":"",
+        "input_list":[{"para":"nn_code","value":"nn_code"},
+                      {"para":"accuracy","value":"accuracy"},
+                      {"para":"epoch","value":"epoch"},
+                      {"para":"dataset","value":"dataset"},
+                      {"para":"task","value":"task"},
+                      {"para":"metric","value":"metric"},
+                      {"para":"metric_code","value":"metric_code"},
+                      {"para":"transform_code","value":"transform_code"},
+                      {"para":"prm","value":"prm"}
+        ],
+        "addon_list":[{"para":"addon_accuracy","value":"accuracy"},
+                      {"para":"addon_epoch","value":"epoch"},
+                      {"para":"addon_dataset","value":"dataset"},
+                      {"para":"addon_task","value":"task"},
+                      {"para":"addon_metric","value":"metric"},
+                      {"para":"addon_nn_code","value":"nn_code"},
+                      {"para":"addon_prm","value":"prm"}
+        ],
+        "single_row":false,
+        "no_repeat":[],
+        "keep_same":[],
+      "prompt": [
+        "Provide the code for a neural network model along with its training hyperparameters that provides a metric '{addon_metric}' value of {addon_accuracy} at epoch {addon_epoch} on the '{addon_dataset}' dataset for the task '{addon_task}'.",
+        "To accomplish this, extract common patterns or regularities from a reference neural network model and its training configuration, which achieved for a metric '{metric}' value of {accuracy} at epoch {epoch} on the '{dataset}' dataset for the task '{task}' with training hyperparameters <hyperparameters>{prm}</hyperparameters>, and a code provided in the corresponding tags:",
+        "<transform>{transform_code}</transform>",
+        "<metric>{metric_code}</metric>",
+        "<nn>{nn_code}</nn>"
+      ],
+      "output": [
+        "<nn>{addon_nn_code}</nn>",
+        "<hyperparameters>{addon_prm}</hyperparameters>"
+      ]
+    }
+}
