@@ -26,7 +26,7 @@ def extract_str(s: str, pref: str, suf: str):
         x = re.search(f"{pref}((.|\s)*?){suf}", s)
         if x:
             res = x.group()
-            res = res.replace("```python", "")
-            res = res.replace("```", "")
-            return res
+            res = res.replace(pref, '')
+            res = res.replace(suf, '')
+            return res.strip()
     return None

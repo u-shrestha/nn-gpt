@@ -2,6 +2,7 @@ from ab.nn.util.Const import base_module, ab_root_path, out_dir
 import json
 
 new_nn_file = 'new_nn.py'
+hp_file = 'hp.txt'
 new_out_file = 'full_output.txt'
 gpt = 'gpt'
 
@@ -44,5 +45,8 @@ def llm_tokenizer_dir(base, name):
     return tokenizer_dir(base) / name
 
 
-def epoch_dir(epoch):
-    return llm_dir(nngpt_dir, 'epoch') / f'A{epoch}'
+def epoch_dir(*args):
+    e_dir = llm_dir(nngpt_dir, 'epoch')
+    for d in args:
+        e_dir = e_dir / f'A{d}'
+    return e_dir

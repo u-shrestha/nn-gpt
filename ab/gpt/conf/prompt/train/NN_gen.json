@@ -2,8 +2,8 @@
     "improvement_classification_codeonly": {
         "type": "change_parameters",
         "is_generation": false,
-        "task": "",
-        "addon_task": "",
+        "task": null,
+        "addon_task": null,
         "input_list": [{"para": "nn_code","value": "nn_code"},
                       {"para": "accuracy","value": "accuracy"},
                       {"para": "epoch","value": "epoch"},

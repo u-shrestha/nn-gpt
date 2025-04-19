@@ -1,22 +1,22 @@
 {
-    "improvement_classification_codeonly":{
-        "comment":[
+    "improvement_classification_codeonly": {
+        "comment": [
             "para: where you fill in content, value: where data come from (colum key in api.data() DataFrame).",
             "task(only in addon_list): which task the additional content come from.",
             "comment: explain the usage of this file"
         ],
-        "input_list":[{"para":"nn_code","value":"nn_code"}],
-        "addon_list":[],
-        "type":"change_parameters",
-        "is_generation":false,
-        "input_list":[{"para":"nn_code","value":"nn_code"},{"para":"accuracy","value":"accuracy"}],
-        "addon_list":[{"para":"addon_accuracy","value":"accuracy"}],
-        "task":"img-classification",
-        "addon_task":"",
-        "addon_task":"img-classification",
-        "no_repeat":[],
-        "keep_same":[],
-        "prompts":[
+        "input_list": [{"para": "nn_code","value": "nn_code"}],
+        "addon_list": [],
+        "type": "change_parameters",
+        "is_generation": false,
+        "input_list": [{"para": "nn_code","value": "nn_code"},{"para": "accuracy","value": "accuracy"}],
+        "addon_list": [{"para": "addon_accuracy","value": "accuracy"}],
+        "task": "img-classification",
+        "addon_task": null,
+        "addon_task": "img-classification",
+        "no_repeat": [],
+        "keep_same": [],
+        "prompts": [
             "Improve the following implementation to make it a better performance on image classification tasks.",
             "The class name should be 'Net' and you MUST PROVIDE FULL CODES of the changed implementation.",
             "You can change the structure, alternatively also changed training procedure.",
@@ -32,14 +32,14 @@
         ]
     },
 
-    "improvement_segmentation_codeonly":{
-        "input_list":[{"para":"nn_code","value":"nn_code"}],
-        "addon_list":[{"para":"addon_nn_code","value":"nn_code"}],
-        "task":"img-segmentation",
-        "addon_task":"img-classification",
-        "no_repeat":["nn"],
-        "keep_same":[],
-        "prompts":[
+    "improvement_segmentation_codeonly": {
+        "input_list": [{"para": "nn_code","value": "nn_code"}],
+        "addon_list": [{"para": "addon_nn_code","value": "nn_code"}],
+        "task": "img-segmentation",
+        "addon_task": "img-classification",
+        "no_repeat": ["nn"],
+        "keep_same": [],
+        "prompts": [
             "Improve the following implementation to make it a better performance on image segmentation tasks given another backbone implementation.",
             "The class name should be 'Net' and you MUST PROVIDE FULL CODES of the changed implementation.",
             "You can change the structure, alternatively also changed training procedure.",

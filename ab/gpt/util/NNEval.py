@@ -1,4 +1,3 @@
-
 import os
 import ab.nn.api as api
 from ab.nn.util.Util import read_py_file_as_string
@@ -26,61 +25,6 @@ class NNEval:
         self.prefix = prefix
         self.save_path = save_path
 
-    # def evaluate(self, num_epochs, batch_size=4):
-    #     train_loader = torch.utils.data.DataLoader(
-    #         self.train_dataset, batch_size=batch_size, shuffle=True, num_workers=2
-    #     )
-    #     test_loader = torch.utils.data.DataLoader(
-    #         self.test_dataset, batch_size=batch_size, shuffle=False, num_workers=2
-    #     )
-
-    #     self.model.to(self.device)
-
-    #     criterion = torch.nn.CrossEntropyLoss().to(self.device)
-    #     optimizer = torch.optim.SGD(self.model.parameters(), lr=0.005, momentum=0.9)
-
-    #     print("Training", self.model_package, "on", self.device)
-    #     time.sleep(0.5)
-    #     for _ in tqdm(range(num_epochs)):
-    #         for i, data in enumerate(train_loader):
-    #             inputs, label = data
-    #             assert isinstance(inputs, torch.Tensor)
-    #             assert isinstance(label, torch.Tensor)
-    #             inputs, label = inputs.to(self.device), label.to(self.device)
-
-    #             optimizer.zero_grad()
-    #             output = self.model(inputs)
-    #             loss = criterion(output, label)
-    #             loss.backward()
-    #             optimizer.step()
-
-    #             del inputs
-    #             del label
-    #     print("Finished Training for", self.model_package)
-
-    #     total = 0
-    #     correct = 0
-    #     with torch.no_grad():
-    #         for data in test_loader:
-    #             image, label = data
-    #             assert isinstance(image, torch.Tensor)
-    #             assert isinstance(label, torch.Tensor)
-    #             image, label = image.to(self.device), label.to(self.device)
-
-    #             outputs = self.model(image)
-    #             # Using the highest energy as output
-    #             _, predicted = torch.max(outputs.data, 1)
-    #             total += label.size(0)
-    #             correct += (predicted == label).sum().item()
-
-    #             del image
-    #             del label
-
-    #     model_accuracy = correct / total
-    #     print("Determined accuracy for ", self.model_package + ":", model_accuracy)
-    #     self.model.to('cpu')
-
-    #     return model_accuracy
     def evaluate(self, nn_file):
         os.listdir(self.model_package)
         code = read_py_file_as_string(nn_file)

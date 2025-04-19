@@ -41,20 +41,12 @@ class NNGenPrompt(Prompt):
             prompt = '\n'.join(prompt_dict[key]['prompt'])
             # Get nn-dataset codes
             print('Preparing Data...')
-            if prompt_dict[key]['task'] == '':
-                data = lemur.data(only_best_accuracy=only_best_accuracy)
-            else:
-                data = lemur.data(task=prompt_dict[key]['task'])
+            data = lemur.data(only_best_accuracy=only_best_accuracy, task=prompt_dict[key]['task'])
             data = shuffle_data(data)
             print('Data acquisition complete')
 
             # Get addon nn-dataset codes
-            if prompt_dict[key]['addon_task'] == prompt_dict[key]['task']:
-                addon_data = data  # When they are the same, avoid sampling twice
-            elif prompt_dict[key]['addon_task'] == '':
-                addon_data = lemur.data()
-            else:
-                addon_data = lemur.data(task=prompt_dict[key]['addon_task'])
+            addon_data = lemur.data(only_best_accuracy=only_best_accuracy, task=prompt_dict[key]['addon_task'])
             print('Addon-Data acquisition complete')
 
             for _, row in data.iterrows():

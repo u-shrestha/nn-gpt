@@ -29,6 +29,7 @@ class ChatBot:
             self.__messages = []
 
     def chat(self, prompt: str, max_len=None, max_words=None, engineer_prompt=True, code_only=True) -> tuple[str, str, str]:
+        self.model.eval()
         if engineer_prompt:
             prompt += extra_instructions
 
@@ -45,15 +46,6 @@ class ChatBot:
             max_len=max_len
         )[0]["generated_text"][-1]['content']
         assert isinstance(out, str)
-
-        if self.__keep_memory:
-            self.__messages.append({"role": "assistant", "content": out})
-
-        if code_only:
-            nn = extract_str(out, '<nn>', '</nn>')
-            if nn is None:
-                nn = extract_str(out, "```", "```")
-            if nn is None:
-                if self.show_additional_info:
-                    print(f"[WARN]Reply seemly contain incomplete codes, got {nn.count('```')} '```'s.")
+        if self.__keep_memory: self.__messages.append({"role": "assistant", "content": out})
+        nn = next(filter(None, map(lambda l: extract_str(out, *l), (('<nn>', '</nn>'), ('```python', '```'), ('```', '```')))), '')
         return nn, extract_str(out, '<hp>', '</hp>'), out

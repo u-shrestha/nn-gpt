@@ -81,7 +81,7 @@ The recently added dependencies might be missing in the <b>AI Linux</b>. In this
 
 Use `modify_nn.py` to generate initial modified CV models, specify by argument `-e` to determine the number of epochs for initial CV model generation.
 
-Use `finetune_nn_gen.py` to perform generation and evaluation of CV model, evaluate and fine-tune the LLM. Use argument `-s` to colaborate with `generate.py`, with `-s` for number of epochs to skip the CV model generation.
+Use `finetune_nn_gen.py` to perform generation and evaluation of CV model, evaluate and fine-tune the LLM. Use argument `-s` to collaborate with `generate.py`, with `-s` for number of epochs to skip the CV model generation.
 
 <a href='https://huggingface.co/ABrain'><strong>Pretrained LLM weights</strong></a>
 

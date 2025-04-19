@@ -44,42 +44,23 @@ class LLM:
             print("Tokenizer saved to: ", tok_fl_nm)
 
         # Load the model
-        if use_deepspeed:  # When using Deepspeed, device_map should not be given, for deepspeed automatically manages the device memory mapping
-            if local_path and exists(local_path):
-                print("Loading Model from local files:", "'" + local_path + "'")
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    local_path,
-                    max_memory={i: max_memory for i in range(torch.cuda.device_count())},
-                    token=access_token)
-            elif exists(raw_fl_nm):
-                print("Loading Model from local files:", raw_fl_nm)
-                self.model = AutoModelForCausalLM.from_pretrained(raw_fl_nm, max_memory={i: max_memory for i in range(torch.cuda.device_count())},
-                                                                  token=access_token)
-            else:
-                print("Downloading Model...")
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    model_path,
-                    max_memory={i: max_memory for i in range(torch.cuda.device_count())},
-                    token=access_token)
-                self.model.save_pretrained(raw_fl_nm, access_token=access_token)
-                print("Model saved to: ", raw_fl_nm)
+        deepspeed_specific_prm = {} if use_deepspeed else {'device_map' : "auto"}  # When using Deepspeed, device_map should not be given, for deepspeed automatically manages the device memory mapping
+        self.model = AutoModelForCausalLM.from_pretrained(
+            local_path if exists(local_path) else raw_fl_nm if exists(raw_fl_nm) else model_path,
+            trust_remote_code=True,
+            max_memory={i: max_memory for i in range(torch.cuda.device_count())},
+            token=access_token,
+            quantization_config=bnb_config,
+            torch_dtype=torch.float16,
+            ** deepspeed_specific_prm
+        )
+        if exists(local_path):
+            print("Loading Model from local files:", "'" + local_path + "'")
+        elif exists(raw_fl_nm):
+            print(f"Loading Raw Model from local files: '{raw_fl_nm}'")
         else:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                local_path if exists(local_path) else raw_fl_nm if exists(raw_fl_nm) else model_path,
-                trust_remote_code=True,
-                device_map="auto",
-                max_memory={i: max_memory for i in range(torch.cuda.device_count())},
-                token=access_token,
-                quantization_config=bnb_config,
-                torch_dtype=torch.float16,
-            )
-            if exists(local_path):
-                print("Loading Model from local files:", "'" + local_path + "'")
-            elif exists(raw_fl_nm):
-                print(f"Loading Raw Model from local files: '{raw_fl_nm}'")
-            else:
-                self.model.save_pretrained(raw_fl_nm, access_token=access_token)
-                print("Model saved to: ", raw_fl_nm)
+            self.model.save_pretrained(raw_fl_nm, access_token=access_token)
+            print("Model saved to: ", raw_fl_nm)
 
     def get_model(self) -> PreTrainedModel:
         return self.model
