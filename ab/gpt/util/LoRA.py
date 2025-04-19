@@ -73,7 +73,7 @@ def create_peft_config(modules):
     return config
 
 
-class LoRATrainer:
+class LoRA:
     def __init__(self,
                  model: PreTrainedModel,
                  tokenizer: PreTrainedTokenizerBase,

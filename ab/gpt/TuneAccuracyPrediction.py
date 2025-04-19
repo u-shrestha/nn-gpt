@@ -6,9 +6,9 @@ from ab.nn.api import data as nn_data
 from ab.nn.util.Const import out_dir
 from peft import LoraConfig
 from transformers import BitsAndBytesConfig, TrainingArguments
-from util.ModelLoader import ModelLoader
-from util.LoRATrainer import LoRATrainer, find_all_linear_names
-from util.preprocessors.CodePromptPreprocessor import CodePromptPreprocessor
+from util.LLM import LLM
+from util.LoRA import LoRA, find_all_linear_names
+from util.prompt.CodePromptPreprocessor import CodePromptPreprocessor
 
 class EnhancedModelFinetuner:
     def __init__(self, config_path=Path(__file__).parent.parent / 'gpt/conf/config.json'):
@@ -114,7 +114,7 @@ class EnhancedModelFinetuner:
                 bnb_4bit_compute_dtype=torch.bfloat16
             )
             
-            model_loader = ModelLoader(
+            model_loader = LLM(
                 model_path=self.config['base_model_name'],
                 bnb_config=quantization_config,
                 access_token=Path(out_dir) / 'token' if self.config.get('token_from_file') is not None else None
@@ -133,7 +133,7 @@ class EnhancedModelFinetuner:
                 remove_unused_columns=False
             )
             
-            trainer = LoRATrainer(
+            trainer = LoRA(
                 model=model,
                 tokenizer=tokenizer,
                 training_args=training_args,

@@ -9,10 +9,10 @@ from transformers import BitsAndBytesConfig
 from transformers import TrainingArguments
 
 from ab.gpt.util.Const import config_file
-from util import ModelLoader, LoRATrainer
-from util.LoRATrainer import LoRATrainer, find_all_linear_names
-from util.ModelLoader import ModelLoader
-from util.preprocessors.CodePromptPreprocessor import CodePromptPreprocessor
+from util import LLM, LoRA
+from util.LoRA import LoRA, find_all_linear_names
+from util.LLM import LLM
+from util.prompt.CodePromptPreprocessor import CodePromptPreprocessor
 
 
 # todo: This is a specific fine-tuning implementation by Yashkumar Dhameliya and Yash Kathiriya, expected to be merged into the common pipeline.
@@ -63,7 +63,7 @@ class ModelFinetuner:
         
     def run(self):
         # Load base model
-        model_loader = ModelLoader(
+        model_loader = LLM(
             self.config['base_model_name'],
             BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -120,7 +120,7 @@ class ModelFinetuner:
                 model_output_dir = acgpt_dir / f"finetuned_models/{arch_name}"
                 
                 # Configure and run training for this architecture
-                trainer = LoRATrainer(
+                trainer = LoRA(
                     model,
                     tokenizer,
                     training_args=TrainingArguments(

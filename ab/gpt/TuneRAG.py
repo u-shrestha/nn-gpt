@@ -30,7 +30,7 @@ from ab.nn.api import data  # LEMUR data API
 from util.setup_data import run_setup
 from util.data_loader import load_full_corpus
 from util.retrieval import CodeRetrieval
-from conf.config import (
+from conf.Conf import (
     DATASET_DESC_DIR, GITHUB_REPO_DIR, CODE_EMBEDDING_MODEL_NAME,
     EMBEDDING_BATCH_SIZE, FAISS_INDEX_PATH, TOP_K_RETRIEVAL, 
     FINE_TUNED_MODEL_DIR, HF_TOKEN

@@ -7,13 +7,13 @@ import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from ab.gpt.util.Const import conf_dir, epoch_dir, new_nn_file, synth_dir, nngpt_model
+from ab.gpt.util.Const import conf_test_dir, epoch_dir, new_nn_file, synth_dir
 
 
-def modify(epochs, conf, llm_name):
+def alter(epochs, test_conf, llm_name):
     # Load test prompts
-    with open(conf_dir / conf) as prompt_file:
-        prompt_dict = json.load(prompt_file)
+    with open(conf_test_dir / test_conf) as f:
+        prompt_dict = json.load(f)
     assert isinstance(prompt_dict, dict)
 
     print("Loading Tokenizer and Model...")

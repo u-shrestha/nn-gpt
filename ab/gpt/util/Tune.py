@@ -9,26 +9,25 @@ import ab.nn.api as nn_dataset
 import deepspeed
 import pandas as pd
 from ab.nn.util.Const import ab_root_path
-from ab.nn.util.Util import release_memory
+from ab.nn.util.Util import release_memory, crate_file
 from peft import LoraConfig
 from peft import PeftModel
 from transformers import TrainingArguments
 
-from ab.gpt.util.CVModelEvaluator import CVModelEvaluator
 from ab.gpt.util.Chatbot import ChatBot
-from ab.gpt.util.Const import conf_dir, epoch_dir, new_nn_file, nngpt_dir, synth_dir
+from ab.gpt.util.Const import conf_dir, conf_train_dir, conf_test_dir, conf_llm_dir, epoch_dir, new_nn_file, nngpt_dir, synth_dir, new_out_file
+from ab.gpt.util.LLM import LLM
 from ab.gpt.util.LLMUtil import quantization_config_4bit
-from ab.gpt.util.LoRATrainer import LoRATrainer
-from ab.gpt.util.ModelLoader import ModelLoader
+from ab.gpt.util.LoRA import LoRA
+from ab.gpt.util.NNEval import NNEval
 from ab.gpt.util.Util import nn_accepted, verify_nn_code
-from ab.gpt.util.preprocessors.CodeChgPrmPromptPreprocessorSFT import CodeChgPrmPromptPreprocessor as CodePromptPreprocessor
+from ab.gpt.util.prompt.NNGenPrompt import NNGenPrompt
 
-# Deepspeed
-ds_config = conf_dir / 'deepspeed_config.json'
+ds_conf = conf_dir / 'DeepSpeed.json'
 
 
-def tune(max_nn, max_epoch, skip_epoch, llm_path, train_config, config_file):
-    with open(conf_dir / config_file) as f:
+def tune(max_nn, max_epoch, skip_epoch, llm_path, train_config, test_config, llm_config):
+    with open(conf_llm_dir / llm_config) as f:
         config = json.load(f)
     assert isinstance(config, dict)
 
@@ -37,6 +36,7 @@ def tune(max_nn, max_epoch, skip_epoch, llm_path, train_config, config_file):
     num_epochs = int(config['num_epochs'])
     use_deepspeed = config['use_deepspeed']
     only_best_accuracy = config['only_best_accuracy']
+    context_length = config.get('context_length')
 
     access_token = None
     if token_from_file:
@@ -44,32 +44,38 @@ def tune(max_nn, max_epoch, skip_epoch, llm_path, train_config, config_file):
             access_token = f.readline()
 
     print(f'[DEBUG]Argument Information:\nSkip generation until Epoch: {skip_epoch}\nPath to saved LoRA Layers: {llm_path}')
-    train_config_path = conf_dir / train_config
+    train_config_path = conf_train_dir / train_config
     training_args = TrainingArguments(
         report_to=None,
         per_device_train_batch_size=1,
-        gradient_accumulation_steps=4,
-        warmup_steps=2,
+        per_device_eval_batch_size=1,
+        gradient_accumulation_steps=8,
+        warmup_steps=100,
         num_train_epochs=1,
-        learning_rate=2e-4,
+        learning_rate=1e-5,
+        weight_decay=0.01,
+        max_grad_norm=1.0,
+        optim="adamw_torch",
+        gradient_checkpointing=True,
         fp16=True,
+        eval_strategy="epoch",
         logging_steps=1,
         output_dir=nngpt_dir / 'outputs',
-        optim='paged_adamw_8bit',
-        deepspeed=ds_config if use_deepspeed else None,
+        deepspeed=ds_conf if use_deepspeed else None,
     )
 
     # Load test prompts
-    with open(conf_dir / 'test_prompts_chg.json') as prompt_file:
+    with open(conf_test_dir / test_config) as prompt_file:
         prompt_dict = json.load(prompt_file)
     assert isinstance(prompt_dict, dict)
 
     # Load model and tokenizer
-    model_loader = ModelLoader(
+    model_loader = LLM(
         base_model_name,
         quantization_config_4bit,
         access_token=access_token,
         use_deepspeed=use_deepspeed,
+        context_length=context_length
     )
     model, tokenizer = model_loader.get_model(), model_loader.get_tokenizer()
     # print(model)
@@ -80,10 +86,10 @@ def tune(max_nn, max_epoch, skip_epoch, llm_path, train_config, config_file):
 
     # initialize deepspeed before we do infer in ChatBot, since trainer is not initialized now.
     if use_deepspeed:
-        deepspeed.initialize(model=model, config_params=ds_config)
+        deepspeed.initialize(model=model, config_params=ds_conf)
 
     print('Using Max Length:', model_loader.get_max_length())
-    data_processor = CodePromptPreprocessor(model_loader.get_max_length(), tokenizer, train_config_path)
+    data_processor = NNGenPrompt(model_loader.get_max_length(), tokenizer, train_config_path)
     dataset = data_processor.get_dataset(only_best_accuracy)
     print('Dataset length:', len(dataset))
     ds_updated = False
@@ -163,25 +169,20 @@ def tune(max_nn, max_epoch, skip_epoch, llm_path, train_config, config_file):
                 continue  # Skipped
             model_dir = models_dir / f'B{idx}'
             prompt, origdf = prompt
-            code_file = model_dir / new_nn_file
-            code_file.parent.mkdir(exist_ok=True, parents=True)
-            code = chat_bot.chat(
+            code, hp, full_out = chat_bot.chat(
                 prompt,
                 engineer_prompt=True,
                 code_only=True,
                 max_words=5000  ## Reduce memory usage
             )
-            with open(code_file, 'w') as file:
-                file.write(code)
+            crate_file(model_dir, new_nn_file, code)
             df_file = model_dir / 'dataframe.df'
             if origdf is None:
                 if isfile(df_file):  # Clean up dataframe.df, if no additional information generated this time.
                     os.remove(df_file)
                     print(f'[DEBUG]Removed unmatched file: {df_file}')
             else:
-                orig_code_file = model_dir / f"original_{origdf['nn']}.py"
-                with open(orig_code_file, 'w') as file:
-                    file.write(origdf['nn_code'])
+                crate_file(model_dir, f"original_{origdf['nn']}.py", origdf['nn_code'])
                 # Store DataFrame information, mainly for passing parameters to evaluator.
                 origdf.to_pickle(df_file)
         # evaluate produced CV models
@@ -199,19 +200,12 @@ def tune(max_nn, max_epoch, skip_epoch, llm_path, train_config, config_file):
                             prm = df['prm']
                             # prm['epoch'] = df['epoch']
                             prm['epoch'] = max_epoch  # Force evaluation being 5
-                            # Reduce Memory Usage
-                            # if prm['transform'].__contains__('512'):
-                            #     prm['transform'].replace('512', '128')
-                            # elif prm['transform'].__contains__('256'):
-                            #     prm['transform'].replace('256', '128')
-                            # elif prm['transform'].__contains__('299'):
-                            #     prm['transform'].replace('299', '128')
                             print(f'Determining {cv_model} with prm{prm}')
                             print(f'Model Path:{gen_nn_dir}')
-                            evaluator = CVModelEvaluator(gen_nn_dir, task=df['task'], dataset=df['dataset'], metric=df['metric'], prm=prm, save_to_db=True,
-                                                         prefix=df['nn'].split('-')[0], save_path=gen_nn_dir)
+                            evaluator = NNEval(gen_nn_dir, task=df['task'], dataset=df['dataset'], metric=df['metric'], prm=prm, save_to_db=True,
+                                               prefix=df['nn'].split('-')[0], save_path=gen_nn_dir)
                         else:
-                            evaluator = CVModelEvaluator(gen_nn_dir)
+                            evaluator = NNEval(gen_nn_dir)
                         eval_results = evaluator.evaluate(code_file)
                         eval_info = {str(evaluator.get_args()): eval_results}
                         name, new_accuracy, code_quality = eval_results
@@ -239,36 +233,33 @@ def tune(max_nn, max_epoch, skip_epoch, llm_path, train_config, config_file):
                             break
                     except Exception as error:
                         print('failed to determine accuracy for', cv_model)
-                        with open(gen_nn_dir / f'error_{tries}.txt', 'w+') as error_file:
-                            error_file.write(str(traceback.format_exc()))  # Track traceback to have rich information on the exception.
+                        crate_file(gen_nn_dir, f'error_{tries}.txt', str(traceback.format_exc())) # Track traceback to have rich information on the exception.
                         with open(code_file, 'r') as f:
                             code_txt = f.read()
                         release_memory()
+                        full_out = ''
                         try:
-                            new_code = chat_bot.chat(
+                            new_code, new_hp, full_out = chat_bot.chat(
                                 'The error "' + str(error) +
                                 '" was occurred in the following code. fix this problem. '
                                 "Provide only the code. Don't provide any explanation. Remove any text from this reply. + \n " +
                                 code_txt,
                                 engineer_prompt=False,
                                 max_words=5000)
-                        except Exception:
-                            new_code = ''
-                        code_fl = gen_nn_dir / new_nn_file
-                        os.remove(code_fl)
-                        with open(code_fl, 'w') as file:
-                            file.write(new_code)
+                        except: new_code = ''
+                        crate_file(gen_nn_dir, new_nn_file, new_code)
+                        crate_file(gen_nn_dir, new_out_file, full_out)
                         release_memory()
 
         # fine tune model for 1 epoch / Using training_args and save copy
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')
         if ds_updated:
             print(f'Epoch{epoch}[DEBUG]Regenerate dataset...')
-            data_processor = CodePromptPreprocessor(model_loader.get_max_length(), tokenizer, train_config_path)
+            data_processor = NNGenPrompt(model_loader.get_max_length(), tokenizer, train_config_path)
             dataset = data_processor.get_dataset(only_best_accuracy)
             ds_updated = False
 
-        lora_tuner = LoRATrainer(
+        lora_tuner = LoRA(
             model,
             tokenizer,
             training_args=training_args,
@@ -278,17 +269,3 @@ def tune(max_nn, max_epoch, skip_epoch, llm_path, train_config, config_file):
         )
         already_peft = True
         model = lora_tuner.train(dataset, out_path / base_model_name)
-
-        # del model
-        # del tokenizer
-        #
-        # model_loader = ModelLoader(
-        #     base_model_name,
-        #     bnb_config,
-        #     access_token=access_token,
-        #     local_path=out_path + base_model_name + '_tuned'
-        # )
-        #
-        # # use updated model for next round
-        # model, tokenizer = model_loader.get_model(), model_loader.get_tokenizer()
-

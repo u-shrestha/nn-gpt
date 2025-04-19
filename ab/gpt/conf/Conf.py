@@ -1,5 +1,3 @@
-# config/config.py
-
 from ab.nn.util.Const import out_dir
 
 # Base directories (adjust as needed)

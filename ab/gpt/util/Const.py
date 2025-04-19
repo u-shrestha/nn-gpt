@@ -2,13 +2,18 @@ from ab.nn.util.Const import base_module, ab_root_path, out_dir
 import json
 
 new_nn_file = 'new_nn.py'
+new_out_file = 'full_output.txt'
 gpt = 'gpt'
 
 gpt_dir = ab_root_path / base_module / gpt
 conf_dir = gpt_dir / 'conf'
+conf_prompt_dir = conf_dir / 'prompt'
+conf_test_dir = conf_prompt_dir / 'test'
+conf_train_dir = conf_prompt_dir / 'train'
+conf_llm_dir = conf_dir / 'llm'
 nngpt_dir = out_dir / 'nngpt'
 acgpt_dir = out_dir / 'acgpt'
-config_file = conf_dir / 'ds-coder_1.3b.json'
+config_file = conf_llm_dir / 'ds-coder_1.3b.json'
 
 
 with open(config_file) as f:

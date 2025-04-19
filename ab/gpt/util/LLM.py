@@ -13,7 +13,7 @@ from transformers import (
 )
 
 
-class ModelLoader:
+class LLM:
     def __init__(self,
                  model_path: str,
                  bnb_config: BitsAndBytesConfig,
@@ -21,8 +21,10 @@ class ModelLoader:
                  max_memory: str = "24000MB",
                  access_token=None,
                  use_deepspeed=False,
-                 base_path=out_dir):
+                 base_path=out_dir,
+                 context_length=None):
         # Load the tokenizer
+        self.context_length = context_length
         tok_fl_nm = llm_tokenizer_dir(base_path, model_path)
         raw_fl_nm = llm_dir(base_path, model_path)
         if exists(tok_fl_nm):
@@ -62,7 +64,7 @@ class ModelLoader:
                 self.model.save_pretrained(raw_fl_nm, access_token=access_token)
                 print("Model saved to: ", raw_fl_nm)
         else:
-           self.model = AutoModelForCausalLM.from_pretrained(
+            self.model = AutoModelForCausalLM.from_pretrained(
                 local_path if exists(local_path) else raw_fl_nm if exists(raw_fl_nm) else model_path,
                 trust_remote_code=True,
                 device_map="auto",
@@ -71,13 +73,13 @@ class ModelLoader:
                 quantization_config=bnb_config,
                 torch_dtype=torch.float16,
             )
-           if exists(local_path):
-               print("Loading Model from local files:", "'" + local_path + "'")
-           elif exists(raw_fl_nm):
-               print(f"Loading Raw Model from local files: '{raw_fl_nm}'")
-           else:
-               self.model.save_pretrained(raw_fl_nm, access_token=access_token)
-               print("Model saved to: ", raw_fl_nm)
+            if exists(local_path):
+                print("Loading Model from local files:", "'" + local_path + "'")
+            elif exists(raw_fl_nm):
+                print(f"Loading Raw Model from local files: '{raw_fl_nm}'")
+            else:
+                self.model.save_pretrained(raw_fl_nm, access_token=access_token)
+                print("Model saved to: ", raw_fl_nm)
 
     def get_model(self) -> PreTrainedModel:
         return self.model
@@ -86,6 +88,8 @@ class ModelLoader:
         return self.tokenizer
 
     def get_max_length(self) -> int:
+        if self.context_length:
+            return self.context_length
         for length_setting in ["n_positions", "max_position_embeddings", "seq_length"]:
             max_length = getattr(self.model.config, length_setting, None)
             if max_length:

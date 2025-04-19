@@ -6,14 +6,17 @@ from pandas import DataFrame
 from transformers import PreTrainedTokenizerBase
 
 from ab.gpt.util.Const import conf_dir
-from ab.gpt.util.preprocessors.PreprocessorBase import PreprocessorBase
+from ab.gpt.util.prompt.Prompt import Prompt
+
 
 def shuffle_data(df: DataFrame):
     return df.sample(frac=1).reset_index(drop=True)
 
-models_with_the_same_prefix=False
 
-class CodeChgPrmPromptPreprocessor(PreprocessorBase):
+models_with_the_same_prefix = False
+
+
+class NNGenPrompt(Prompt):
     """
     Assumes the existence of accuracies.json and folder-based dataset
     """
@@ -39,7 +42,7 @@ class CodeChgPrmPromptPreprocessor(PreprocessorBase):
                 continue  # Compact test_prompt.json, in this case single_row prompts are not allowed
             prompt = '\n'.join(prompt_dict[key]['prompt'])
             # Get nn-dataset codes
-            print('Preparing Data(s)...')
+            print('Preparing Data...')
             if prompt_dict[key]['task'] == '':
                 data = lemur.data(only_best_accuracy=only_best_accuracy)
             else:

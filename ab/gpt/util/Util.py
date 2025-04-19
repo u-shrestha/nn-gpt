@@ -1,4 +1,5 @@
 import os.path
+import re
 
 # todo: Verify that the model's accuracy does not decrease by more than 10%, or increase at some epochs
 def nn_accepted(nn_dir):
@@ -18,3 +19,14 @@ def verify_nn_code(nn_dir, nn_file):
 
 def exists(f):
     return f and os.path.exists(f)
+
+
+def extract_str(s: str, pref: str, suf: str):
+    if s.count(pref) > 0 and s.count(suf) > 0:
+        x = re.search(f"{pref}((.|\s)*?){suf}", s)
+        if x:
+            res = x.group()
+            res = res.replace("```python", "")
+            res = res.replace("```", "")
+            return res
+    return None

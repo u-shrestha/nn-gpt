@@ -1,6 +1,5 @@
-import re
-
 from transformers import PreTrainedTokenizer, PreTrainedModel, pipeline
+from ab.gpt.util.Util import extract_str
 
 extra_instructions = (
     " Use PyTorch for the implementation. Keep the code short. Name the main class of the model \"Net\"."
@@ -29,7 +28,7 @@ class ChatBot:
         if self.__keep_memory:
             self.__messages = []
 
-    def chat(self, prompt: str, max_len=None, max_words=None, engineer_prompt=True, code_only=True) -> str:
+    def chat(self, prompt: str, max_len=None, max_words=None, engineer_prompt=True, code_only=True) -> tuple[str, str, str]:
         if engineer_prompt:
             prompt += extra_instructions
 
@@ -42,7 +41,7 @@ class ChatBot:
         out = self.__pipeline(
             in_next,
             max_new_tokens=max_words,
-            do_sample=True, # Allow Random answer
+            do_sample=True,  # Allow Random answer
             max_len=max_len
         )[0]["generated_text"][-1]['content']
         assert isinstance(out, str)
@@ -51,15 +50,10 @@ class ChatBot:
             self.__messages.append({"role": "assistant", "content": out})
 
         if code_only:
-            if out.count("```")>1:
+            nn = extract_str(out, '<nn>', '</nn>')
+            if nn is None:
+                nn = extract_str(out, "```", "```")
+            if nn is None:
                 if self.show_additional_info:
-                    print(f"[INFO]Reply seemly contain full codes, got {out.count('```')} '```'s.")
-                x = re.search("```((.|\s)*?)```", out)
-                if x:
-                    out = x.group()
-                    out = out.replace("```python", "")
-                    out = out.replace("```", "")
-            else:
-                if self.show_additional_info:
-                    print(f"[WARN]Reply seemly contain imcomplete codes, got {out.count('```')} '```'s.")
-        return out
+                    print(f"[WARN]Reply seemly contain incomplete codes, got {nn.count('```')} '```'s.")
+        return nn, extract_str(out, '<hp>', '</hp>'), out

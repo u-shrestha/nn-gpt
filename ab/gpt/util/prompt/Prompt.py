@@ -16,7 +16,7 @@ def preprocess_batch(batch, tokenizer, max_length):
     )
 
 
-class PreprocessorBase:
+class Prompt:
     def __init__(self, max_len: int, tokenizer: PreTrainedTokenizerBase):
         self.max_len = max_len
         self.tokenizer = tokenizer
