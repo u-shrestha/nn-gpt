@@ -5,7 +5,6 @@
         "addon_list": [],
         "task": "img-classification",
         "addon_task": "",
-        "single_row": true,
         "prompts": [
             "You are given a neural network model defined in the code block at the end of the prompt. Your task is to modify the architecture of the model (i.e., the layers) with the goal of increasing accuracy on image classification tasks.",
             "Please follow these strict constraints:",
@@ -24,7 +23,6 @@
         "addon_list": [{"para": "addon_nn_code","value": "nn_code"}],
         "task": "img-segmentation",
         "addon_task": "img-classification",
-        "single_row": true,
         "prompts": [
             "Improve the following implementation to make it a better performance on image segmentation tasks given another backbone implementation.",
             "The class name should be 'Net' and you MUST PROVIDE FULL CODES of the changed implementation.",

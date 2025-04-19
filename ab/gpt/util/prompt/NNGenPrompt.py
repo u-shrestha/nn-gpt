@@ -38,8 +38,6 @@ class NNGenPrompt(Prompt):
         assert isinstance(prompt_dict, dict)
 
         for key in prompt_dict.keys():
-            if prompt_dict[key]['single_row']:
-                continue  # Compact test_prompt.json, in this case single_row prompts are not allowed
             prompt = '\n'.join(prompt_dict[key]['prompt'])
             # Get nn-dataset codes
             print('Preparing Data...')

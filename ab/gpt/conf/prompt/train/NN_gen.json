@@ -22,7 +22,6 @@
                       {"para": "addon_nn_code","value": "nn_code"},
                       {"para": "addon_prm","value": "prm"}
         ],
-        "single_row": false,
         "no_repeat": [],
         "keep_same": [],
       "prompt":  [

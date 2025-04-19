@@ -1,7 +1,6 @@
 {
     "improvement_classification_codeonly":{
         "comment":[
-            "single_row is used for handling legency prompts in test_prompt.json.",
             "para: where you fill in content, value: where data come from (colum key in api.data() DataFrame).",
             "task(only in addon_list): which task the additional content come from.",
             "comment: explain the usage of this file"
@@ -10,7 +9,6 @@
         "addon_list":[],
         "task":"img-classification",
         "addon_task":"",
-        "single_row":false,
         "no_repeat":[],
         "keep_same":[],
         "prompts":[
@@ -29,7 +27,6 @@
         "addon_list":[{"para":"addon_nn_code","value":"nn_code"}],
         "task":"img-segmentation",
         "addon_task":"img-classification",
-        "single_row":false,
         "no_repeat":["nn"],
         "keep_same":[],
         "prompts":[

@@ -1,7 +1,6 @@
 {
     "improvement_classification_codeonly":{
         "comment":[
-            "single_row is used for handling legency prompts in test_prompt.json.",
             "para: where you fill in content, value: where data come from (colum key in api.data() DataFrame).",
             "task(only in addon_list): which task the additional content come from.",
             "comment: explain the usage of this file"
@@ -10,7 +9,6 @@
         "addon_list":[],
         "task":"img-classification",
         "addon_task":"",
-        "single_row":false,
         "prompts":[
             "Define 2 `nn.Conv2d()`s a neighboring pair, when there are only non-Conv2d layers between these 2 `nn.Conv2d()`s.",
             "Your task is to randomly pick and modify 1 or 2 neighboring pair of `nn.Conv2d()` according to requirements below and return ONLY the full result.",
@@ -26,7 +24,6 @@
     },
     "improvement_classification_chgNumber":{
         "comment":[
-            "single_row is used for handling legency prompts in test_prompt.json.",
             "para: where you fill in content, value: where data come from (colum key in api.data() DataFrame).",
             "task(only in addon_list): which task the additional content come from.",
             "comment: explain the usage of this file"
@@ -35,7 +32,6 @@
         "addon_list":[],
         "task":"img-classification",
         "addon_task":"",
-        "single_row":false,
         "prompts":[
             "Your task is to randomly pick 2 or 4 integer numbers in the code and change them into new values, with:",
             "1.***STRICTLY DO NOT INTRODUCE NEW METHODS OR PARAMETERS***.",

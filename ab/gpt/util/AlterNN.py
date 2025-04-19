@@ -28,43 +28,38 @@ def alter(epochs, test_conf, llm_name):
         # Generate Prompts
         prompts = []
         for key in prompt_dict.keys():
-            # Legency test_prompts handling
-            if prompt_dict[key]['single_row']:
-                for pr in prompt_dict[key]['prompts']:
-                    prompts.append((pr, None))
+            prompt = ""
+            for pr in prompt_dict[key]['prompts']:
+                prompt += pr + "\n"
+            # Get nn-dataset codes
+            if prompt_dict[key]['task'] == "all":
+                data = nn_dataset.data(only_best_accuracy=True).groupby(by="nn").sample(n=1)
+            elif prompt_dict[key]['task'] == "":
+                data = None
             else:
-                prompt = ""
-                for pr in prompt_dict[key]['prompts']:
-                    prompt += pr + "\n"
-                # Get nn-dataset codes
-                if prompt_dict[key]['task'] == "all":
-                    data = nn_dataset.data(only_best_accuracy=True).groupby(by="nn").sample(n=1)
-                elif prompt_dict[key]['task'] == "":
-                    data = None
-                else:
-                    data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['task']).groupby(by="nn").sample(n=1)
-                # Get addon nn-dataset codes
-                if prompt_dict[key]['addon_task'] == "all":
-                    addon_data = nn_dataset.data(only_best_accuracy=True)
-                elif prompt_dict[key]['addon_task'] == "":
-                    addon_data = None
-                elif prompt_dict[key]['addon_task'] == prompt_dict[key]['task']:
-                    addon_data = data  # When they are the same, avoid sampling twice
-                else:
-                    addon_data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['addon_task'])
-                if data is None:
-                    prompts.append((pr, None))
-                else:
-                    for _, row in data.iterrows():
-                        para_dict = dict()
-                        for it in prompt_dict[key]["input_list"]:
-                            para_dict[it['para']] = row[it['value']]
-                        if not (addon_data is None):
-                            ## Avoid sampling the same nn_code
-                            addon_row = addon_data.loc[addon_data.nn != row['nn']].sample(n=1).iloc[0]
-                            for it in prompt_dict[key]['addon_list']:
-                                para_dict[it['para']] = addon_row[it['value']]
-                        prompts.append((prompt.format(**para_dict), row))
+                data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['task']).groupby(by="nn").sample(n=1)
+            # Get addon nn-dataset codes
+            if prompt_dict[key]['addon_task'] == "all":
+                addon_data = nn_dataset.data(only_best_accuracy=True)
+            elif prompt_dict[key]['addon_task'] == "":
+                addon_data = None
+            elif prompt_dict[key]['addon_task'] == prompt_dict[key]['task']:
+                addon_data = data  # When they are the same, avoid sampling twice
+            else:
+                addon_data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['addon_task'])
+            if data is None:
+                prompts.append((pr, None))
+            else:
+                for _, row in data.iterrows():
+                    para_dict = dict()
+                    for it in prompt_dict[key]["input_list"]:
+                        para_dict[it['para']] = row[it['value']]
+                    if not (addon_data is None):
+                        ## Avoid sampling the same nn_code
+                        addon_row = addon_data.loc[addon_data.nn != row['nn']].sample(n=1).iloc[0]
+                        for it in prompt_dict[key]['addon_list']:
+                            para_dict[it['para']] = addon_row[it['value']]
+                    prompts.append((prompt.format(**para_dict), row))
 
         # produce new CV models
         B_index = 0
