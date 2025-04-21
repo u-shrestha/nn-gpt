@@ -1,7 +1,7 @@
 import json, os, shutil, random
 from os import makedirs
 from ab.gpt.util.Const import llm_tokenizer_out
-from ab.gpt.util.LLMUtil import quantization_config_4bit
+from ab.gpt.util.LLMUtil import quantization_config_4bit, tokenize
 import torch
 from ab.nn.util.Const import out_dir
 from datasets import load_dataset, load_from_disk
@@ -11,7 +11,7 @@ from peft import (
 )
 from transformers import (
     Trainer, TrainingArguments, AutoTokenizer, AutoModelForCausalLM,
-    BitsAndBytesConfig, DataCollatorForSeq2Seq, EarlyStoppingCallback
+    BitsAndBytesConfig, DataCollatorForSeq2Seq, EarlyStoppingCallback, DataCollatorForLanguageModeling
 )
 
 from ab.gpt.util.lemur_dataset_preparation import DatasetPreparation
@@ -31,18 +31,6 @@ def create_prompt(data_point):
         ### Response:
         {data_point["answer"]}
     """
-
-def tokenize(prompt, tokenizer):
-    """
-    Tokenizes a string
-    """
-    return tokenizer(
-        prompt,
-        truncation=True,
-        max_length=tokenizer.model_max_length,
-        padding=False,
-        return_tensors=None,
-    )
 
 def tuned_dir_f(tuned_model_version):
     return out_dir / 'Finetuned_models' / f"tuned_model_v{tuned_model_version}"
@@ -154,7 +142,7 @@ def main(tuned_model_version, hf_directory, dataset_path):
         eval_dataset=tokenized_val_dataset,
         data_collator=DataCollatorForSeq2Seq(
         tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
-        ),
+        ), # ??? todo DataCollatorForLanguageModeling(tokenizer, pad_to_multiple_of=8, return_tensors="pt", mlm=False)
         callbacks=[EarlyStoppingCallback(early_stopping_patience=2)]
     )
 
@@ -252,7 +240,7 @@ def generate_model_responses(tuned_model_version, hf_directory, input_file_path,
 
 
 generate_prompt = True
-tuned_model_version = 1
+tuned_model_version = 4
 
 hf_directories = {
     1: "deepseek-ai/DeepSeek-Coder-V2-Lite-Base",
