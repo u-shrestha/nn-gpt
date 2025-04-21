@@ -14,6 +14,8 @@ conf_train_dir = conf_prompt_dir / 'train'
 conf_llm_dir = conf_dir / 'llm'
 nngpt_dir = out_dir / 'nngpt'
 acgpt_dir = out_dir / 'acgpt'
+nnrag_dir = out_dir / 'rag'
+
 config_file = conf_llm_dir / 'ds-coder_1.3b.json'
 
 

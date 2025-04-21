@@ -10,7 +10,7 @@ import os
 import json
 import random
 import torch
-from ab.nn.util.Const import out_dir
+from ab.gpt.util.Const import nnrag_dir
 
 os.environ["DS_CUDA_VERSION"] = torch.version.cuda
 os.environ["WANDB_MODE"] = "disabled"
@@ -180,10 +180,11 @@ def main():
     val_examples = all_examples[split_idx:]
 
     # 3.6: Save for inspection
-    os.makedirs("data", exist_ok=True)
-    with open("data/lemur_train.json", "w", encoding="utf-8") as f:
+    rag_data_dir = nnrag_dir / 'data'
+    os.makedirs(rag_data_dir, exist_ok=True)
+    with open(rag_data_dir / "lemur_train.json", "w", encoding="utf-8") as f:
         json.dump(train_examples, f, indent=2)
-    with open("data/lemur_val.json", "w", encoding="utf-8") as f:
+    with open(rag_data_dir / "lemur_val.json", "w", encoding="utf-8") as f:
         json.dump(val_examples, f, indent=2)
 
     train_dataset = Dataset.from_dict({
@@ -248,7 +249,7 @@ def main():
         "gradient_accumulation_steps": 2,
         "zero_allow_untested_optimizer": True
     }
-    ds_conf = out_dir / 'ds_config.json'
+    ds_conf = nnrag_dir / 'ds_config.json'
     with open(ds_conf, "w") as f:
         json.dump(ds_config, f, indent=2)
 
