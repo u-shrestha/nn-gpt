@@ -47,7 +47,7 @@ def tokenize(prompt, tokenizer):
 def tuned_dir_f(tuned_model_version):
     return out_dir / 'Finetuned_models' / f"tuned_model_v{tuned_model_version}"
 
-def main(tuned_model_version, dataset_path):
+def main(tuned_model_version, hf_directory, dataset_path):
     """
     The main function for loading data, setting up the model and fine-tuning
     """
@@ -56,17 +56,6 @@ def main(tuned_model_version, dataset_path):
     # log_filename = f"training_logs_{tuned_model_version}.txt"
     # sys.stdout = open(log_filename, "w")
 
-    hf_directories = {
-        1: "deepseek-ai/DeepSeek-Coder-V2-Lite-Base",
-        2: "deepseek-ai/deepseek-coder-1.3b-base",
-        3: "deepseek-ai/deepseek-coder-1.3b-base",
-        4: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-        5: "deepseek-ai/deepseek-coder-7b-base-v1.5",
-        6: "deepseek-ai/deepseek-math-7b-base",
-        7: "deepseek-ai/deepseek-coder-7b-instruct-v1.5"
-    }
-
-    hf_directory = hf_directories.get(tuned_model_version)
     if hf_directory is None:
         raise ValueError(f"Unknown model version: {tuned_model_version}")
     print(f"Using model: {hf_directory}")
@@ -195,18 +184,8 @@ def main(tuned_model_version, dataset_path):
     # print(f"\nTraining log saved to {log_filename}")
 
 
-def generate_model_responses(tuned_model_version, input_file_path, output_file_path, logs_file_path):
-    hf_directories = {
-        1: "deepseek-ai/DeepSeek-Coder-V2-Lite-Base",
-        2: "deepseek-ai/deepseek-coder-1.3b-base",
-        3: "deepseek-ai/deepseek-coder-1.3b-base",
-        4: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-        5: "deepseek-ai/deepseek-coder-7b-base-v1.5",
-        6: "deepseek-ai/deepseek-math-7b-base",
-        7: "deepseek-ai/deepseek-coder-7b-instruct-v1.5"
-    }
+def generate_model_responses(tuned_model_version, hf_directory, input_file_path, output_file_path, logs_file_path):
 
-    hf_directory = hf_directories.get(tuned_model_version)
     if hf_directory is None:
         raise ValueError(f"Unknown model version: {tuned_model_version}")
     print(f"Using model: {hf_directory}")
@@ -275,6 +254,17 @@ def generate_model_responses(tuned_model_version, input_file_path, output_file_p
 generate_prompt = True
 tuned_model_version = 1
 
+hf_directories = {
+    1: "deepseek-ai/DeepSeek-Coder-V2-Lite-Base",
+    2: "deepseek-ai/deepseek-coder-1.3b-base",
+    3: "deepseek-ai/deepseek-coder-1.3b-base",
+    4: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+    5: "deepseek-ai/deepseek-coder-7b-base-v1.5",
+    6: "deepseek-ai/deepseek-math-7b-base",
+    7: "deepseek-ai/deepseek-coder-7b-instruct-v1.5"
+}
+
+
 if __name__ == "__main__":
     base_dir = out_dir / 'hpgpt' / 'prompt'
     dataset_raw = base_dir / 'LEMUR_raw.json'
@@ -291,8 +281,7 @@ if __name__ == "__main__":
         # dataset_prep.add_nn_code_field_to_json(dataset_raw, f"Dataset/LEMUR_raw_500.json")
     # ---------- 2. LLM FINE-TUNING STAGE ----------
 
-    main(tuned_model_version, dataset_prepared_prompt)
-
+    main(tuned_model_version, hf_directories.get(tuned_model_version), dataset_prepared_prompt)
 
     # ---------- 3. LLM TESTING & RECEIVING RESPONSES STAGE ----------
     # Dataset 500 Models (Only 500 responses to speed up)
@@ -306,6 +295,6 @@ if __name__ == "__main__":
     # output_file_path = f"Dataset/ds_responses_{tuned_model_version}ft_500.json"
     # logs_file_path = f"Logs/logs_responses_{tuned_model_version}ft_500.txt"
 
-    # generate_model_responses(tuned_model_version, dataset_raw_500, output_file_path, logs_file_path)
+    # generate_model_responses(tuned_model_version, hf_directories.get(tuned_model_version), dataset_raw_500, output_file_path, logs_file_path)
 
 
