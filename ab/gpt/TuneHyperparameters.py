@@ -273,9 +273,9 @@ def generate_model_responses(tuned_model_version, input_file_path, output_file_p
 
 
 generate_prompt = True
+tuned_model_version = 1
 
 if __name__ == "__main__":
-    tuned_model_version = 1
     base_dir = out_dir / 'hpgpt' / 'prompt'
     dataset_raw = base_dir / 'LEMUR_raw.json'
     dataset_prepared_prompt = base_dir / 'LEMUR_prepared.json'
