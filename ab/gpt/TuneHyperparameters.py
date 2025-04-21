@@ -272,28 +272,25 @@ def generate_model_responses(tuned_model_version, input_file_path, output_file_p
 
 
 
+generate_prompt = True
 
 if __name__ == "__main__":
     tuned_model_version = 1
-
     base_dir = out_dir / 'hpgpt' / 'prompt'
-    shutil.rmtree(base_dir, ignore_errors=True)
-    makedirs(base_dir, exist_ok=True)
     dataset_raw = base_dir / 'LEMUR_raw.json'
     dataset_prepared_prompt = base_dir / 'LEMUR_prepared.json'
 
-
-    # ---------- 1. LEMUR DATASET PREPARATION STAGE ----------
-    dataset_prep = DatasetPreparation()
-        # Create a raw LEMUR Dataset JSON-file
-    dataset_prep.test_api(dataset_raw)
-        # Convert a raw LEMUR Dataset JSON-file to a LLM prompt format
-    dataset_prep.prepare_json_dataset_for_llm_format(dataset_raw, dataset_prepared_prompt)
+    if generate_prompt:
+        shutil.rmtree(base_dir, ignore_errors=True)
+        makedirs(base_dir, exist_ok=True)
+        # ---------- 1. LEMUR DATASET PREPARATION STAGE ----------
+        dataset_prep = DatasetPreparation()  # Create a raw LEMUR Dataset JSON-file
+        dataset_prep.test_api(dataset_raw)
+        dataset_prep.prepare_json_dataset_for_llm_format(dataset_raw, dataset_prepared_prompt) # Convert a raw LEMUR Dataset JSON-file to a LLM prompt format
         # Other
-    # dataset_prep.add_nn_code_field_to_json(dataset_raw, f"Dataset/LEMUR_raw_500.json")
-
-
+        # dataset_prep.add_nn_code_field_to_json(dataset_raw, f"Dataset/LEMUR_raw_500.json")
     # ---------- 2. LLM FINE-TUNING STAGE ----------
+
     main(tuned_model_version, dataset_prepared_prompt)
 
 
