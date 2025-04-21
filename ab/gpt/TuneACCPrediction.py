@@ -12,7 +12,7 @@ from ab.gpt.util.Const import config_file
 from util import LLM, LoRA
 from util.LoRA import LoRA, find_all_linear_names
 from util.LLM import LLM
-from util.prompt.CodePromptPreprocessor import CodePromptPreprocessor
+from util.prompt.NNPrompt import NNPrompt
 
 
 # todo: This is a specific fine-tuning implementation by Yashkumar Dhameliya and Yash Kathiriya, expected to be merged into the common pipeline.
@@ -90,10 +90,7 @@ class ModelFinetuner:
             training_data = self._get_training_data(model_df)
             
             # Create and setup the preprocessor for this architecture
-            preprocessor = CodePromptPreprocessor(
-                max_len=max_len,
-                tokenizer=tokenizer
-            )
+            preprocessor = NNPrompt(max_len, tokenizer)
             
             # Set examples on the preprocessor if it has an examples attribute
             if hasattr(preprocessor, 'examples'):

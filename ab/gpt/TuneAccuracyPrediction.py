@@ -8,10 +8,11 @@ from peft import LoraConfig
 from transformers import BitsAndBytesConfig, TrainingArguments
 from util.LLM import LLM
 from util.LoRA import LoRA, find_all_linear_names
-from util.prompt.CodePromptPreprocessor import CodePromptPreprocessor
+from util.prompt.NNPrompt import NNPrompt
+from ab.gpt.util.Const import  config_file
 
 class EnhancedModelFinetuner:
-    def __init__(self, config_path=Path(__file__).parent.parent / 'gpt/conf/config.json'):
+    def __init__(self, config_path=config_file):
         self.config = self._load_config(config_path)
         self.output_dir = Path(out_dir) / 'model_results'
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -149,10 +150,7 @@ class EnhancedModelFinetuner:
             
             # Pass output_dir explicitly to train()
             trainer.train(
-                dataset=CodePromptPreprocessor(
-                    max_len=model_loader.get_max_length(),
-                    tokenizer=tokenizer
-                ).get_dataset(),
+                dataset=NNPrompt(model_loader.get_max_length(), tokenizer).get_dataset(),
                 output_dir=str(self.output_dir)
             )
             
