@@ -1,6 +1,5 @@
-import json
-import os
-import random
+import json, os, shutil, random
+from os import makedirs
 from ab.gpt.util.Const import llm_tokenizer_out
 from ab.gpt.util.LLMUtil import quantization_config_4bit
 import torch
@@ -96,7 +95,7 @@ def main(tuned_model_version, dataset_path):
         print("Datasets loaded successfully.")
     except Exception as e:
         print(f"Dataset loading failed: {e}")
-        dataset = load_dataset('json', data_files=dataset_path)
+        dataset = load_dataset('json', data_files=str(dataset_path))
         shuffled_dataset = dataset['train'].shuffle(seed=42)
 
         train_dataset = shuffled_dataset.train_test_split(test_size=0.2)["train"]
@@ -277,16 +276,19 @@ def generate_model_responses(tuned_model_version, input_file_path, output_file_p
 if __name__ == "__main__":
     tuned_model_version = 1
 
-    dataset_raw = f"Dataset/LEMUR_raw.json"
-    dataset_prepared_prompt = f"Dataset/LEMUR_prepared.json"
+    base_dir = out_dir / 'hpgpt' / 'prompt'
+    shutil.rmtree(base_dir, ignore_errors=True)
+    makedirs(base_dir, exist_ok=True)
+    dataset_raw = base_dir / 'LEMUR_raw.json'
+    dataset_prepared_prompt = base_dir / 'LEMUR_prepared.json'
 
 
     # ---------- 1. LEMUR DATASET PREPARATION STAGE ----------
     dataset_prep = DatasetPreparation()
         # Create a raw LEMUR Dataset JSON-file
-    # dataset_prep.test_api(dataset_raw)
+    dataset_prep.test_api(dataset_raw)
         # Convert a raw LEMUR Dataset JSON-file to a LLM prompt format
-    # dataset_prep.prepare_json_dataset_for_llm_format("Dataset/LEMUR_raw.json", "Dataset/LEMUR_prepared.json")
+    dataset_prep.prepare_json_dataset_for_llm_format(dataset_raw, dataset_prepared_prompt)
         # Other
     # dataset_prep.add_nn_code_field_to_json(dataset_raw, f"Dataset/LEMUR_raw_500.json")
 
