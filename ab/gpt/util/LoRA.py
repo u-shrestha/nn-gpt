@@ -1,6 +1,5 @@
 import os
 
-import bitsandbytes as bnb
 import torch
 from datasets import Dataset
 from peft import (
@@ -93,7 +92,7 @@ class LoRA:
         else:
             self.peft_config = peft_config
 
-    def train(self, dataset: Dataset, output_dir: str):
+    def train(self, dataset: Dataset, tokenizer, output_dir: str):
         if not self.already_peft:
             # We don't want multiple LoRA Adapters. 
             # The `isinstance()` cannot recognize the class name `PeftModel` for it's hidden.
@@ -107,16 +106,19 @@ class LoRA:
         # Split The dataset
         dataset = dataset.train_test_split(test_size=0.1)
 
+        train_dataset = dataset['train']
+        eval_dataset = dataset['test']
+
         # build the trainer
         print("Parameter configuration of the model")
         print_trainable_parameters(self.model)
 
         trainer = Trainer(
             model=self.model,
-            train_dataset=dataset['train'],
-            eval_dataset=dataset['test'],
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
             args=self.training_args,
-            data_collator=DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
+            data_collator=DataCollatorForLanguageModeling(self.tokenizer, pad_to_multiple_of=8, return_tensors="pt", mlm=False)
         )
 
         # verifying the datatypes before training

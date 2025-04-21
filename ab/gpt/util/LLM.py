@@ -27,24 +27,20 @@ class LLM:
         self.context_length = context_length
         tok_fl_nm = llm_tokenizer_dir(base_path, model_path)
         raw_fl_nm = llm_dir(base_path, model_path)
-        if exists(tok_fl_nm):
+        tokenizer_exists = exists(tok_fl_nm)
+        self.tokenizer = AutoTokenizer.from_pretrained(tok_fl_nm if tokenizer_exists else model_path, token=access_token)
+        self.tokenizer.add_eos_token = True
+        self.tokenizer.pad_token_id = 0
+        self.tokenizer.padding_side = "right"
+        if tokenizer_exists:
             print("Loading Tokenizer from local files:", tok_fl_nm)
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                tok_fl_nm, token=access_token,
-                quantization_config=quantization_config_4bit,
-                torch_dtype=torch.float16,
-                device_map="auto",
-            )
         else:
             print("Downloading Tokenizer...")
-            self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True, token=access_token)
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-            self.tokenizer.padding_side = "right"
             self.tokenizer.save_pretrained(tok_fl_nm, access_token=access_token)
             print("Tokenizer saved to: ", tok_fl_nm)
 
         # Load the model
-        deepspeed_specific_prm = {} if use_deepspeed else {'device_map' : "auto"}  # When using Deepspeed, device_map should not be given, for deepspeed automatically manages the device memory mapping
+        deepspeed_specific_prm = {} if use_deepspeed else {'device_map': "auto"}  # When using Deepspeed, device_map should not be given, for deepspeed automatically manages the device memory mapping
         self.model = AutoModelForCausalLM.from_pretrained(
             local_path if exists(local_path) else raw_fl_nm if exists(raw_fl_nm) else model_path,
             trust_remote_code=True,
@@ -52,8 +48,7 @@ class LLM:
             token=access_token,
             quantization_config=bnb_config,
             torch_dtype=torch.float16,
-            ** deepspeed_specific_prm
-        )
+            **deepspeed_specific_prm)
         if exists(local_path):
             print("Loading Model from local files:", "'" + local_path + "'")
         elif exists(raw_fl_nm):
