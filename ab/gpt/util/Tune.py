@@ -209,7 +209,6 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
                                     for epo in range(prm['epoch']):
                                         f_nm = f'{epo + 1}.json'
                                         shutil.copyfile(gen_nn_dir / f_nm, dr_nm / f_nm)
-                                ds_updated = True
                                 break
                         except Exception as error:
                             print('failed to determine accuracy for', cv_model)
