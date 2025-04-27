@@ -90,9 +90,9 @@ Use `TuneNNGen.py` to perform generation and evaluation of CV model, along with 
 The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing our articles for NNGPT framework and <a target='_blank' href='https://arxiv.org/pdf/2504.06006'>hyperparameter tuning</a>:
 ```bibtex
 @article{ABrain.NNGPT,
-  title        = {GPT-Driven Neural Network Generator},
+  title        = {NNGPT: Neural Network Generator},
   author       = {Kochnev, Roman and Qin, Furui and Khalid, Waleed and Goodarzi, Arash Torabi and Zhang, Xi and Dhameliya, Yashkumar Sanjaybhai and Ignatov, Dmitry and Timofte, Radu},
-  year         = {2024},
+  year         = {2025},
 }
 
 @article{ABrain.HPGPT,
