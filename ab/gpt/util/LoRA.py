@@ -59,7 +59,7 @@ def create_peft_config(modules):
     Create Parameter-Efficient Fine-Tuning config for your model
     :param modules: Names of the modules to apply Lora to
     """
-    config = LoraConfig(
+    return LoraConfig(
         r=32,  # dimension of the updated matrices
         lora_alpha=64,  # parameter for scaling
         target_modules=modules,
@@ -68,8 +68,6 @@ def create_peft_config(modules):
         task_type="CAUSAL_LM",
         use_dora=True
     )
-
-    return config
 
 
 class LoRA:
@@ -139,10 +137,11 @@ class LoRA:
         print("Training...")
         if do_train:
             train_result = trainer.train()
+            self.peft_config.inference_mode = False
             metrics = train_result.metrics
-            trainer.log_metrics(split="train", metrics=metrics)
-            trainer.save_metrics(split="train", metrics=metrics)
-            trainer.save_state()
+            trainer.log_metrics(trainer, split="train", metrics=metrics)
+            trainer.save_metrics(trainer, split="train", metrics=metrics)
+            trainer.save_state(trainer)
             print(metrics)
 
         # prepare the model for usage
