@@ -9,7 +9,7 @@ import ab.nn.api as lemur
 import deepspeed
 import pandas as pd
 from ab.nn.util.Const import ab_root_path
-from ab.nn.util.Util import release_memory, crate_file
+from ab.nn.util.Util import release_memory, create_file
 from transformers import TrainingArguments
 from peft import (LoraConfig, PeftModel, prepare_model_for_kbit_training)
 from ab.gpt.util.Chatbot import ChatBot
@@ -151,16 +151,16 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
                 max_words=5000  ## Reduce memory usage
             )
             print(f'1 gen hyperparams: {hp}')
-            crate_file(model_dir, hp_file, hp)
-            crate_file(model_dir, new_nn_file, code)
-            crate_file(model_dir, new_out_file, full_out)
+            create_file(model_dir, hp_file, hp)
+            create_file(model_dir, new_nn_file, code)
+            create_file(model_dir, new_out_file, full_out)
             df_file = model_dir / 'dataframe.df'
             if origdf is None:
                 if isfile(df_file):  # Clean up dataframe.df, if no additional information generated this time.
                     os.remove(df_file)
                     print(f'[DEBUG]Removed unmatched file: {df_file}')
             else:
-                crate_file(model_dir, f"original_{origdf['nn']}.py", origdf['nn_code'])
+                create_file(model_dir, f"original_{origdf['nn']}.py", origdf['nn_code'])
                 # Store DataFrame information, mainly for passing parameters to evaluator.
                 origdf.to_pickle(df_file)
         release_memory()
@@ -212,7 +212,7 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
                                 break
                         except Exception as error:
                             print('failed to determine accuracy for', cv_model)
-                            crate_file(gen_nn_dir, f'error_{tries}.txt', str(traceback.format_exc()))  # Track traceback to have rich information on the exception.
+                            create_file(gen_nn_dir, f'error_{tries}.txt', str(traceback.format_exc()))  # Track traceback to have rich information on the exception.
                             with open(code_file, 'r') as f:
                                 code_txt = f.read()
                             release_memory()
@@ -225,9 +225,9 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
                                     engineer_prompt=False,
                                     max_words=5000)
                                 print(f'2 gen hyperparams: {new_hp}')
-                                crate_file(gen_nn_dir, hp_file, new_hp)
-                                crate_file(gen_nn_dir, new_nn_file, new_code)
-                                crate_file(gen_nn_dir, new_out_file, full_out)
+                                create_file(gen_nn_dir, hp_file, new_hp)
+                                create_file(gen_nn_dir, new_nn_file, new_code)
+                                create_file(gen_nn_dir, new_out_file, full_out)
                             except:
                                 pass
                             release_memory()
