@@ -3,13 +3,13 @@ from pathlib import Path
 import pandas as pd
 import torch
 from ab.nn.api import data as nn_data
-from ab.nn.util.Const import out_dir
+from util.Const import out_dir
 from peft import LoraConfig
 from transformers import BitsAndBytesConfig, TrainingArguments
 from util.LLM import LLM
 from util.LoRA import LoRA, find_all_linear_names
 from util.prompt.NNPrompt import NNPrompt
-from ab.gpt.util.Const import  config_file
+from util.Const import config_file
 
 class EnhancedModelFinetuner:
     def __init__(self, config_path=config_file):
@@ -63,46 +63,86 @@ class EnhancedModelFinetuner:
         raw_data = nn_data(only_best_accuracy=False)
         standardized = self._standardize_columns(raw_data)
         
-        standardized['epoch'] = pd.to_numeric(standardized['epoch'], errors='coerce')
+        standardized['epoch'] = pd.to_numeric(standardized['epoch'], errors='coerce').fillna(0).astype(int)
         standardized['accuracy'] = pd.to_numeric(standardized['accuracy'], errors='coerce')
         standardized['prm'] = standardized['prm'].apply(
             lambda x: json.dumps(x) if isinstance(x, dict) else str(x)
         )
         
-        max_acc_idx = standardized.groupby(['nn', 'dataset', 'task'])['accuracy'].idxmax()
-        max_data = standardized.loc[max_acc_idx]
+        standardized_sorted = standardized.sort_values(['nn', 'dataset', 'task', 'epoch'])
         
-        early_data = standardized[standardized['epoch'].isin([1, 2])]
-        if early_data.empty:
-            early_data = standardized[standardized['epoch'] == standardized['epoch'].min()]
+        # Group by network, dataset, and task
+        grouped = standardized_sorted.groupby(['nn', 'dataset', 'task'])
         
-        merged = pd.merge(
-            early_data,
-            max_data,
-            on=['nn', 'dataset', 'task'],
-            suffixes=('_early', '_max'),
-            how='inner'
-        )
+        training_rows = []
         
+        for group_key, group_data in grouped:
+            nn, dataset, task = group_key
+            
+            # Find epochs 1 and 2 if they exist
+            early_epochs = [1, 2]
+            for early_epoch in early_epochs:
+                early_data = group_data[group_data['epoch'] == early_epoch]
+                
+                if early_data.empty:
+                    continue
+                    
+                early_row = early_data.iloc[0].to_dict()
+                
+                # Find maximum accuracy for this group after this early epoch
+                later_data = group_data[group_data['epoch'] > early_epoch]
+                
+                if later_data.empty:
+                    max_accuracy = early_row['accuracy']
+                    max_epoch = early_row['epoch']
+                    max_params = early_row['prm']
+                    max_code = early_row['nn_code']
+                else:
+                    max_accuracy = later_data['accuracy'].max()
+                    max_row = later_data[later_data['accuracy'] == max_accuracy].iloc[0].to_dict()
+                    max_epoch = max_row['epoch']
+                    max_params = max_row['prm']
+                    max_code = max_row['nn_code']
+                
+                # Create a comprehensive training row
+                training_row = {
+                    'nn': nn,
+                    'dataset': dataset,
+                    'task': task,
+                    'early_epoch': early_epoch,
+                    'early_accuracy': early_row['accuracy'],
+                    'early_params': early_row['prm'],
+                    'max_epoch': max_epoch,
+                    'max_accuracy': max_accuracy,
+                    'max_params': max_params,
+                    'nn_code': max_code  # Store duplicated values only once
+                }
+                
+                training_rows.append(training_row)
+        
+        merged = pd.DataFrame(training_rows)
+        
+        # Create prompt and completion for each training row
         merged['prompt'] = (
             "Model: " + merged['nn'].astype(str) + "\n" +
             "Dataset: " + merged['dataset'].astype(str) + "\n" +
             "Task: " + merged['task'].astype(str) + "\n" +
-            "Epoch: " + merged['epoch_early'].astype(str) + "\n" +
-            "Accuracy: " + merged['accuracy_early'].round(4).astype(str) + "\n" +
-            "Hyperparameters: " + merged['prm_early']
+            "Epoch: " + merged['early_epoch'].astype(str) + "\n" +
+            "Accuracy: " + merged['early_accuracy'].round(4).astype(str) + "\n" +
+            "Hyperparameters: " + merged['early_params']
         )
         
         merged['completion'] = (
-            "Max Accuracy: " + merged['accuracy_max'].round(4).astype(str) + "\n" +
-            "Final Epoch: " + merged['epoch_max'].astype(str) + "\n" +
-            "Optimized Parameters: " + merged['prm_max'] + "\n" +
-            "Implementation:\n" + merged['nn_code_max'].astype(str)
+            "Max Accuracy: " + merged['max_accuracy'].round(4).astype(str) + "\n" +
+            "Final Epoch: " + merged['max_epoch'].astype(str) + "\n" +
+            "Optimized Parameters: " + merged['max_params'] + "\n" +
+            "Implementation:\n" + merged['nn_code'].astype(str)
         )
         
-        output_path = self.output_dir / 'full_training_data.csv'
+        output_path = self.output_dir / 'training_data.csv'
         merged.to_csv(output_path, index=False)
         return output_path
+
 
     def run(self):
         try:
@@ -118,7 +158,7 @@ class EnhancedModelFinetuner:
             model_loader = LLM(
                 model_path=self.config['base_model_name'],
                 bnb_config=quantization_config,
-                access_token=Path(out_dir) / 'token' if self.config.get('token_from_file') is not None else None
+                access_token=Path(out_dir) / 'token' if self.config.get('token_from_file') else None
             )
             model, tokenizer = model_loader.get_model(), model_loader.get_tokenizer()
             
@@ -148,10 +188,10 @@ class EnhancedModelFinetuner:
                 )
             )
             
-            # Pass output_dir explicitly to train()
             trainer.train(
-                dataset=NNPrompt(model_loader.get_max_length(), tokenizer).get_dataset(),
-                output_dir=str(self.output_dir)
+            dataset=NNPrompt(model_loader.get_max_length(), tokenizer).get_dataset(),
+            tokenizer=tokenizer,
+            output_dir=str(self.output_dir)
             )
             
             trainer.save_model(self.output_dir / 'final_model')
