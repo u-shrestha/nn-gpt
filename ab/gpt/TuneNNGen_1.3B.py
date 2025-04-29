@@ -7,7 +7,7 @@ def main():
     parser.add_argument('-p', '--peft', type=str, default=None, help='Path to saved LoRA layers.')
     args = parser.parse_args()
     tune(3, 1, args.skip, args.peft, 'NN_gen.json', 'NN_gen.json', 'improve_classification_only',
-         'nngpt-ds-coder_1.3b.json')
+         'nngpt_ds_coder_1.3b_instruct.json')
 
 if __name__ == '__main__':
     main()
