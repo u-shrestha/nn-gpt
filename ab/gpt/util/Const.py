@@ -16,7 +16,7 @@ nngpt_dir = out_dir / 'nngpt'
 acgpt_dir = out_dir / 'acgpt'
 nnrag_dir = out_dir / 'rag'
 
-config_file = conf_llm_dir / 'nngpt-ds-coder_1.3b.json'
+config_file = conf_llm_dir / 'nngpt_ds_coder_1.3b_instruct.json'
 
 
 with open(config_file) as f:
