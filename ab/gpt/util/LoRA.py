@@ -139,9 +139,9 @@ class LoRA:
             train_result = trainer.train()
             self.peft_config.inference_mode = False
             metrics = train_result.metrics
-            trainer.log_metrics(trainer, split="train", metrics=metrics)
-            trainer.save_metrics(trainer, split="train", metrics=metrics)
-            trainer.save_state(trainer)
+            trainer.log_metrics(split="train", metrics=metrics)
+            trainer.save_metrics(split="train", metrics=metrics)
+            trainer.save_state()
             print(metrics)
 
         # prepare the model for usage
