@@ -25,15 +25,15 @@
         "no_repeat": [],
         "keep_same": [],
       "prompt":  [
-        "Provide the code for a neural network model along with its training hyperparameters that provides a metric '{addon_metric}' value of {addon_accuracy} at epoch {addon_epoch} on the '{addon_dataset}' dataset for the task '{addon_task}'.",
+        "Provide the training hyperparameters (<hp>...</hp>) and corresponding neural network model code (<nn>...</nn>) that achieve the desired metric '{addon_metric}' value of {addon_accuracy} at epoch {addon_epoch} on the '{addon_dataset}' dataset for the task '{addon_task}'.",
         "To accomplish this, extract common patterns or regularities from a reference neural network model and its training configuration, which achieved for a metric '{metric}' value of {accuracy} at epoch {epoch} on the '{dataset}' dataset for the task '{task}' with training hyperparameters <hp>{prm}</hp>, and a code provided in the corresponding tags:",
         "<transform>{transform_code}</transform>",
         "<metric>{metric_code}</metric>",
         "<nn>{nn_code}</nn>"
       ],
       "output":  [
-        "<nn>{addon_nn_code}</nn>",
-        "<hp>{addon_prm}</hp>"
+        "<hp>{addon_prm}</hp>",
+        "<nn>{addon_nn_code}</nn>"
       ]
     }
 }

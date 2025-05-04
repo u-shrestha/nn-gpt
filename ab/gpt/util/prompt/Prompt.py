@@ -21,7 +21,7 @@ class Prompt:
         self.max_len = max_len
         self.tokenizer = tokenizer
 
-    def get_raw_dataset(self, only_best_accuracy) -> DataFrame:
+    def get_raw_dataset(self, only_best_accuracy, n_training_prompts=None) -> DataFrame:
         """
             Implement this method such that it returns a pandas dataframe with the following columns:
             ["instruction", "context", "response", "category", "text"].
@@ -30,8 +30,8 @@ class Prompt:
         """
         pass
 
-    def get_dataset(self, only_best_accuracy=False, seed=None):
-        dataset = Dataset.from_pandas(self.get_raw_dataset(only_best_accuracy))
+    def get_dataset(self, only_best_accuracy=False, seed=None, n_training_prompts=None):
+        dataset = Dataset.from_pandas(self.get_raw_dataset(only_best_accuracy, n_training_prompts))
         print("Preprocessing dataset...")
 
         # Apply preprocessing to each batch of the dataset

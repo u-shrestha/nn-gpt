@@ -12,7 +12,7 @@
             "2. DO NOT ADD NEW METHODS, PARAMETERS, OR EXTERNAL STRUCTURES \n – Do not introduce any new helper methods, training tricks, optimization strategies, or external changes to training or data processing logic.\n - Your modifications must be strictly confined to the architecture defined in the model class.",
             "3.  YOU MUST MODIFY AT LEAST ONE LAYER – Ensure that at least one layer is different from the original. Do not return unchanged code.",
             "4. RETURN THE FULL CODE \n – Your reply must include the complete modified code (not just the class you modified), preserving all original classes and structures.\n - Wrap your final output between the tags <nn> and </nn>.",
-            "4. RETURN HYPERPARAMETERS - together with the code provide inside tags <hp>...</hp> the prediction of all hyperparameters returned by function 'supported_hyperparameters' to get the best neural network accuracy after first epoch.",
+            "4. RETURN HYPERPARAMETERS - provide predicted values for 'batch', 'transform', and all supported_hyperparameters in flat JSON format within <hp>...</hp> tags to optimize first-epoch accuracy. If uncertain, set 'batch' to 64 and 'transform' to 'norm_128_flip'.",
             "6. DON'T REMOVE: function 'supported_hyperparameters' and '__init__', 'learn', 'train_setup' methods of the 'Net' class, which are required for Net training by external functionality and have to be accessible without change of their argument type and signatures.",
             "7. ACCURACY TRADEOFFS ARE ACCEPTABLE – If your modifications potentially reduce accuracy, that is acceptable. The goal is experimentation.",
             "INPUT CODE (Do not edit directly; only submit the modified version in the required format):",

@@ -26,7 +26,7 @@ class NNGenPrompt(Prompt):
         self.prompts_path = prompts_path
 
     @override
-    def get_raw_dataset(self, only_best_accuracy) -> DataFrame:
+    def get_raw_dataset(self, only_best_accuracy, n_training_prompts=None) -> DataFrame:
         """
         :return:
             pandas.Dataframe object with columns described in nn_api.data()
@@ -41,12 +41,12 @@ class NNGenPrompt(Prompt):
             prompt = '\n'.join(prompt_dict[key]['prompt'])
             # Get nn-dataset codes
             print('Preparing Data...')
-            data = lemur.data(only_best_accuracy=only_best_accuracy, task=prompt_dict[key]['task'])
+            data = lemur.data(only_best_accuracy=only_best_accuracy, task=prompt_dict[key]['task'], max_rows=n_training_prompts)
             data = shuffle_data(data)
             print('Data acquisition complete')
 
             # Get addon nn-dataset codes
-            addon_data = lemur.data(only_best_accuracy=only_best_accuracy, task=prompt_dict[key]['addon_task'])
+            addon_data = lemur.data(only_best_accuracy=only_best_accuracy, task=prompt_dict[key]['addon_task'], max_rows=n_training_prompts)
             print('Addon-Data acquisition complete')
 
             for _, row in data.iterrows():

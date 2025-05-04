@@ -15,12 +15,12 @@ class NNPrompt(Prompt):
         super().__init__(max_len, tokenizer)
 
     @override
-    def get_raw_dataset(self, only_best_accuracy) -> DataFrame:
+    def get_raw_dataset(self, only_best_accuracy, n_training_prompts=None) -> DataFrame:
         """
         :return:
             pandas.Dataframe object with columns described in nn_api.data()
         """
-        lemur_df = lemur.data(only_best_accuracy)
+        lemur_df = lemur.data(only_best_accuracy, max_rows=n_training_prompts)
         dataframe = DataFrame(columns=["instruction", "context", "response", "category", "text"])
 
         for idx, lemur_row in lemur_df.iterrows():

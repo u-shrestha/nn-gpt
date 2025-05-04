@@ -49,8 +49,8 @@ If there are installation problems, install the dependencies from the 'requireme
 ## Update of NN Dataset
 Remove an old version of the LEMUR Dataset and its database:
 ```bash
-pip uninstall nn-dataset -y
 rm -rf db
+pip uninstall nn-dataset -y
 ```
 Installing from GitHub to get the most recent code and statistics updates:
 ```bash

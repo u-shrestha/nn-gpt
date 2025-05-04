@@ -1,6 +1,7 @@
-import os
+from os import makedirs
 
 import torch
+from ab.nn.util.Util import release_memory
 from datasets import Dataset
 from peft import (
     LoraConfig,
@@ -15,7 +16,8 @@ from transformers import (
     PreTrainedTokenizerBase
 )
 
-# When using deepspeed, no Training arguments' initialization after model initialization, if pre-trained model is used 
+
+# When using deepspeed, no Training arguments' initialization after model initialization, if pre-trained model is used
 # Reference: https://huggingface.co/docs/transformers/deepspeed?zero-config=ZeRO-3
 # With the claim: "The TrainingArguments object must be created before calling the model from_pretrained()"
 
@@ -76,31 +78,23 @@ class LoRA:
                  tokenizer: PreTrainedTokenizerBase,
                  training_args: TrainingArguments,
                  access_token=None,
-                 peft_config=None,
-                 already_peft=False
+                 peft_config=None
                  ):
         self.model = model
         self.tokenizer = tokenizer
         self.training_args = training_args
         self.access_token = access_token
-        self.already_peft = already_peft
         if peft_config is None:
             modules = find_all_linear_names(self.model)
             self.peft_config = create_peft_config(modules)
         else:
             self.peft_config = peft_config
+        self.model = prepare_model_for_kbit_training(self.model)
+        self.model.gradient_checkpointing_enable()
+        self.peft_model = get_peft_model(self.model, self.peft_config)
 
     def train(self, dataset: Dataset, tokenizer, output_dir: str):
-        if not self.already_peft:
-            # We don't want multiple LoRA Adapters. 
-            # The `isinstance()` cannot recognize the class name `PeftModel` for it's hidden.
-
-            # Prepare the model
-            self.model.gradient_checkpointing_enable()
-            self.model = prepare_model_for_kbit_training(self.model)
-            self.model = get_peft_model(self.model, self.peft_config)
-            self.model.config.use_cache = False
-
+        self.peft_model.config.use_cache = False
         # Split The dataset
         dataset = dataset.train_test_split(test_size=0.1)
 
@@ -109,10 +103,10 @@ class LoRA:
 
         # build the trainer
         print("Parameter configuration of the model")
-        print_trainable_parameters(self.model)
+        print_trainable_parameters(self.peft_model)
 
         trainer = Trainer(
-            model=self.model,
+            model=self.peft_model,
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
             args=self.training_args,
@@ -121,7 +115,7 @@ class LoRA:
 
         # verifying the datatypes before training
         dtypes = {}
-        for _, p in self.model.named_parameters():
+        for _, p in self.peft_model.named_parameters():
             dtype = p.dtype
             if dtype not in dtypes:
                 dtypes[dtype] = 0
@@ -137,7 +131,6 @@ class LoRA:
         print("Training...")
         if do_train:
             train_result = trainer.train()
-            self.peft_config.inference_mode = False
             metrics = train_result.metrics
             trainer.log_metrics(split="train", metrics=metrics)
             trainer.save_metrics(split="train", metrics=metrics)
@@ -145,15 +138,15 @@ class LoRA:
             print(metrics)
 
         # prepare the model for usage
-        self.model.config.use_cache = True
+        self.peft_model.config.use_cache = True
 
         # Saving model
         print("Saving last checkpoint of the model...")
-        os.makedirs(output_dir, exist_ok=True)
+        makedirs(output_dir, exist_ok=True)
         trainer.model.save_pretrained(output_dir, access_token=self.access_token)
 
         # Free memory for merging weights
         # del self.model
         # del trainer
-        torch.cuda.empty_cache()
-        return self.model
+        release_memory()
+        return self.peft_model

@@ -28,7 +28,7 @@ class ChatBot:
         if self.__keep_memory:
             self.__messages = []
 
-    def chat(self, prompt: str, max_len=None, max_words=None, engineer_prompt=True, code_only=True) -> tuple[str, str, str]:
+    def chat(self, prompt: str, max_len=None, max_words=None, engineer_prompt=True) -> tuple[str, str, str]:
         self.model.eval()
         if engineer_prompt:
             prompt += extra_instructions
