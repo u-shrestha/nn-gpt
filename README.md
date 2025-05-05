@@ -47,13 +47,10 @@ pip install -r requirements.txt --extra-index-url https://download.pytorch.org/w
 If there are installation problems, install the dependencies from the 'requirements.txt' file one by one.
 
 ## Update of NN Dataset
-Remove an old version of the LEMUR Dataset and its database:
+Remove an old version and install LEMUR Dataset from GitHub to get the most recent code and statistics updates:
 ```bash
 rm -rf db
 pip uninstall nn-dataset -y
-```
-Installing from GitHub to get the most recent code and statistics updates:
-```bash
 pip install git+https://github.com/ABrain-One/nn-dataset --upgrade --force --extra-index-url https://download.pytorch.org/whl/cu126
 ```
 Installing the stable version:
