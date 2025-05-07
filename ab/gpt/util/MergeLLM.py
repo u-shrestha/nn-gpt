@@ -43,11 +43,11 @@ def merge_hp_llm():
           'finetuned_models/path', 'finetuned_models/merged_model_path')
 
 
-def merge_nn_llm():
+def merge_nn_llm(tune_epoch):
     add_tokenizer(nngpt_model, llm_tokenizer_out, nngpt_upload, base_llm)
-    merge(nngpt_upload / base_llm, epoch_dir(0) / base_llm, nngpt_upload / base_llm)
+    merge(nngpt_upload / base_llm, epoch_dir(tune_epoch) / base_llm, nngpt_upload / base_llm)
 
 
 if __name__ == "__main__":
     # merge_hp_llm()  # Uncomment code to merge weights of hyperparameter prediction LLM for Hugging Face publication
-    merge_nn_llm()  # Uncomment code to merge neural network generation LLM weights for Hugging Face publication
+    merge_nn_llm(0)  # Uncomment code to merge neural network generation LLM weights for Hugging Face publication
