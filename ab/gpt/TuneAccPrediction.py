@@ -1,206 +1,254 @@
 import json
 from pathlib import Path
 import pandas as pd
+import os
+import numpy as np
 import torch
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    TrainingArguments,
+    DataCollatorForLanguageModeling,
+    Trainer
+)
 from ab.nn.api import data as nn_data
-from util.Const import out_dir
-from peft import LoraConfig
-from transformers import BitsAndBytesConfig, TrainingArguments
-from util.LLM import LLM
-from util.LoRA import LoRA, find_all_linear_names
-from util.prompt.NNPrompt import NNPrompt
-from util.Const import config_file
+from peft import (
+    LoraConfig,
+    prepare_model_for_kbit_training,
+    get_peft_model
+)
+from datasets import Dataset
+from trl import SFTTrainer
+from transformers.trainer_callback import EarlyStoppingCallback
 
-class EnhancedModelFinetuner:
-    def __init__(self, config_path=config_file):
+class LLMFineTuner:
+    def __init__(self, config_path):
         self.config = self._load_config(config_path)
-        self.output_dir = Path(out_dir) / 'model_results'
+        self.output_dir = Path(self.config.get("output_dir", "model_results"))
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.required_columns = ['nn', 'dataset', 'task', 'epoch', 'accuracy', 'nn_code', 'prm']
-
+        
     def _load_config(self, path):
         with open(path) as f:
             return json.load(f)
     
-    def _standardize_columns(self, df):
-        column_map = {
-            'nn': ['model', 'network'],
-            'dataset': ['data'],
-            'epoch': ['epochs'],
-            'accuracy': ['acc'],
-            'nn_code': ['code', 'model_code'],
-            'prm': ['params', 'parameters'],
-            'task': ['objective', 'problem', 'task_type', 'target']
-        }
+    def prepare_data(self):
+        OUTPUT_CSV = self.output_dir / 'nn_results_enhanced_final.csv'
         
-        lower_columns = [c.lower() for c in df.columns]
-        standardized = {}
-        
-        for std, alts in column_map.items():
-            possible = [std.lower()] + [a.lower() for a in alts]
-            for idx, col in enumerate(lower_columns):
-                if col in possible:
-                    standardized[std] = df.columns[idx]
-                    break
-        
-        missing = [c for c in self.required_columns if c not in standardized]
-        if missing:
-            if 'task' in missing:
-                if 'problem_type' in df.columns:
-                    df['task'] = df['problem_type']
-                    standardized['task'] = 'task'
-                    missing.remove('task')
-                else:
-                    df['task'] = 'classification'
-                    standardized['task'] = 'task'
-                    missing.remove('task')
-            if missing:
-                raise ValueError(f"Missing required columns: {missing}")
-                
-        return df.rename(columns=standardized)
+        if os.path.exists(OUTPUT_CSV):
+            print(f"File '{OUTPUT_CSV}' already exists. Skipping processing.")
+            return pd.read_csv(OUTPUT_CSV)
 
-    def _prepare_training_data(self):
-        raw_data = nn_data(only_best_accuracy=False)
-        standardized = self._standardize_columns(raw_data)
+        raw_data = nn_data(only_best_accuracy=False)  # Assuming nn_data is defined elsewhere
+        df = pd.DataFrame(raw_data)
+
+        required_columns = ['task', 'dataset', 'metric', 'metric_code', 'nn', 'nn_code',
+                          'duration', 'transform_code', 'prm', 'epoch', 'accuracy']
+        missing_cols = set(required_columns) - set(df.columns)
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}")
+
+        df['epoch_1_accuracy'] = pd.NA
+        df['epoch_2_accuracy'] = pd.NA
+        df['best_accuracy'] = pd.NA
+        df['best_epoch'] = pd.NA
+        df['max_epoch'] = pd.NA
+
+        unique_combinations = df[['task', 'dataset', 'nn']].drop_duplicates()
+        print(f"Found {len(unique_combinations)} unique task-dataset-model combinations")
+
+        for _, combo in unique_combinations.iterrows():
+            task, dataset, model = combo['task'], combo['dataset'], combo['nn']
+            group = df[(df['task'] == task) &
+                     (df['dataset'] == dataset) &
+                     (df['nn'] == model)]
+
+            if group.empty:
+                continue
+
+            max_acc = group['accuracy'].max()
+            best_row = group[group['accuracy'] == max_acc].iloc[0]
+            best_epoch = best_row['epoch']
+
+            epoch1_acc = group[group['epoch'] == 1]['accuracy']
+            epoch2_acc = group[group['epoch'] == 2]['accuracy']
+            max_epoch = group['epoch'].max()
+
+            mask = ((df['task'] == task) &
+                   (df['dataset'] == dataset) &
+                   (df['nn'] == model))
+
+            df.loc[mask, 'best_accuracy'] = max_acc
+            df.loc[mask, 'best_epoch'] = best_epoch
+            df.loc[mask, 'max_epoch'] = max_epoch
+
+            if not epoch1_acc.empty:
+                df.loc[mask, 'epoch_1_accuracy'] = epoch1_acc.values[0]
+            if not epoch2_acc.empty:
+                df.loc[mask, 'epoch_2_accuracy'] = epoch2_acc.values[0]
+
+        output_columns = ['task', 'dataset', 'metric', 'metric_code', 'nn', 'nn_code',
+                        'duration', 'transform_code', 'prm',
+                        'epoch_1_accuracy', 'epoch_2_accuracy',
+                        'best_accuracy', 'best_epoch', 'max_epoch']
+        final_columns = [col for col in output_columns if col in df.columns]
+        df_final = df[final_columns]
+
+        df_final.to_csv(OUTPUT_CSV, index=False)
+        print(f"\nSuccessfully processed and saved to '{OUTPUT_CSV}'")
+        return df_final
+    
+    def stratified_split(self, df, group_cols=['task', 'dataset', 'nn'], seed=42):
+        train_list, val_list, test_list = [], [], []
+        rng = np.random.default_rng(seed)
+
+        grouped = df.groupby(group_cols)
+
+        for _, group in grouped:
+            group = group.sample(frac=1, random_state=seed).reset_index(drop=True)
+            total = len(group)
+            n_train = int(round(0.8 * total))
+            n_val = int(round(0.1 * total))
+            n_test = total - n_train - n_val
+
+            train_list.append(group.iloc[:n_train])
+            val_list.append(group.iloc[n_train:n_train + n_val])
+            test_list.append(group.iloc[n_train + n_val:])
+
+        train_df = pd.concat(train_list).reset_index(drop=True)
+        val_df = pd.concat(val_list).reset_index(drop=True)
+        test_df = pd.concat(test_list).reset_index(drop=True)
+
+        return train_df, val_df, test_df
+    
+    def generate_prompt(self, row):
+        return f"""Task: {row['task']}
+Dataset: {row['dataset']}
+Model: {row['nn']}
+Best Accuracy: {row['best_accuracy']:.4f}
+Best Epoch: {row['best_epoch']}
+Epoch 1 Accuracy: {row.get('epoch_1_accuracy', 'N/A')}
+Epoch 2 Accuracy: {row.get('epoch_2_accuracy', 'N/A')}
+Parameters: {row.get('prm', 'N/A')}"""
+    
+    def prepare_datasets(self):
+        df = self.prepare_data()
+        train_df, val_df, _ = self.stratified_split(df)
         
-        standardized['epoch'] = pd.to_numeric(standardized['epoch'], errors='coerce').fillna(0).astype(int)
-        standardized['accuracy'] = pd.to_numeric(standardized['accuracy'], errors='coerce')
-        standardized['prm'] = standardized['prm'].apply(
-            lambda x: json.dumps(x) if isinstance(x, dict) else str(x)
+        # Generate prompts for each dataset
+        train_df['text'] = train_df.apply(self.generate_prompt, axis=1)
+        val_df['text'] = val_df.apply(self.generate_prompt, axis=1)
+        
+        # Convert to HuggingFace datasets
+        train_dataset = Dataset.from_pandas(train_df[['text']])
+        val_dataset = Dataset.from_pandas(val_df[['text']])
+        
+        return train_dataset, val_dataset
+    
+    def load_model_and_tokenizer(self):
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True
         )
         
-        standardized_sorted = standardized.sort_values(['nn', 'dataset', 'task', 'epoch'])
-        
-        # Group by network, dataset, and task
-        grouped = standardized_sorted.groupby(['nn', 'dataset', 'task'])
-        
-        training_rows = []
-        
-        for group_key, group_data in grouped:
-            nn, dataset, task = group_key
-            
-            # Find epochs 1 and 2 if they exist
-            early_epochs = [1, 2]
-            for early_epoch in early_epochs:
-                early_data = group_data[group_data['epoch'] == early_epoch]
-                
-                if early_data.empty:
-                    continue
-                    
-                early_row = early_data.iloc[0].to_dict()
-                
-                # Find maximum accuracy for this group after this early epoch
-                later_data = group_data[group_data['epoch'] > early_epoch]
-                
-                if later_data.empty:
-                    max_accuracy = early_row['accuracy']
-                    max_epoch = early_row['epoch']
-                    max_params = early_row['prm']
-                    max_code = early_row['nn_code']
-                else:
-                    max_accuracy = later_data['accuracy'].max()
-                    max_row = later_data[later_data['accuracy'] == max_accuracy].iloc[0].to_dict()
-                    max_epoch = max_row['epoch']
-                    max_params = max_row['prm']
-                    max_code = max_row['nn_code']
-                
-                # Create a comprehensive training row
-                training_row = {
-                    'nn': nn,
-                    'dataset': dataset,
-                    'task': task,
-                    'early_epoch': early_epoch,
-                    'early_accuracy': early_row['accuracy'],
-                    'early_params': early_row['prm'],
-                    'max_epoch': max_epoch,
-                    'max_accuracy': max_accuracy,
-                    'max_params': max_params,
-                    'nn_code': max_code  # Store duplicated values only once
-                }
-                
-                training_rows.append(training_row)
-        
-        merged = pd.DataFrame(training_rows)
-        
-        # Create prompt and completion for each training row
-        merged['prompt'] = (
-            "Model: " + merged['nn'].astype(str) + "\n" +
-            "Dataset: " + merged['dataset'].astype(str) + "\n" +
-            "Task: " + merged['task'].astype(str) + "\n" +
-            "Epoch: " + merged['early_epoch'].astype(str) + "\n" +
-            "Accuracy: " + merged['early_accuracy'].round(4).astype(str) + "\n" +
-            "Hyperparameters: " + merged['early_params']
+        model = AutoModelForCausalLM.from_pretrained(
+            self.config["base_model_name"],
+            quantization_config=bnb_config,
+            device_map="auto"
         )
         
-        merged['completion'] = (
-            "Max Accuracy: " + merged['max_accuracy'].round(4).astype(str) + "\n" +
-            "Final Epoch: " + merged['max_epoch'].astype(str) + "\n" +
-            "Optimized Parameters: " + merged['max_params'] + "\n" +
-            "Implementation:\n" + merged['nn_code'].astype(str)
-        )
+        tokenizer = AutoTokenizer.from_pretrained(self.config["base_model_name"])
+        tokenizer.pad_token = tokenizer.eos_token
         
-        output_path = self.output_dir / 'training_data.csv'
-        merged.to_csv(output_path, index=False)
-        return output_path
-
-
-    def run(self):
+        return model, tokenizer
+    
+    def train(self):
         try:
-            training_data_path = self._prepare_training_data()
+            model, tokenizer = self.load_model_and_tokenizer()
+            train_dataset, val_dataset = self.prepare_datasets()
             
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16
+            model = prepare_model_for_kbit_training(model)
+            model.config.use_cache = False
+
+            peft_config = LoraConfig(
+                r=32,
+                lora_alpha=32,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                lora_dropout=0.05,
+                bias="none",
+                task_type="CAUSAL_LM",
             )
             
-            model_loader = LLM(
-                model_path=self.config['base_model_name'],
-                bnb_config=quantization_config,
-                access_token=Path(out_dir) / 'token' if self.config.get('token_from_file') else None
-            )
-            model, tokenizer = model_loader.get_model(), model_loader.get_tokenizer()
+            model = get_peft_model(model, peft_config)
+
+            # Tokenize the datasets
+            def tokenize_function(examples):
+                return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=512)
             
+            train_dataset = train_dataset.map(tokenize_function, batched=True)
+            val_dataset = val_dataset.map(tokenize_function, batched=True)
+
             training_args = TrainingArguments(
-                output_dir=str(self.output_dir),
-                per_device_train_batch_size=self.config.get('batch_size', 2),
-                gradient_accumulation_steps=self.config.get('gradient_accumulation', 4),
-                learning_rate=self.config.get('learning_rate', 2e-4),
-                num_train_epochs=self.config.get('num_epochs', 3),
-                fp16=True,
+                output_dir=str(self.output_dir / 'output'),
                 logging_dir=str(self.output_dir / 'logs'),
-                report_to="none",
-                remove_unused_columns=False
+                num_train_epochs=35,
+                warmup_steps=100,
+                optim="adamw_torch",
+                learning_rate=1e-5,
+                logging_steps=10,
+                max_grad_norm=1.0,
+                per_device_train_batch_size=1,
+                per_device_eval_batch_size=1,
+                gradient_accumulation_steps=8,
+                lr_scheduler_type="cosine",
+                gradient_checkpointing=True,
+                fp16=True,
+                eval_strategy="epoch",
+                save_strategy="epoch",
+                weight_decay=0.01,
+                save_total_limit=3,
+                load_best_model_at_end=True
             )
-            
-            trainer = LoRA(
+
+            trainer = Trainer(
                 model=model,
-                tokenizer=tokenizer,
-                training_args=training_args,
-                peft_config=LoraConfig(
-                    r=self.config.get('lora_r', 32),
-                    lora_alpha=self.config.get('lora_alpha', 64),
-                    target_modules=find_all_linear_names(model),
-                    lora_dropout=self.config.get('lora_dropout', 0.1),
-                    bias="none",
-                    task_type="CAUSAL_LM"
-                )
+                args=training_args,
+                train_dataset=train_dataset,
+                eval_dataset=val_dataset,
+                data_collator=DataCollatorForLanguageModeling(
+                    tokenizer, 
+                    pad_to_multiple_of=8, 
+                    return_tensors="pt", 
+                    mlm=False
+                ),
+                callbacks=[EarlyStoppingCallback(early_stopping_patience=2)]
             )
             
-            trainer.train(
-            dataset=NNPrompt(model_loader.get_max_length(), tokenizer).get_dataset(),
-            tokenizer=tokenizer,
-            output_dir=str(self.output_dir)
-            )
-            
-            trainer.save_model(self.output_dir / 'final_model')
-            print(f"Training complete. Results in: {self.output_dir}")
+            trainer.train()
+            trainer.save_model(str(self.output_dir / 'final_model'))
+            print(f"Training complete. Model saved to: {self.output_dir / 'final_model'}")
             
         except Exception as e:
             print(f"Training failed: {str(e)}")
             raise
 
 if __name__ == "__main__":
-    finetuner = EnhancedModelFinetuner()
-    finetuner.run()
+    # Create a proper config file first
+    config_data = {
+        "base_model_name": "deepseek-ai/deepseek-coder-1.3b-instruct",
+        "output_dir": "./output"
+    }
+    
+    config_file = "./ab/gpt/conf/llm/ds_coder_1.3b_instruct.json"
+    # Create directory if it doesn't exist
+    os.makedirs(os.path.dirname(config_file), exist_ok=True)
+    
+    # Write the actual config data
+    with open(config_file, "w") as f:
+        json.dump(config_data, f, indent=4)
+    
+    finetuner = LLMFineTuner(config_file)
+    finetuner.train()
