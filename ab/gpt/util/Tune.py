@@ -13,7 +13,7 @@ import pandas as pd
 from ab.nn.util.Const import ab_root_path
 from ab.nn.util.Util import release_memory, create_file
 from transformers import TrainingArguments
-from peft import (LoraConfig, PeftModel, prepare_model_for_kbit_training)
+from peft import (LoraConfig, PeftModel)
 from ab.gpt.util.Chatbot import ChatBot
 from ab.gpt.util.Const import hp_file, conf_dir, conf_train_dir, conf_test_dir, conf_llm_dir, epoch_dir, new_nn_file, nngpt_dir, synth_dir, new_out_file
 from ab.gpt.util.LLM import LLM
@@ -27,7 +27,7 @@ ds_conf = conf_dir / 'DeepSpeed.json'
 
 
 def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf,
-         nn_regenerate_after_exception=False, n_training_prompts=None):
+         nn_regenerate_after_exception=False, n_training_prompts=None, always_save_full_output=False):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
     with open(conf_llm_dir / llm_conf) as f:
@@ -61,14 +61,15 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
     )
 
     peft_config = LoraConfig(
-        r=8,  # dimension of the updated matrices
-        lora_alpha=32,
+        r=16,  # dimension of the updated matrices
+        lora_alpha=16,
         target_modules=[
-            "q_proj",
-            "k_proj"
+            "q_proj"
+            # ,
+            # "k_proj"
         ],
-        layers_to_transform=list(range(19, 24)),
-        lora_dropout=0.05,
+        layers_to_transform=list(range(22, 24)),
+        lora_dropout=0.01,
         bias="none",
         task_type="CAUSAL_LM",
     )
@@ -123,20 +124,20 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
         if epoch < skip_epoch:
             print(f'Skipped nn generation at epoch {epoch}')
         else:
-            nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exception, prompt_dict, test_nn, model_loader.get_max_length())
+            nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exception, prompt_dict, test_nn, model_loader.get_max_length(), always_save_full_output=always_save_full_output)
         # fine tune model for 1 epoch / Using training_args and save copy
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')
         model.train()
         model = lora_tuner.train(dataset, tokenizer, out_path / base_model_name)
 
 
-def nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exception, prompt_dict, test_nn, max_length):
+def nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exception, prompt_dict, test_nn, max_length, always_save_full_output=False):
     # Move inside the loop to create new prompt with newly created models.
     print('Preparing prompts for generation, this might take a while...')
     prompts = []
     for key in conf_keys:
         prompt = ''
-        for pr in prompt_dict[key]['prompts']:
+        for pr in prompt_dict[key]['prompt']:
             prompt += pr + '\n'
         # Get nn-dataset codes
         data = lemur.data(only_best_accuracy=True, task=prompt_dict[key]['task']).groupby(by='nn').sample(n=1)[:test_nn]
@@ -162,6 +163,7 @@ def nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exceptio
             engineer_prompt=False,
             max_words=max_length  ## Reduce memory usage
         )
+        if always_save_full_output: create_file(model_dir, new_out_file, full_out)
         print(f'1 gen hyperparams: {hp}')
         try:
             hp = json.loads(hp.replace("'", '"'))
@@ -190,7 +192,7 @@ def nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exceptio
             cv_model = str(os.fsdecode(cv_model))
             gen_nn_dir = models_dir / cv_model
             code_file = gen_nn_dir / new_nn_file
-            if verify_nn_code(gen_nn_dir, code_file):
+            if exists(gen_nn_dir / code_file) and verify_nn_code(gen_nn_dir, code_file):
                 for tries in range(2):
                     try:
                         df = None

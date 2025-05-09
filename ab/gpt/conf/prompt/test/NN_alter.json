@@ -9,7 +9,7 @@
         "addon_list": [],
         "task": "img-classification",
         "addon_task": null,
-        "prompts": [
+        "prompt": [
             "Define 2 `nn.Conv2d()`s a neighboring pair, when there are only non-Conv2d layers between these 2 `nn.Conv2d()`s.",
             "Your task is to randomly pick and modify 1 or 2 neighboring pair of `nn.Conv2d()` according to requirements below and return ONLY the full result.",
             "1.For 2 `nn.Conv2d()` of each picked neighboring pair, change the out-channel of the former `nn.Conv2d()` and the in-channel of the following `nn.Conv2d()` to a same new integer.",
@@ -32,7 +32,7 @@
         "addon_list": [],
         "task": "img-classification",
         "addon_task": null,
-        "prompts": [
+        "prompt": [
             "Your task is to randomly pick 2 or 4 integer numbers in the code and change them into new values, with:",
             "1.***STRICTLY DO NOT INTRODUCE NEW METHODS OR PARAMETERS***.",
             "2.Make sure you have made the modification, and the code shoule be executable after your modification",

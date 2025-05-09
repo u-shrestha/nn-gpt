@@ -11,7 +11,7 @@
         "addon_task": null,
         "no_repeat": [],
         "keep_same": [],
-        "prompts": [
+        "prompt": [
             "Improve the following implementation to make it a better performance on image classification tasks.",
             "The class name should be 'Net' and you MUST PROVIDE FULL CODES of the changed implementation.",
             "You can change the structure, alternatively also changed training procedure.",
@@ -29,7 +29,7 @@
         "addon_task": "img-classification",
         "no_repeat": ["nn"],
         "keep_same": [],
-        "prompts": [
+        "prompt": [
             "Improve the following implementation to make it a better performance on image segmentation tasks given another backbone implementation.",
             "The class name should be 'Net' and you MUST PROVIDE FULL CODES of the changed implementation.",
             "You can change the structure, alternatively also changed training procedure.",

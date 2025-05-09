@@ -31,7 +31,7 @@ def alter(epochs, test_conf, llm_name):
         prompts = []
         for key in prompt_dict.keys():
             prompt = ""
-            for pr in prompt_dict[key]['prompts']:
+            for pr in prompt_dict[key]['prompt']:
                 prompt += pr + "\n"
             # Get nn-dataset codes
             data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['task']).groupby(by="nn").sample(n=1)
