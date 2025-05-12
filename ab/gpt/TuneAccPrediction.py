@@ -10,7 +10,9 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments,
     DataCollatorForLanguageModeling,
-    Trainer
+    Trainer,
+    PreTrainedTokenizer,
+    PreTrainedModel
 )
 from ab.nn.api import data as nn_data
 from peft import (
@@ -21,6 +23,7 @@ from peft import (
 from datasets import Dataset
 from trl import SFTTrainer
 from transformers.trainer_callback import EarlyStoppingCallback
+from util.Chatbot import ChatBot 
 
 class LLMFineTuner:
     def __init__(self, config_path):
@@ -28,10 +31,15 @@ class LLMFineTuner:
         self.output_dir = Path(self.config.get("output_dir", "model_results"))
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.required_columns = ['nn', 'dataset', 'task', 'epoch', 'accuracy', 'nn_code', 'prm']
+        self.chatbot = None
         
     def _load_config(self, path):
         with open(path) as f:
             return json.load(f)
+    
+    def initialize_chatbot(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer):
+        """Initialize the ChatBot instance with the given model and tokenizer"""
+        self.chatbot = ChatBot(model=model, tokenizer=tokenizer, keep_memory=False)
     
     def prepare_data(self):
         OUTPUT_CSV = self.output_dir / 'nn_results_enhanced_final.csv'
@@ -40,7 +48,7 @@ class LLMFineTuner:
             print(f"File '{OUTPUT_CSV}' already exists. Skipping processing.")
             return pd.read_csv(OUTPUT_CSV)
 
-        raw_data = nn_data(only_best_accuracy=False)  # Assuming nn_data is defined elsewhere
+        raw_data = nn_data(only_best_accuracy=False)
         df = pd.DataFrame(raw_data)
 
         required_columns = ['task', 'dataset', 'metric', 'metric_code', 'nn', 'nn_code',
@@ -123,7 +131,7 @@ class LLMFineTuner:
         return train_df, val_df, test_df
     
     def generate_prompt(self, row):
-        return f"""Task: {row['task']}
+        base_prompt = f"""Task: {row['task']}
 Dataset: {row['dataset']}
 Model: {row['nn']}
 Best Accuracy: {row['best_accuracy']:.4f}
@@ -131,16 +139,22 @@ Best Epoch: {row['best_epoch']}
 Epoch 1 Accuracy: {row.get('epoch_1_accuracy', 'N/A')}
 Epoch 2 Accuracy: {row.get('epoch_2_accuracy', 'N/A')}
 Parameters: {row.get('prm', 'N/A')}"""
+        
+        if self.chatbot:
+            nn_code = row.get('nn_code', '')
+            formatted_prompt = f"<nn>{nn_code}</nn>\n<hp>{base_prompt}</hp>"
+            
+            return formatted_prompt
+        else:
+            return base_prompt
     
     def prepare_datasets(self):
         df = self.prepare_data()
         train_df, val_df, _ = self.stratified_split(df)
         
-        # Generate prompts for each dataset
         train_df['text'] = train_df.apply(self.generate_prompt, axis=1)
         val_df['text'] = val_df.apply(self.generate_prompt, axis=1)
         
-        # Convert to HuggingFace datasets
         train_dataset = Dataset.from_pandas(train_df[['text']])
         val_dataset = Dataset.from_pandas(val_df[['text']])
         
@@ -163,6 +177,9 @@ Parameters: {row.get('prm', 'N/A')}"""
         tokenizer = AutoTokenizer.from_pretrained(self.config["base_model_name"])
         tokenizer.pad_token = tokenizer.eos_token
         
+        # Initialize the chatbot with the loaded model and tokenizer
+        self.initialize_chatbot(model, tokenizer)
+        
         return model, tokenizer
     
     def train(self):
@@ -174,9 +191,9 @@ Parameters: {row.get('prm', 'N/A')}"""
             model.config.use_cache = False
 
             peft_config = LoraConfig(
-                r=32,
+                r=8,
                 lora_alpha=32,
-                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                target_modules=["q_proj", "v_proj"],
                 lora_dropout=0.05,
                 bias="none",
                 task_type="CAUSAL_LM",
@@ -184,7 +201,6 @@ Parameters: {row.get('prm', 'N/A')}"""
             
             model = get_peft_model(model, peft_config)
 
-            # Tokenize the datasets
             def tokenize_function(examples):
                 return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=512)
             
@@ -236,17 +252,14 @@ Parameters: {row.get('prm', 'N/A')}"""
             raise
 
 if __name__ == "__main__":
-    # Create a proper config file first
     config_data = {
         "base_model_name": "deepseek-ai/deepseek-coder-1.3b-instruct",
         "output_dir": "./output"
     }
     
     config_file = "./ab/gpt/conf/llm/ds_coder_1.3b_instruct.json"
-    # Create directory if it doesn't exist
     os.makedirs(os.path.dirname(config_file), exist_ok=True)
     
-    # Write the actual config data
     with open(config_file, "w") as f:
         json.dump(config_data, f, indent=4)
     
