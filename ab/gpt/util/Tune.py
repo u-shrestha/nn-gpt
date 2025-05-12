@@ -6,6 +6,7 @@ from os import makedirs
 from os.path import isfile
 from pathlib import Path
 from tqdm import tqdm
+# from datasets import load_from_disk
 
 import ab.nn.api as lemur
 import deepspeed
@@ -24,6 +25,37 @@ from ab.gpt.util.Util import nn_accepted, verify_nn_code, exists
 from ab.gpt.util.prompt.NNGenPrompt import NNGenPrompt
 
 ds_conf = conf_dir / 'DeepSpeed.json'
+
+
+def apply_sliding_window(example, max_length, stride, tokenizer):
+    input_ids = example['input_ids']
+    attention_mask = example['attention_mask']
+
+    chunks = []
+    for i in range(0, len(input_ids), stride):
+        end = i + max_length
+        if end <= len(input_ids):
+            chunk_input_ids = input_ids[i:end]
+            chunk_attention_mask = attention_mask[i:end]
+
+            pad_len = max_length - len(chunk_input_ids)
+            if pad_len > 0:
+                chunk_input_ids += [tokenizer.pad_token_id] * pad_len
+                chunk_attention_mask += [0] * pad_len
+
+            chunks.append({
+                "input_ids": chunk_input_ids,
+                "attention_mask": chunk_attention_mask
+            })
+    return {"chunks": chunks}
+
+
+def flatten_chunks(data):
+    all_chunks = sum(data["chunks"], [])  # flatten batched list
+    return {
+        "input_ids": [chunk["input_ids"] for chunk in all_chunks],
+        "attention_mask": [chunk["attention_mask"] for chunk in all_chunks],
+    }
 
 
 def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf,
@@ -58,6 +90,7 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
         output_dir=nngpt_dir / 'outputs',
         optim='paged_adamw_8bit',
         deepspeed=ds_conf if use_deepspeed else None,
+        gradient_checkpointing=True,
     )
 
     peft_config = LoraConfig(
@@ -87,8 +120,8 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
         base_model_name,
         quantization_config_4bit,
         access_token=access_token,
-        use_deepspeed=use_deepspeed,
-        context_length=context_length
+        use_deepspeed=use_deepspeed
+        # , context_length=context_length
     )
     model = model_loader.get_model()
     tokenizer = model_loader.get_tokenizer()
@@ -112,6 +145,17 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
     print('Using Max Length:', model_loader.get_max_length())
     data_processor = NNGenPrompt(model_loader.get_max_length(), tokenizer, train_config_path)
     dataset = data_processor.get_dataset(only_best_accuracy, n_training_prompts=n_training_prompts)
+    # dataset = load_from_disk(nngpt_dir / 'dataset')
+
+    if context_length:
+        chunked_dataset = dataset.map(
+            lambda x: apply_sliding_window(x, context_length, 1024, tokenizer),
+            remove_columns=dataset.column_names,
+            batch_size=16
+        )
+        dataset = chunked_dataset.map(flatten_chunks, batched=True, remove_columns=["chunks"])
+
+    # print('Dataset length:', len(dataset))
     print('Dataset length:', len(dataset))
 
     # loop train and eval cycles
