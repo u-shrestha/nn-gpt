@@ -24,6 +24,6 @@ def exists(f):
 
 def extract_str(s: str, start: str, end: str):
     try:
-        return s.split(start)[1].split(end)[0]
+        return s.split(end)[-2].split(start)[-1]
     except:
         return None

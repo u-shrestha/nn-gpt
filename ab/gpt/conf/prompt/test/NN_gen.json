@@ -70,14 +70,19 @@
     "no_repeat": [],
     "keep_same": [],
     "prompt": [
-      "Provide in the LEMUR NN Dataset format the training hyperparameters (<hp>...</hp>) and corresponding neural network model code (<nn>...</nn>) that achieve a maximum value for the metric '{addon_metric}' at epoch {addon_epoch} on the '{addon_dataset}' dataset for the task '{addon_task}'.",
-      "     You must modify the returned model’s internal architecture to ensure it differs from all models in the LEMUR NN Dataset by:",
-      "     Adding, removing, or adjusting existing neural network layers and their arguments.",
-      "     Reordering or restructuring layers (e.g., changing dimensions or sequence).",
-      "To generate the new model, use common patterns and ideas from the following reference LEMUR Dataset neural network model and its training configuration, which achieved for a metric '{metric}' value of {accuracy} at epoch {epoch} on the '{dataset}' dataset for the task '{task}' with training hyperparameters <hp>{prm}</hp>, and a code provided in the corresponding tags:",
+      "Return the training hyperparameters (as a JSON object between XML tags <hp> and </hp>) and corresponding neural network model (as a Python code between XML tags <nn> and </nn>) that achieves a maximum value for the metric '{addon_metric}' at epoch {addon_epoch} on the '{addon_dataset}' dataset for the task '{addon_task}'.",
+      "1. Training hyperparameters (JSON object between XML tags <hp> and </hp>):",
+      "  Obligatory keys \"batch\", \"transform\", and all keys from the 'supported_hyperparameters' function in model code. Do not use any other keys like \"hp*\".",
+      "  If unsure, use: \"batch\": 64, \"transform\": \"norm_128_flip\".",
+      "2. Neural network model (Python code between XML tags <nn> and </nn>):",
+      "   It's critical to modify the returned model’s internal architecture to ensure it differs from all models in the LEMUR NN Dataset by:",
+      "   Adding, removing, or adjusting existing neural network layers and their arguments.",
+      "   Reordering or restructuring layers (e.g., changing dimensions or sequence).",
+      "   To generate the new model, use common patterns and ideas from the following reference LEMUR Dataset neural network model and its training configuration, which achieved for a metric '{metric}' value of {accuracy} at epoch {epoch} on the '{dataset}' dataset for the task '{task}' with training hyperparameters <hp>{prm}</hp>, and a code provided in the corresponding tags:",
       "<transform>{transform_code}</transform>",
       "<metric>{metric_code}</metric>",
-      "<nn>{nn_code}</nn>"
+      "<nn>{nn_code}</nn>",
+      "Ensure the neural network code follows the LEMUR NN Dataset conventions."
     ]
   },
   "improve_segmentation_only": {
