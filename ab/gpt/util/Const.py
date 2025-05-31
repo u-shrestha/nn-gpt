@@ -15,8 +15,11 @@ conf_llm_dir = conf_dir / 'llm'
 nngpt_dir = out_dir / 'nngpt'
 acgpt_dir = out_dir / 'acgpt'
 nnrag_dir = out_dir / 'rag'
+new_dataset_dir = nngpt_dir / 'new_lemur'
+new_lemur_nn_dir = new_dataset_dir / 'nn'
+new_lemur_stat_dir = new_dataset_dir / 'stat'
 
-config_file = conf_llm_dir / 'nngpt_ds_coder_1.3b_instruct.json'
+config_file = conf_llm_dir / 'nngpt_ds_coder_1.3b_instruct.json' # 'nngpt_dsr1_distill_qwen_7b_r.json'
 
 
 with open(config_file) as f:

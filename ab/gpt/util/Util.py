@@ -1,5 +1,9 @@
 import os.path
 import re
+import shutil
+from pathlib import Path
+
+from ab.gpt.util.Const import new_lemur_nn_dir, new_nn_file, new_lemur_stat_dir
 
 
 # todo: Verify that the model's accuracy does not decrease by more than 10%, or increase at some epochs
@@ -27,3 +31,19 @@ def extract_str(s: str, start: str, end: str):
         return s.split(end)[-2].split(start)[-1]
     except:
         return None
+
+
+
+def copy_to_lemur(df, gen_nn_dir, name):
+    Path(new_lemur_nn_dir).mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(gen_nn_dir / new_nn_file, new_lemur_nn_dir / f'{name}.py')
+    nn_model_dir = new_lemur_stat_dir / name
+    if df is None:
+        Path(nn_model_dir).mkdir(parents=True, exist_ok=True)
+        for f_nm in [f for f in os.listdir(gen_nn_dir) if re.match(r'[0-9]+\.json', f)]:
+            shutil.copyfile(gen_nn_dir / f_nm, nn_model_dir / f_nm)
+    else:
+        dr_nm = new_lemur_stat_dir / f"{df['task']}_{df['dataset']}_{df['metric']}_{name}"
+        Path(dr_nm).mkdir(parents=True, exist_ok=True)
+        for f_nm in [f for f in os.listdir(gen_nn_dir) if re.match(r'[0-9]+\.json', f)]:
+            shutil.copyfile(gen_nn_dir / f_nm, dr_nm / f_nm)

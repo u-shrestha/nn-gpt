@@ -1,28 +1,27 @@
-import json
 import os
 import shutil
 import traceback
 from os import makedirs
 from os.path import isfile
-from pathlib import Path
-from tqdm import tqdm
-# from datasets import load_from_disk
 
 import ab.nn.api as lemur
 import deepspeed
 import pandas as pd
-from ab.nn.util.Const import ab_root_path
 from ab.nn.util.Util import release_memory, create_file
-from transformers import TrainingArguments
 from peft import (LoraConfig, PeftModel)
+from tqdm import tqdm
+from transformers import TrainingArguments
+
 from ab.gpt.util.Chatbot import ChatBot
-from ab.gpt.util.Const import hp_file, conf_dir, conf_train_dir, conf_test_dir, conf_llm_dir, epoch_dir, new_nn_file, nngpt_dir, synth_dir, new_out_file
+from ab.gpt.util.Const import *
 from ab.gpt.util.LLM import LLM
 from ab.gpt.util.LLMUtil import quantization_config_4bit
 from ab.gpt.util.LoRA import LoRA
 from ab.gpt.util.NNEval import NNEval
-from ab.gpt.util.Util import nn_accepted, verify_nn_code, exists
+from ab.gpt.util.Util import nn_accepted, verify_nn_code, exists, copy_to_lemur
 from ab.gpt.util.prompt.NNGenPrompt import NNGenPrompt
+
+# from datasets import load_from_disk
 
 ds_conf = conf_dir / 'DeepSpeed.json'
 
@@ -260,23 +259,7 @@ def nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exceptio
                         with open(gen_nn_dir / 'eval_info.json', 'w+') as f:
                             json.dump(eval_info, f)
                         if nn_accepted(gen_nn_dir):
-                            dataset_dir = nngpt_dir / 'new_lemur'
-                            nn_dir = dataset_dir / 'nn'
-                            stat_dir = dataset_dir / 'stat'
-                            Path(nn_dir).mkdir(parents=True, exist_ok=True)
-                            shutil.copyfile(gen_nn_dir / new_nn_file, nn_dir / f'{name}.py')
-                            nn_model_dir = stat_dir / name
-                            if df is None:
-                                Path(nn_model_dir).mkdir(parents=True, exist_ok=True)
-                                for epo in range(hp['epoch']):
-                                    f_nm = f'{epo + 1}.json'
-                                    shutil.copyfile(gen_nn_dir / f_nm, nn_model_dir / f_nm)
-                            else:
-                                dr_nm = stat_dir / f"{df['task']}_{df['dataset']}_{df['metric']}_{name}"
-                                Path(dr_nm).mkdir(parents=True, exist_ok=True)
-                                for epo in range(hp['epoch']):
-                                    f_nm = f'{epo + 1}.json'
-                                    shutil.copyfile(gen_nn_dir / f_nm, dr_nm / f_nm)
+                            copy_to_lemur(df, gen_nn_dir, name)
                             break
                     except Exception as error:
                         print('failed to determine accuracy for', cv_model)
