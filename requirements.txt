@@ -1,4 +1,4 @@
-nn-dataset>=1.2.4
+nn-dataset>=1.2.5
 transformers~=4.48.0
 accelerate
 packaging
