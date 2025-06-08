@@ -28,10 +28,17 @@ def exists(f):
 
 def extract_str(s: str, start: str, end: str):
     try:
-        return s.split(end)[-2].split(start)[-1]
+        return s[:s.rindex(end)].split(start)[-1].strip()
     except:
         return None
 
+
+def extract_code(txt):
+    return next(filter(None, map(lambda l: extract_str(txt, *l), (('<nn>', '</nn>'), ('```python', '```'), ('```', '```')))), '')
+
+
+def extract_hyperparam(txt):
+    return next(filter(None, map(lambda l: extract_str(txt, *l), (('<hp>', '</hp>'),))), '')
 
 
 def copy_to_lemur(df, gen_nn_dir, name):

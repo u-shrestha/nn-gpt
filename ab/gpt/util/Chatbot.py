@@ -1,5 +1,5 @@
 from transformers import PreTrainedTokenizer, PreTrainedModel, pipeline
-from ab.gpt.util.Util import extract_str
+from ab.gpt.util.Util import extract_code, extract_hyperparam
 
 extra_instructions = (
     " Use PyTorch for the implementation. Keep the code short. Name the main class of the model \"Net\"."
@@ -47,5 +47,5 @@ class ChatBot:
         )[0]["generated_text"][-1]['content']
         assert isinstance(out, str)
         if self.__keep_memory: self.__messages.append({"role": "assistant", "content": out})
-        nn = next(filter(None, map(lambda l: extract_str(out, *l), (('<nn>', '</nn>'), ('```python', '```'), ('```', '```')))), '')
-        return nn, extract_str(out, '<hp>', '</hp>'), out
+        nn = extract_code(out)
+        return nn, extract_hyperparam(out), out

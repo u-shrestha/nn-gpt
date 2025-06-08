@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import shutil
 
 import ab.nn.api as nn_dataset
@@ -8,8 +7,9 @@ import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from ab.gpt.util.Const import conf_test_dir, epoch_dir, new_nn_file, synth_dir, nngpt_dir
-
+from ab.gpt.util.Const import conf_test_dir, epoch_dir, new_nn_file, synth_dir, new_out_file
+from ab.gpt.util.Util import extract_code
+from ab.nn.util.Util import create_file
 
 def alter(epochs, test_conf, llm_name):
     # Load test prompts
@@ -61,18 +61,13 @@ def alter(epochs, test_conf, llm_name):
                                      eos_token_id=tokenizer.eos_token_id)
             out = tokenizer.decode(outputs[0][len(inputs[0]):], skip_special_tokens=True)
             print("Response Available!")
-            if out.count("```") < 2:
-                print(f"[INFO]Lesser than 2 \"```\", got {out.count('```')}. Skip to avoid infinite loop.")
-                continue
-            x = re.search("```((.|\s)*?)```", out)
-            if x:
+            nn_code = extract_code(out)
+            if nn_code:
                 print(f"[INFO]Saving code to: {code_file}")
                 code_file.parent.mkdir(exist_ok=True, parents=True)  # Move here to avoid empty folder
-                out = x.group()
-                out = out.replace("```python", "")
-                out = out.replace("```", "")
                 with open(code_file, 'w') as file:
-                    file.write(out)
+                    file.write(nn_code)
+                create_file(model_dir, new_out_file, out)
                 if origdf is None:
                     if os.path.isfile(df_file):  # Clean up dataframe.df, if no additional information generated this time.
                         os.remove(df_file)
