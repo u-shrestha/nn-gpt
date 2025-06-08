@@ -76,9 +76,9 @@ The recently added dependencies might be missing in the <b>AI Linux</b>. In this
 
 ## Usage
 
-Use `NNAlter.py` to generate initial modified CV models, specify by argument `-e` to determine the number of epochs for initial CV model generation.
+Use `NNAlter*.py` to generate initial modified CV models, specify by argument `-e` to determine the number of epochs for initial CV model generation.
 
-Use `TuneNNGen.py` to perform generation and evaluation of CV model, along with fine-tuning/evaluation of a LLM. The `-s` flag  allows to skip CV model generation for a specified number of epochs.
+Use `TuneNNGen*.py` to perform generation and evaluation of CV model, along with fine-tuning/evaluation of a LLM. The `-s` flag  allows to skip CV model generation for a specified number of epochs.
 
 <a href='https://huggingface.co/ABrain'><strong>Pretrained LLM weights</strong></a>
 
