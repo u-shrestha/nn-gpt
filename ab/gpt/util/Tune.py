@@ -153,14 +153,12 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
         if epoch < skip_epoch:
             print(f'Skipped nn generation at epoch {epoch}')
         else:
-            nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exception, prompt_dict, test_nn, model_loader.get_max_length(), always_save_full_output=always_save_full_output)
+            nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exception, prompt_dict, test_nn, model_loader.get_max_length(),
+                   always_save_full_output=always_save_full_output)
         # fine tune model for 1 epoch / Using training_args and save copy
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')
         # data_processor = NNGenPrompt(model_loader.get_max_length(), tokenizer, train_config_path)
-        if context_length:
-            data_processor = NNGenPrompt(context_length, tokenizer, train_config_path)
-        else:
-            data_processor = NNGenPrompt(model_loader.get_max_length(), tokenizer, train_config_path)
+        data_processor = NNGenPrompt(context_length if context_length else model_loader.get_max_length(), tokenizer, train_config_path)
         dataset = data_processor.get_dataset(only_best_accuracy, n_training_prompts=n_training_prompts)
         # dataset = load_from_disk(nngpt_dir / 'dataset')
 
