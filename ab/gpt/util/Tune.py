@@ -119,8 +119,8 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
         base_model_name,
         quantization_config_4bit,
         access_token=access_token,
-        use_deepspeed=use_deepspeed
-        # , context_length=context_length
+        use_deepspeed=use_deepspeed,
+        context_length=context_length
     )
     model = model_loader.get_model()
     tokenizer = model_loader.get_tokenizer()
