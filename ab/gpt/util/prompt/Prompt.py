@@ -11,8 +11,7 @@ def preprocess_batch(batch, tokenizer, max_length):
     """
     return tokenizer(
         batch["text"],
-        max_length=max_length,
-        truncation=True,
+        truncation=False
     )
 
 
