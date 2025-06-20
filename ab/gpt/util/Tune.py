@@ -93,14 +93,13 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
     )
 
     peft_config = LoraConfig(
-        r=16,  # dimension of the updated matrices
-        lora_alpha=16,
+        r=32,  # dimension of the updated matrices
+        lora_alpha=32,
         target_modules=[
-            "q_proj"
-            # ,
-            # "k_proj"
+            "q_proj",
+            "k_proj"
         ],
-        layers_to_transform=list(range(22, 24)),
+        layers_to_transform=list(range(18, 24)),
         lora_dropout=0.01,
         bias="none",
         task_type="CAUSAL_LM",
