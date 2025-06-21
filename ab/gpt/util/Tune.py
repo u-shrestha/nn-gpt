@@ -124,7 +124,7 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
     model = model_loader.get_model()
     tokenizer = model_loader.get_tokenizer()
     # print(model)
-    if not (llm_path is None):
+    if llm_path:
         print(f'Load saved LoRA layer from path: {llm_path}')
         model = PeftModel.from_pretrained(model, llm_path, is_trainable=True)
         model = model.merge_and_unload()
