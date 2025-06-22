@@ -26,4 +26,3 @@ def tokenize(prompt, tokenizer):
         padding=False,
         return_tensors=None,
     )
-
