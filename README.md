@@ -67,9 +67,17 @@ python -m ab.stat.export
 ```
 
 ### Docker
-All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be run inside a Docker image:
+All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be seamlessly run within its Docker container.
+
+Installing the latest version of the project from GitHub
 ```bash
-docker run -v $(pwd):/a/mm abrainone/ai-linux bash -c "PYTHONPATH=/a/mm python -m ab.gpt.train_n_eval"
+chmod 777 $(pwd)
+docker run --rm -v $(pwd):/a/mm abrainone/ai-linux bash -c "[ -d nn-gpt ] && git -C nn-gpt pull || git -c advice.detachedHead=false clone --depth 1 https://github.com/ABrain-One/nn-gpt"
+```
+
+Running script
+```bash
+docker run --rm --shm-size=16G -v $(pwd)/nn-gpt:/a/mm abrainone/ai-linux bash -c "python -m ab.gpt.TuneNNGen_8B"
 ```
 
 The recently added dependencies might be missing in the <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a>. In this case, you can create a container from the Docker image ```abrainone/ai-linux```, install the missing packages (preferably using ```pip install <package name>```), and then create a new image from the container using ```docker commit <container name> <new image name>```. You can use this new image locally or push it to the registry for deployment on the computer cluster.
