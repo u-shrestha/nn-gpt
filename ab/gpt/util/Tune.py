@@ -25,8 +25,6 @@ from ab.gpt.util.prompt.NNGenPrompt import NNGenPrompt
 
 ds_conf = conf_dir / 'DeepSpeed.json'
 
-os.environ["WANDB_MODE"] = "disabled"
-
 def apply_sliding_window(example, max_length, stride, tokenizer):
     input_ids = example['input_ids']
     attention_mask = example['attention_mask']

@@ -10,7 +10,6 @@ from ab.gpt.util.Const import epoch_dir, synth_dir, new_nn_file, nngpt_dir
 from ab.gpt.util.NNEval import NNEval
 from ab.gpt.util.Util import verify_nn_code, copy_to_lemur
 
-os.environ["WANDB_MODE"] = "disabled"
 
 # --- Default Evaluation Parameters ---
 #TODO: CARRY ALL THIS STUFF TO CONST.PY

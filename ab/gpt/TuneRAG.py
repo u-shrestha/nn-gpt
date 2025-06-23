@@ -13,7 +13,6 @@ import torch
 from ab.gpt.util.Const import nnrag_dir
 
 os.environ["DS_CUDA_VERSION"] = torch.version.cuda
-os.environ["WANDB_MODE"] = "disabled"
 os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 

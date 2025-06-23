@@ -11,8 +11,6 @@ from ab.gpt.util.Const import conf_test_dir, epoch_dir, new_nn_file, synth_dir, 
 from ab.gpt.util.Util import extract_code
 from ab.nn.util.Util import create_file
 
-os.environ["WANDB_MODE"] = "disabled"
-
 def alter(epochs, test_conf, llm_name):
     # Load test prompts
     with open(conf_test_dir / test_conf) as f:

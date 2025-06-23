@@ -16,7 +16,6 @@ from transformers import (
 
 from ab.gpt.util.lemur_dataset_preparation import DatasetPreparation
 
-os.environ["WANDB_MODE"] = "disabled"
 device = torch.device("cuda" if torch.cuda.is_available()  else "cpu")
 
 
