@@ -11,3 +11,4 @@ sentence-transformers>=3.3.1
 faiss-cpu
 mpi4py
 overrides>=7.7.0
+trl
