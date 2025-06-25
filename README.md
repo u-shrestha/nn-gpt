@@ -77,7 +77,7 @@ docker run --rm -u ab:$(id -u) -v $(pwd):/a/mm abrainone/ai-linux bash -c "[ -d 
 
 Running script
 ```bash
-docker run --rm -u ab:$(id -u) --shm-size=16G -v $(pwd)/nn-gpt:/a/mm abrainone/ai-linux bash -c "python -m ab.gpt.TuneNNGen_8B"
+docker run --rm -u $(id -u):ab --shm-size=16G -v $(pwd)/nn-gpt:/a/mm abrainone/ai-linux bash -c "python -m ab.gpt.TuneNNGen_8B"
 ```
 
 The recently added dependencies might be missing in the <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a>. In this case, you can create a container from the Docker image ```abrainone/ai-linux```, install the missing packages (preferably using ```pip install <package name>```), and then create a new image from the container using ```docker commit <container name> <new image name>```. You can use this new image locally or push it to the registry for deployment on the computer cluster.
