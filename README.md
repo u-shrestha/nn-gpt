@@ -71,7 +71,6 @@ All versions of this project are compatible with <a href='https://hub.docker.com
 
 Installing the latest version of the project from GitHub
 ```bash
-chmod 777 $(pwd)
 docker run --rm -u $(id -u):ab -v $(pwd):/a/mm abrainone/ai-linux bash -c "[ -d nn-gpt ] && git -C nn-gpt pull || git -c advice.detachedHead=false clone --depth 1 https://github.com/ABrain-One/nn-gpt"
 ```
 
