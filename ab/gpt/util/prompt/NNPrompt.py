@@ -21,7 +21,7 @@ class NNPrompt(Prompt):
             pandas.Dataframe object with columns described in nn_api.data()
         """
         lemur_df = lemur.data(only_best_accuracy, max_rows=n_training_prompts)
-        dataframe = DataFrame(columns=["instruction", "context", "response", "category", "text"])
+        dataframe = DataFrame(columns=['instruction', 'context', 'response', 'category', 'text'])
 
         for idx, lemur_row in lemur_df.iterrows():
             inst = (

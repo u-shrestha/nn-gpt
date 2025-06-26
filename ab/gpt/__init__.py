@@ -1,3 +1,3 @@
 import os
 
-os.environ["WANDB_MODE"] = "disabled"
+os.environ['WANDB_MODE'] = 'disabled'

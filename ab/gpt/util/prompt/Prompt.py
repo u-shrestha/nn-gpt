@@ -10,7 +10,7 @@ def preprocess_batch(batch, tokenizer, max_length):
     Tokenizing a batch
     """
     return tokenizer(
-        batch["text"],
+        batch['text'],
         truncation=False
     )
 
@@ -40,10 +40,10 @@ class Prompt:
         dataset = dataset.map(
             _preprocessing_function,
             batched=True,
-            remove_columns=["instruction", "context", "response", "text", "category"],
+            remove_columns=['instruction', 'context', 'response', 'text', 'category'],
         )
         # Filter out samples that have input_ids exceeding max_length
-        dataset = dataset.filter(lambda sample: len(sample["input_ids"]) < self.max_len)
+        dataset = dataset.filter(lambda sample: len(sample['input_ids']) < self.max_len)
 
         # Shuffle dataset
         dataset = dataset.shuffle(seed=seed) if seed else dataset.shuffle()
