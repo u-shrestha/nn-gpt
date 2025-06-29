@@ -18,7 +18,7 @@ for N in range(1, 11):  # 1 to 10
             .replace("?2", str(num_columns))
             .replace("?3", str(dropout))
         )
-
+    
         file_name = os.path.join(OUTPUT_DIR, f"Fractal_Net_{counter}.py")
         with open(file_name, "w") as f:
             f.write(filled)
