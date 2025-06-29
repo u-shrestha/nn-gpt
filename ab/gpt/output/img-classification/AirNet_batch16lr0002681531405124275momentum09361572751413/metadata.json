@@ -1,0 +1,18 @@
+{
+    "task": "img-classification",
+    "nn": "AirNet",
+    "prm": {
+        "batch": 16,
+        "lr": 0.002681531405124275,
+        "momentum": 0.936157275141321,
+        "transform": "norm_64"
+    },
+    "transform_code": "import torchvision.transforms as transforms\n\n\ndef transform(norm):\n    return transforms.Compose([\n        transforms.Resize(64),\n        transforms.CenterCrop(64),\n        transforms.ToTensor(),\n        transforms.Normalize(*norm)])",
+    "accuracy": 0.9677387035367198,
+    "addon_accuracy": 0.9999,
+    "metric": "acc",
+    "metric_code": "import torch\nfrom ab.nn.metric.base.base import BaseMetric\n\nclass Accuracy(BaseMetric):\n    def reset(self):\n        self.correct = 0\n        self.total = 0\n    \n    def update(self, outputs, targets):\n        _, predicted = torch.max(outputs.data, 1)\n        correct = (predicted == targets).sum().item()\n        total = targets.size(0)\n        self.correct += correct\n        self.total += total\n    \n    def __call__(self, outputs, targets):\n        _, predicted = torch.max(outputs.data, 1)\n        correct = (predicted == targets).sum().item()\n        total = targets.size(0)\n        self.update(outputs, targets)\n        return correct, total\n    \n    def result(self):\n        return self.correct / max(self.total, 1e-8)\n\n# Function to create metric instance\ndef create_metric(out_shape=None):\n    return Accuracy()\n",
+    "duration": 47112679057.0,
+    "template_used": "improvement_classification_codeonly",
+    "model_name": "deepseek-ai/deepseek-coder-1.3b-instruct"
+}
