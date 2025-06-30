@@ -15,9 +15,10 @@ unique_cols = ['task', 'nn', 'transform_code', 'metric', 'metric_code']
 df_unique = df.drop_duplicates(subset=unique_cols).reset_index(drop=True)
 
 # Step 3: Load prompt templates and LLM model config
-with open("/CV/nn-gpt/ab/gpt/conf/prompt/test/NN_Layers.json", "r") as f:
+
+with open("/home/avigoyal1/CV/nn-gpt/ab/gpt/conf/prompt/train/NN_Layers.json", "r") as f:
     templates = json.load(f)
-with open("/CV/nn-gpt/ab/gpt/conf/llm/ds_coder_1.3b_instruct.json", "r") as f:
+with open("/home/avigoyal1/CV/nn-gpt/ab/gpt/conf/llm/ds_coder_1.3b_instruct.json", "r") as f:
     model_config = json.load(f)
 
 model_name = model_config["base_model_name"]
