@@ -1,0 +1,81 @@
+{
+  "improvement_classification_codeonly": {
+    "comment": [
+      "This prompt enforces major architectural revisions for the CNN model in image classification.",
+      "Only 'lr' and 'momentum' are allowed as tunable hyperparameters.",
+      "Dropout layers are not permitted.",
+      "The resulting model must have significantly different convolutional structure from the original."
+    ],
+    "input_list": [{"para": "nn_code", "value": "nn_code"}],
+    "addon_list": [],
+    "task": "img-classification",
+    "addon_task": null,
+    "prompts": [
+      "**Objective**: Redesign the CNN architecture in `Net(nn.Module)` to enhance classification performance with structural diversity and modern deep learning components.",
+      "",
+      "**Architectural Requirements**:",
+      "1. You must make meaningful changes to the architecture (e.g., reordering, adding, or removing layers). Do NOT just tweak numeric parameters.",
+      "2. Replace standard Conv2d blocks with more advanced alternatives such as:",
+      "   - Depthwise separable convolutions",
+      "   - Grouped convolutions",
+      "   - Attention blocks (e.g., Squeeze-and-Excitation)",
+      "   - Advanced activations like `SiLU`, `GELU`",
+      "   - Residual connections or bottlenecks",
+      "3. Avoid using Dropout or any regularization except `BatchNorm2d`.",
+      "4. Redesign the convolutional backbone so the layer structure differs from the original.",
+      "5. The in_shape and out_shape of the model must be different from the original model to reflect a true architectural overhaul.",
+      "",
+      "**Hyperparameter Rules**:",
+      "- Only use `prm['lr']` and `prm['momentum']`. Do not use any other hyperparameters (e.g., dropout rate, weight decay, etc.).",
+      "- Include a method `def supported_hyperparameters()` that returns `['lr', 'momentum']`.",
+      "",
+      "**Output Requirements**:",
+      "- Return a complete and valid Python class that can compile and train the model.",
+      "- Ensure the new architecture is substantially different from the original model (no repetition of the same blocks).",
+      "- Do not include any `Dropout`, and use only modules that improve learning capacity.",
+      "- **Do NOT output any auxiliary text—no `**Notes**`, no “Modified Code” label—just the plain code block.**",
+      "",
+      "**Original Code to Modify:**",
+      "```\n{nn_code}\n```"
+    ]
+  },
+
+  "improvement_segmentation_codeonly": {
+    "comment": [
+      "This prompt enforces major architectural changes to CNN segmentation models (like UNet).",
+      "It allows only 'lr' and 'momentum' as hyperparameters.",
+      "Dropout layers are not allowed.",
+      "It encourages the use of advanced convolutions, attention mechanisms, and architectural diversity."
+    ],
+    "input_list": [{"para": "nn_code", "value": "nn_code"}],
+    "addon_list": [],
+    "task": "img-segmentation",
+    "addon_task": null,
+    "prompts": [
+      "**Objective**: Redesign the CNN-based image segmentation model defined in `Net(nn.Module)` to significantly improve performance and structure using modern architectural techniques.",
+      "",
+      "**Architectural Guidelines**:",
+      "1. Modify both the encoder and decoder parts of the model meaningfully:",
+      "   - Introduce new blocks (e.g., Residual, Bottleneck, or Attention blocks)",
+      "   - Use modern convolutional layers: Depthwise, Grouped, or Dilated Convolutions",
+      "   - Optional: Squeeze-and-Excitation, CBAM, or Transformer layers for attention",
+      "2. You must add, remove, or reorder layers—not just alter filter sizes or kernel values.",
+      "3. **Dropout is not allowed**. Use `BatchNorm2d`, `SiLU`, or similar non-regularization modules.",
+      "4. The model structure must clearly differ from standard UNet-style models.",
+      "",
+      "**Hyperparameter Rules**:",
+      "- Only use `prm['lr']` and `prm['momentum']` in the model.",
+      "- Include a method `def supported_hyperparameters()` that returns `['lr', 'momentum']`.",
+      "",
+      "**Output Requirements**:",
+      "- Return the complete modified segmentation model with a valid forward pass.",
+      "- Ensure the architecture is syntactically correct and logically valid.",
+      "- Do not include Dropout or use any hyperparameters other than `lr` and `momentum`.",
+      "- The model must reflect a significant architectural change from the original code.",
+      "- **Do NOT output any auxiliary text—no `**Notes**`, no “Modified Code” label—just the plain code block.**",
+      "",
+      "**Here is the code to modify:**",
+      "```\n{nn_code}\n```"
+    ]
+  }
+}
