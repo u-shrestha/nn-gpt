@@ -48,37 +48,43 @@ class FractalUnit(nn.Module):
         x = self.pool(x)
         return x
 
-def fractal_fn(N, num_columns, dropout, in_shape, out_shape, device):
-    class Net(nn.Module):
-        def __init__(self, in_shape, out_shape):
-            super().__init__()
-            self.device = device
-            self.num_columns = num_columns
-            self.glob_drop_ratio = 0.5
-            self.loc_drop_prob = 0.15
-            self.glob_num_columns = np.random.randint(0, self.num_columns, size=(1,))
+class Net(nn.Module):
+    def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:
+        super(Net, self).__init__()
+        self.device = device
+        dropout_prob = prm['dropout']
+        self.num_columns = ?2
+        self.glob_drop_ratio = 0.5
+        self.loc_drop_prob = 0.15
+        self.glob_num_columns = np.random.randint(0, self.num_columns, size=(1,))
+        self.fractal_fn(N=?1, num_columns=?2,dropout_prob=dropout_prob,
+                    in_shape=in_shape, out_shape=out_shape, device=device)
+        
+    def fractal_fn(self, N, num_columns, dropout_prob, in_shape: tuple, out_shape: tuple, device):  # type: ignore
+    
+        channels = [64 * (2 ** (i if i != 4 else i - 1)) for i in range(N)]
+        dropout_probs = [min(0.5, dropout_prob + i * 0.1) for i in range(N)]
+        self.features = nn.Sequential()
+        in_channels = in_shape[1]
+        
+        for i, out_channels in enumerate(channels):
+            self.features.add_module(f"unit{i + 1}", FractalUnit(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                num_columns=self.num_columns,
+                loc_drop_prob=self.loc_drop_prob,
+                dropout_prob=dropout_probs[i]))
+            in_channels = out_channels
 
-            channels = [64 * (2 ** (i if i != 4 else i - 1)) for i in range(N)]
-            dropout_probs = [min(0.5, dropout + i * 0.1) for i in range(N)]
+        # Compute the correct input size for the linear layer dynamically
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, *in_shape[1:])
+            dummy_output = self.features(dummy_input)
+            in_features = dummy_output.view(1, -1).shape[1]
 
-            self.features = nn.Sequential()
-            in_channels = in_shape[1]
-            for i, out_channels in enumerate(channels):
-                self.features.add_module(f"unit{i + 1}", FractalUnit(
-                    in_channels=in_channels,
-                    out_channels=out_channels,
-                    num_columns=self.num_columns,
-                    loc_drop_prob=self.loc_drop_prob,
-                    dropout_prob=dropout_probs[i]))
-                in_channels = out_channels
-
-            with torch.no_grad():
-                dummy_input = torch.zeros(1, *in_shape[1:]).to(device)
-                dummy_output = self.features(dummy_input)
-                in_features = dummy_output.view(1, -1).shape[1]
-
-            self.output = nn.Linear(in_features, out_shape[0])
-            self._init_params()
+        self.output = nn.Linear(in_features=in_features, out_features=out_shape[0])
+        self._init_params()
+    
 
         def _init_params(self):
             for module in self.modules():
@@ -109,23 +115,3 @@ def fractal_fn(N, num_columns, dropout, in_shape, out_shape, device):
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.parameters(), 3)
                 self.optimizer.step()
-
-    return Net(in_shape, out_shape).to(device)
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-in_shape = (1, 3, 32, 32)
-out_shape = (10,)
-
-prm = {
-    'lr': 0.01,
-    'momentum': 0.9,
-    'dropout': ?3,
-    'N': ?1,
-    'num_columns': ?2
-}
-
-model = fractal_fn(?1, ?2, ?3, in_shape, out_shape, device)
-
-os.makedirs("models", exist_ok=True)
-torch.save(model.state_dict(), f"models/model_N{?1}_C{?2}.pt")
