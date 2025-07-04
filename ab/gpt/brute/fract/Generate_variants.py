@@ -1,8 +1,9 @@
 import os
-import pandas as pd
 
-TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "Fractal_template1.py")
-BASE_OUTPUT_DIR = "out/nngpt/llm/epoch/A0/synth_nn"
+from ab.gpt.util.Const import synth_dir, epoch_dir, fract_dir
+
+TEMPLATE_PATH = fract_dir / 'Fractal_template.py'
+BASE_OUTPUT_DIR = synth_dir(epoch_dir(0))
 
 # Ensure the base output directory exists
 os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
