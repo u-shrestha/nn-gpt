@@ -18,6 +18,11 @@ nnrag_dir = out_dir / 'rag'
 new_dataset_dir = nngpt_dir / 'new_lemur'
 new_lemur_nn_dir = new_dataset_dir / 'nn'
 new_lemur_stat_dir = new_dataset_dir / 'stat'
+brute_dir = gpt_dir / 'brute'
+ast_dir = brute_dir / 'ast'
+ea_dir = brute_dir / 'ea'
+fract_dir = brute_dir / 'fract'
+trans_dir = brute_dir / 'trans'
 
 config_file = conf_llm_dir / 'nngpt_ds_coder_1.3b_instruct.json' # 'nngpt_dsr1_distill_qwen_7b_r.json'
 
