@@ -10,7 +10,7 @@
     "addon_list": [],
     "task": "img-classification",
     "addon_task": null,
-    "prompts": [
+    "prompt": [
       "**Objective**: Redesign the CNN architecture in `Net(nn.Module)` to enhance classification performance with structural diversity and modern deep learning components.",
       "",
       "**Architectural Requirements**:",
