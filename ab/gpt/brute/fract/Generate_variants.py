@@ -1,9 +1,9 @@
 import os
 
-from ab.gpt.util.Const import synth_dir, epoch_dir, fract_dir
+import pandas as pd
 
-TEMPLATE_PATH = fract_dir / 'Fractal_template.py'
-BASE_OUTPUT_DIR = synth_dir(epoch_dir(0))
+TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "Fractal_template.py")
+BASE_OUTPUT_DIR = "out/nngpt/llm/epoch/A0/synth_nn"
 
 # Ensure the base output directory exists
 os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
@@ -23,7 +23,7 @@ for N in range(1, 11):  # 1 to 10
             .replace("?2", str(num_columns))
         )
 
-        # Create model directory: out/nngpt/llm/epoch/A0/synth_nn/model_000/...
+        # Create model directory: out/nngpt/llm/epoch/A0/synth_nn/models/...
         model_id = "models"
         model_dir = os.path.join(BASE_OUTPUT_DIR, model_id)
         os.makedirs(model_dir, exist_ok=True)
