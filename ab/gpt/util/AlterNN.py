@@ -3,24 +3,23 @@ import os
 import shutil
 
 import ab.nn.api as nn_dataset
-import torch
+from ab.nn.util.Util import create_file
 from tqdm import tqdm
-from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from ab.gpt.util.Const import conf_test_dir, epoch_dir, new_nn_file, synth_dir, new_out_file
+from ab.gpt.util.LLM import LLM
 from ab.gpt.util.Util import extract_code
-from ab.nn.util.Util import create_file
 
-def alter(epochs, test_conf, llm_name):
+
+def alter(epochs, test_conf, llm_name, gguf_file=None):
     # Load test prompts
     with open(conf_test_dir / test_conf) as f:
         prompt_dict = json.load(f)
     assert isinstance(prompt_dict, dict)
 
-    print("Loading Tokenizer and Model...")
-    tokenizer = AutoTokenizer.from_pretrained(llm_name, trust_remote_code=True)
-    print("Load Tokenizer Complete")
-    model = AutoModelForCausalLM.from_pretrained(llm_name, trust_remote_code=True, torch_dtype=torch.bfloat16).cuda()
+    model_loader = LLM(llm_name, gguf_file=gguf_file)
+    model = model_loader.get_model()
+    tokenizer = model_loader.get_tokenizer()
     print("Load Model Complete, Start Loop...")
 
     shutil.rmtree(epoch_dir(), ignore_errors=True)

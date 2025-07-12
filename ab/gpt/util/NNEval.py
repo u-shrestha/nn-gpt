@@ -3,8 +3,9 @@ import ab.nn.api as api
 from ab.nn.util.Util import read_py_file_as_string, uuid4
 import ab.nn.api as nn_dataset
 
+
 class NNEval:
-    def __init__(self, model_source_package: str, task='img-classification', dataset='cifar-10', metric='acc', prm=None, save_to_db=False, prefix = None, save_path = None):
+    def __init__(self, model_source_package: str, task='img-classification', dataset='cifar-10', metric='acc', prm=None, save_to_db=False, prefix=None, save_path=None):
         """
         Evaluates a given model on a specified dataset for classification
         :param model_source_package: The package name of the model to evaluate
@@ -35,9 +36,9 @@ class NNEval:
             res = api.check_nn(code, self.task, self.dataset, self.metric, self.prm, self.save_to_db, self.prefix, self.save_path)
             return res
         else:
-            print("Checksum already exists. Skipping API call.")
+            print(f'NN already exists (checksum: {new_checksum}). Skipping API call.')
             return None
-        
+
     def get_args(self):
         return {
             'model_package': self.model_package,

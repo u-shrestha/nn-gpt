@@ -16,19 +16,21 @@ from transformers import (
 class LLM:
     def __init__(self,
                  model_path: str,
-                 bnb_config: BitsAndBytesConfig,
+                 bnb_config: BitsAndBytesConfig = None,
                  local_path=None,
                  max_memory: str = "24000MB",
                  access_token=None,
                  use_deepspeed=False,
                  base_path=out_dir,
-                 context_length=None):
+                 context_length=None,
+                 gguf_file=None):
         # Load the tokenizer
         self.context_length = context_length
         tok_fl_nm = llm_tokenizer_dir(base_path, model_path)
         raw_fl_nm = llm_dir(base_path, model_path)
         tokenizer_exists = exists(tok_fl_nm)
-        self.tokenizer = AutoTokenizer.from_pretrained(tok_fl_nm if tokenizer_exists else model_path, token=access_token)
+        self.tokenizer = AutoTokenizer.from_pretrained(tok_fl_nm if tokenizer_exists else model_path,
+            trust_remote_code=True, token=access_token, gguf_file=gguf_file)
         self.tokenizer.add_eos_token = True
         self.tokenizer.pad_token_id = 0
         self.tokenizer.padding_side = "right"
@@ -48,6 +50,7 @@ class LLM:
             token=access_token,
             quantization_config=bnb_config,
             torch_dtype=torch.float16,
+            gguf_file=gguf_file,
             **deepspeed_specific_prm)
         if exists(local_path):
             print("Loading Model from local files:", "'" + local_path + "'")
