@@ -1,4 +1,6 @@
 import os
+import re
+
 import ab.nn.api as api
 from ab.nn.util.Util import read_py_file_as_string, uuid4
 import ab.nn.api as nn_dataset
@@ -30,14 +32,16 @@ class NNEval:
     def evaluate(self, nn_file):
         os.listdir(self.model_package)
         code = read_py_file_as_string(nn_file)
+        for fn in {'supported_hyperparameters', 'train_setup', 'learn'}:
+            if not code or not re.match(r'[\s\S]*\s+def\s' + re.escape(fn) + r'\(.*', code):
+                raise Exception(f'The NN code lacks the required function \'{fn}\'.')
         ids_list = nn_dataset.data()["nn_id"].unique().tolist()
         new_checksum = uuid4(code)
         if new_checksum not in ids_list:
             res = api.check_nn(code, self.task, self.dataset, self.metric, self.prm, self.save_to_db, self.prefix, self.save_path)
             return res
         else:
-            print(f'NN already exists (checksum: {new_checksum}). Skipping API call.')
-            return None
+            raise Exception(f'NN already exists (checksum: {new_checksum}). Skipping API call.')
 
     def get_args(self):
         return {

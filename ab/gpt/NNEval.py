@@ -14,7 +14,7 @@ from ab.gpt.util.Util import verify_nn_code, copy_to_lemur
 # --- Default Evaluation Parameters ---
 #TODO: CARRY ALL THIS STUFF TO CONST.PY
 # These will be used as defaults for argparse arguments
-DEFAULT_NN_TRAINING_EPOCHS = 5 # How many epochs to train the altered NN for evaluation
+DEFAULT_NN_TRAINING_EPOCHS = 1 # How many epochs to train the altered NN for evaluation
 DEFAULT_TASK = 'img-classification'
 DEFAULT_DATASET = 'cifar-10'
 DEFAULT_METRIC = 'acc'
