@@ -35,6 +35,7 @@ class NNEval:
         for fn in {'supported_hyperparameters', 'train_setup', 'learn'}:
             if not code or not re.match(r'[\s\S]*\s+def\s' + re.escape(fn) + r'\(.*', code):
                 raise Exception(f'The NN code lacks the required function \'{fn}\'.')
+        nn_dataset.data.cache_clear()
         ids_list = nn_dataset.data()["nn_id"].unique().tolist()
         new_checksum = uuid4(code)
         if new_checksum not in ids_list:
