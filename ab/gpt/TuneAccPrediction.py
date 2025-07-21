@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import torch
+from ab.nn.util.Const import out_dir
 from transformers import (
     AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig,
     TrainingArguments, DataCollatorForLanguageModeling, Trainer,
@@ -14,6 +15,8 @@ from ab.nn.api import data as nn_data
 from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
 from datasets import Dataset
 from transformers.trainer_callback import EarlyStoppingCallback
+
+from ab.gpt.util.Const import conf_train_dir, llm_dir, model_dir
 from util.Chatbot import ChatBot
 from sklearn.metrics import mean_squared_error
 from scipy.stats import pearsonr
@@ -49,10 +52,10 @@ def extract_metrics(text):
     return acc, epoch
 
 class LLMFineTuner:
-    PROMPT_PATH = '/home/yashkumar/Desktop/NNGPT/nn-gpt/ab/gpt/conf/prompt/train/NN_pre.json'
+    PROMPT_PATH = conf_train_dir / 'NN_pre.json'
     MODEL_PATH = "ABrain/HPGPT-DeepSeek-R1-Distill-Qwen-7B-R"
 
-    def __init__(self, output_dir="./"):
+    def __init__(self, output_dir=model_dir(out_dir)):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.prompt_template = self._load_prompt_template()
@@ -236,7 +239,7 @@ class LLMFineTuner:
         df = self.prepare_data()
         train_nns, val_nns, test_nns = stratified_split(df)
         test_df = df[df['nn'].isin(test_nns)]
-        model_dir = '/home/yashkumar/Desktop/NNGPT/nn-gpt/finetuned-lora'   # Correct path!
+        model_dir = out_dir / 'finetuned-lora'   # Correct path!
         if not os.path.exists(model_dir):
             raise FileNotFoundError(f"Fine-tuned model not found at {model_dir}. Please train the model first.")
         print(f"Loading fine-tuned model from {model_dir}")
@@ -333,6 +336,6 @@ class LLMFineTuner:
             print(f"\n{len(failed_indices)} out of {num_samples} predictions could not be parsed. See warnings above.")
 
 if __name__ == "__main__":
-    ft = LLMFineTuner(output_dir="./output")
+    ft = LLMFineTuner(output_dir= model_dir(out_dir))
     # ft.train()  # Uncomment for training
     ft.test_and_evaluate(num_samples=20) 
