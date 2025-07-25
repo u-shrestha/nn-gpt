@@ -42,7 +42,7 @@
             "8. Maximum epoch: <max_epoch>{max_epoch}</max_epoch>",
             "",
             "Instructions for the prediction:",
-            "- Carefully deeply analyze the provided model archetecture, hyperparameters, early epoch accuracies, max_epoch",
+            "- Carefully deeply analyze the provided model architecture, hyperparameters, early epoch accuracies, max_epoch",
             "- Predict plausible best_accuracy and best_epoch values consistent with early epochs, and typical learning dynamics for this model/dataset/hyperparams.",
             "- Do not hallucinate unrealistic results (e.g., do not output 'best_accuracy: 0.99' or 'best_epoch: 2' if the early and max epochs or progressions do not support it).",
             "- For example, if early epochs are low and models usually reach best accuracy after 38 epochs in similar settings, do not predict best_epoch as 2 or 3.",
