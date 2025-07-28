@@ -10,22 +10,22 @@ from ab.gpt.util.Const import epoch_dir, synth_dir, new_nn_file, nngpt_dir
 from ab.gpt.util.NNEval import NNEval
 from ab.gpt.util.Util import verify_nn_code, copy_to_lemur
 
-
 # --- Default Evaluation Parameters ---
-#TODO: CARRY ALL THIS STUFF TO CONST.PY
+# TODO: CARRY ALL THIS STUFF TO CONST.PY
 # These will be used as defaults for argparse arguments
-DEFAULT_NN_TRAINING_EPOCHS = 1 # How many epochs to train the altered NN for evaluation
+DEFAULT_NN_TRAINING_EPOCHS = 1  # How many epochs to train the altered NN for evaluation
 DEFAULT_TASK = 'img-classification'
 DEFAULT_DATASET = 'cifar-10'
 DEFAULT_METRIC = 'acc'
 
 # Default hyperparameters. 'epoch' will be overridden.
-#TODO: DETECT EPOCH AUTOMATICALLY
+# TODO: DETECT EPOCH AUTOMATICALLY
 DEFAULT_LR = 0.01
 DEFAULT_BATCH_SIZE = 64
 DEFAULT_DROPOUT = 0.2
 DEFAULT_MOMENTUM = 0.9
-DEFAULT_TRANSFORM = 'norm_256_flip' # A common default, used by NNEval if prm is None
+DEFAULT_TRANSFORM = 'norm_256_flip'  # A common default, used by NNEval if prm is None
+DEFAULT_NN_NAME_PREFIX = None
 
 def evaluate_altered_models(args: argparse.Namespace):
     """
@@ -41,14 +41,13 @@ def evaluate_altered_models(args: argparse.Namespace):
     print(f"  LR: {args.lr}, Batch Size: {args.batch_size}, Dropout: {args.dropout}, Momentum: {args.momentum}, Transform: {args.transform}")
     print(f"Save to DB: {args.save_to_db}")
 
-
-    base_nngpt_path = nngpt_dir # out/nngpt
+    base_nngpt_path = nngpt_dir  # out/nngpt
     if not args.nn_alter_epochs:
         args.nn_alter_epochs = len(os.listdir(epoch_dir()))
 
     for i in range(args.nn_alter_epochs):
         # Path to the output of one NNAlter.py epoch (e.g., out/nngpt/llm/epoch/A0)
-        current_alter_epoch_path = epoch_dir(i) # This already uses nngpt_dir as base
+        current_alter_epoch_path = epoch_dir(i)  # This already uses nngpt_dir as base
 
         # Path to the synthesized models for that NNAlter epoch (e.g., .../A0/synth_nn)
         models_base_dir = synth_dir(current_alter_epoch_path)
@@ -66,7 +65,7 @@ def evaluate_altered_models(args: argparse.Namespace):
                 continue
 
             code_file_path = model_dir_path / new_nn_file
-            df_file_path = model_dir_path / 'dataframe.df' # Original model's metadata
+            df_file_path = model_dir_path / 'dataframe.df'  # Original model's metadata
 
             if not code_file_path.exists():
                 print(f"Code file {new_nn_file} not found in {model_dir_path}. Skipping.")
@@ -90,10 +89,10 @@ def evaluate_altered_models(args: argparse.Namespace):
                 'batch': args.batch_size,
                 'dropout': args.dropout,
                 'momentum': args.momentum,
-                'transform': args.transform, # Default transform from CLI
+                'transform': args.transform,  # Default transform from CLI
                 # 'epoch' will be set explicitly later
             }
-            prefix_for_db = "AlteredNN" # Default prefix
+            prefix_for_db = "AlteredNN"  # Default prefix
 
             if df_file_path.exists():
                 try:
@@ -129,7 +128,7 @@ def evaluate_altered_models(args: argparse.Namespace):
                     task=task,
                     dataset=dataset,
                     metric=metric,
-                    prm=prm, # Pass the constructed prm
+                    prm=prm,  # Pass the constructed prm
                     save_to_db=args.save_to_db,
                     prefix=prefix_for_db,
                     save_path=model_dir_path
@@ -139,14 +138,18 @@ def evaluate_altered_models(args: argparse.Namespace):
                 print(f"  Evaluation results for {model_folder_name}: {eval_results}")
 
                 eval_info_data = {
-                    "eval_args": evaluator.get_args(), # This will show the prm used by NNEval
+                    "eval_args": evaluator.get_args(),  # This will show the prm used by NNEval
                     "eval_results": eval_results,
                     "cli_args": vars(args)
                 }
                 with open(model_dir_path / 'eval_info_altered.json', 'w+') as f:
                     json.dump(eval_info_data, f, indent=4, default=str)
 
-                copy_to_lemur(origdf, model_dir_path, uuid4(read_py_file_as_string(code_file_path)))
+                nn_name = uuid4(read_py_file_as_string(code_file_path))
+
+                if args.nn_name_prefix:
+                    nn_name = args.nn_name_prefix + '-' + nn_name
+                copy_to_lemur(origdf, model_dir_path, nn_name)
 
             except Exception as e:
                 error_msg = f"Error evaluating model {model_folder_name}: {e}"
@@ -157,6 +160,7 @@ def evaluate_altered_models(args: argparse.Namespace):
                     f.write(f"{error_msg}\n\n{detailed_error}")
             finally:
                 release_memory()
+
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate Neural Networks generated by NNAlter.py.")
@@ -209,6 +213,11 @@ def main():
     parser.add_argument(
         '--save_to_db', action=argparse.BooleanOptionalAction, default=True,
         help="Whether to save evaluation results to the database (enables with --save-to-db, disables with --no-save-to-db; default: enabled)."
+    )
+
+    parser.add_argument(
+        '--nn_name_prefix', type=str, default=DEFAULT_NN_NAME_PREFIX,
+        help=f"Default neural network name prefix (default: {DEFAULT_NN_NAME_PREFIX})."
     )
 
     args = parser.parse_args()
