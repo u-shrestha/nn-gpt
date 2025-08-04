@@ -93,7 +93,7 @@ def evaluate_altered_models(args: argparse.Namespace):
                 # 'epoch' will be set explicitly later
             }
             prefix_for_db = "AlteredNN"  # Default prefix
-
+            origdf = None
             if df_file_path.exists():
                 try:
                     origdf = pd.read_pickle(df_file_path)
