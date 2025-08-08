@@ -1,9 +1,13 @@
 # <img src='https://abrain.one/img/lemur-nn-icon-64x64.png' width='32px'/> GPT-Driven Neural Network Generator
-<sub><a href='https://pypi.python.org/pypi/nn-gpt'><img src='https://img.shields.io/pypi/v/nn-gpt.svg'/></a><br/>
-short alias  <a href='https://pypi.python.org/pypi/lmurg'>lmurg</a></sub>
 
+<p align="center">
+   
+</p>
+<sub><a href='https://pypi.python.org/pypi/nn-gpt'><img src='https://img.shields.io/pypi/v/nn-gpt.svg'/></a> <a href="https://pepy.tech/project/nn-gpt"><img alt="GitHub release" src="https://static.pepy.tech/badge/nn-gpt"></a><br/>
+short alias  <a href='https://pypi.python.org/pypi/lmurg'>lmurg</a> 
+</sub> 
+<br/><br/>
 <img src='https://abrain.one/img/lemur-nn-gen-whit.jpg' width='25%'/>
-
 <h3>Overview 📖</h3>
 
 This Python-based <a href='https://github.com/ABrain-One/nn-gpt'>NNGPT</a> project leverages large language models (LLMs) to automate the creation of neural network architectures, streamlining the design process for machine learning practitioners. It leverages various neural networks from the <a href="https://github.com/ABrain-One/nn-dataset">LEMUR Dataset</a> to fine-tune LLMs and provide insights into potential architectures during the creation of new neural network models.
