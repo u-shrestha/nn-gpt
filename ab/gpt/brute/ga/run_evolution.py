@@ -21,8 +21,8 @@ CHECKPOINT_FILE = 'ga_evolution_checkpoint.pkl'
 BATCH_SIZE = 128
 NUM_EPOCHS_PER_EVAL = 5
 
-ARCHITECTURE_SAVE_DIR = os.path.join(os.path.dirname(__file__), 'ga_architecture')
-STATS_SAVE_DIR = os.path.join(os.path.dirname(__file__), 'stats')
+ARCHITECTURE_SAVE_DIR = os.path.join(os.path.dirname(__file__), 'nn')
+STATS_SAVE_DIR = os.path.join(os.path.dirname(__file__), 'stat')
 CHAMPION_SAVE_PATH = os.path.join(os.path.dirname(__file__), 'ga-champ-alexnet.py')
 os.makedirs(ARCHITECTURE_SAVE_DIR, exist_ok=True)
 os.makedirs(STATS_SAVE_DIR, exist_ok=True)
@@ -105,7 +105,6 @@ if __name__ == "__main__":
                     "accuracy": round(epoch_accuracy / 100.0, 4),
                     "batch": BATCH_SIZE,
                     "dropout": round(chromosome.get('dropout', 0.0), 4),
-                    "duration": 0,
                     "lr": round(chromosome.get('lr', 0.0), 4),
                     "momentum": round(chromosome.get('momentum', 0.0), 4),
                     "transform": "norm_256_flip",
