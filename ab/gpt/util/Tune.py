@@ -57,7 +57,7 @@ def flatten_chunks(data):
 
 
 def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf,
-         nn_regenerate_after_exception=False, n_training_prompts=None, always_save_full_output=False):
+         training_args, peft_config, nn_regenerate_after_exception=False, n_training_prompt_limit=None, always_save_full_output=False):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
     with open(conf_llm_dir / llm_conf) as f:
@@ -75,34 +75,6 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
     if token_from_file:
         with open(ab_root_path / 'token') as f:
             access_token = f.readline()
-
-    training_args = TrainingArguments(
-        report_to=None,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=4,
-        warmup_steps=2,
-        num_train_epochs=1,
-        learning_rate=2e-4,
-        fp16=True,
-        logging_steps=1,
-        output_dir=nngpt_dir / 'outputs',
-        optim='paged_adamw_8bit',
-        deepspeed=ds_conf if use_deepspeed else None,
-        gradient_checkpointing=True,
-    )
-
-    peft_config = LoraConfig(
-        r=32,  # dimension of the updated matrices
-        lora_alpha=32,
-        target_modules=[
-            "q_proj",
-            "k_proj"
-        ],
-        layers_to_transform=list(range(18, 24)),
-        lora_dropout=0.01,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
 
     print(f'[DEBUG]Argument Information:\nSkip generation until Epoch: {skip_epoch}\nPath to saved LoRA Layers: {llm_path}')
     train_config_path = conf_train_dir / llm_tune_conf
@@ -157,7 +129,7 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')
         # data_processor = NNGenPrompt(model_loader.get_max_length(), tokenizer, train_config_path)
         data_processor = NNGenPrompt(context_length if context_length else model_loader.get_max_length(), tokenizer, train_config_path)
-        dataset = data_processor.get_dataset(only_best_accuracy, n_training_prompts=n_training_prompts)
+        dataset = data_processor.get_dataset(only_best_accuracy, n_training_prompts=n_training_prompt_limit)
         # dataset = load_from_disk(nngpt_dir / 'dataset')
 
         # if context_length:
