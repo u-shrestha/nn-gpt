@@ -36,16 +36,14 @@ peft_config = LoraConfig(
     task_type="CAUSAL_LM",
 )
 
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-s', '--skip', type=int, default=-1, help='Number of epoches to skip the neural network generation.')
     parser.add_argument('-p', '--peft', type=str, default=None, help='Path to saved LoRA layers.')
     args = parser.parse_args()
-    tune(3, 1, args.skip, args.peft, 'NN_gen.json', 'NN_gen.json', 'improve_classification_only',
-         'ds_qwen3_8b.json', training_args, peft_config, n_training_prompt_limit= 40 * 1024
-         #, always_save_full_output=True
-         #
-         )
+    tune(10, 1, args.skip, args.peft, 'NN_gen.json', 'NN_gen.json', 'improve_classification_only',
+         'nngpt_ds_coder_1.3b_instruct.json', training_args, peft_config, n_training_prompt_limit= 40 * 1024)
 
 if __name__ == '__main__':
     main()

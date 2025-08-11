@@ -5,8 +5,8 @@ from overrides import override
 from pandas import DataFrame
 from transformers import PreTrainedTokenizerBase
 
-from ab.gpt.util.Const import conf_dir
 from ab.gpt.util.prompt.Prompt import Prompt
+from tqdm import tqdm
 
 
 def shuffle_data(df: DataFrame):
@@ -49,7 +49,7 @@ class NNRLPrompt(Prompt):
             addon_data = lemur.data(only_best_accuracy=only_best_accuracy, task=prompt_dict[key]['addon_task'], max_rows=n_training_prompts)
             print('Addon-Data acquisition complete')
 
-            for _, row in data.iterrows():
+            for _, row in tqdm(data.iterrows()):
                 para_dict = dict()
                 for it in prompt_dict[key]['input_list']:
                     para_dict[it['para']] = row[it['value']]
