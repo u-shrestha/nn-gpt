@@ -82,11 +82,14 @@ docker run --rm -u $(id -u):ab --shm-size=16G -v $(pwd)/nn-gpt:/a/mm abrainone/a
 
 The recently added dependencies might be missing in the <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a>. In this case, you can create a container from the Docker image ```abrainone/ai-linux```, install the missing packages (preferably using ```pip install <package name>```), and then create a new image from the container using ```docker commit <container name> <new image name>```. You can use this new image locally or push it to the registry for deployment on the computer cluster.
 
-## Usage
+## Use
 
-Use `NNAlter*.py` to generate initial modified CV models, specify by argument `-e` to determine the number of epochs for initial CV model generation.
+- **`ab.gpt.NNAlter*.py`** – Generates modified neural network models.  
+  Use the `-e` argument to set the number of epochs for the initial CV model generation.
 
-Use `TuneNNGen*.py` to perform generation and evaluation of CV model, along with fine-tuning/evaluation of a LLM. The `-s` flag  allows to skip CV model generation for a specified number of epochs.
+- **`ab.gpt.NNEval.py`** – Evaluates the models generated in the previous step.
+
+- **`ab.gpt.TuneNNGen*.py`** – Performs fine-tuning and evaluation of an LLM. For evaluation purposes, the LLM generates neural network models, which are then trained to assess improvements in the LLM’s performance on this task. The -s flag allows skipping model generation for the specified number of epochs.
 
 <a href='https://huggingface.co/ABrain'><strong>Pretrained LLM weights</strong></a>
 
