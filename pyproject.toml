@@ -33,6 +33,9 @@ where = ['']
 [tool.setuptools]
 include-package-data = true
 
+[tool.setuptools.data-files]
+'*' = ['**/*.json']
+
 [tool.setuptools.package-data]
-'ab' = ['*.py', '*.json', '*.md']
+'ab' = ['*.md']
 '*' = ['requirements.txt', 'requirements-no-isolation.txt', 'README.md', 'LICENSE', 'version']
