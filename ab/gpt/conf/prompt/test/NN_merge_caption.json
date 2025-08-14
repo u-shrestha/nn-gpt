@@ -1,0 +1,60 @@
+{
+  "merge_improve_captioning": {
+    "comment": [
+      "Prompt for merging and tuning multiple image captioning neural networks.",
+      "Uses up to four models as input.",
+      "DO NOT output placeholder/example blocks."
+    ],
+    "task": "img-captioning",
+    "input_list": [
+      { "para": "top_code_1", "value": "top_codes[0]" },
+      { "para": "top_bleu_1", "value": "top_bleus[0]" },
+      { "para": "top_epoch_1", "value": "top_epochs[0]" },
+      { "para": "top_code_2", "value": "top_codes[1]" },
+      { "para": "top_bleu_2", "value": "top_bleus[1]" },
+      { "para": "top_epoch_2", "value": "top_epochs[1]" },
+      { "para": "top_code_3", "value": "top_codes[2]" },
+      { "para": "top_bleu_3", "value": "top_bleus[2]" },
+      { "para": "top_epoch_3", "value": "top_epochs[2]" },
+      { "para": "top_code_4", "value": "top_codes[3]" },
+      { "para": "top_bleu_4", "value": "top_bleus[3]" },
+      { "para": "top_epoch_4", "value": "top_epochs[3]" }
+    ],
+    "prompt": [
+      "You are provided with four image captioning model implementations (PyTorch), along with their BLEU scores and epochs.",
+      "Your task: merge the best parts and strategies from these four models to create a new improved image captioning model that can outperform all of them.",
+      "",
+      "Instructions:",
+      "1. Carefully read the provided model codes and their performance:",
+      "",
+      "Model 1 (BLEU={top_bleu_1}, epoch={top_epoch_1}):",
+      "```\n{top_code_1}\n```",
+      "",
+      "Model 2 (BLEU={top_bleu_2}, epoch={top_epoch_2}):",
+      "```\n{top_code_2}\n```",
+      "",
+      "Model 3 (BLEU={top_bleu_3}, epoch={top_epoch_3}):",
+      "```\n{top_code_3}\n```",
+      "",
+      "Model 4 (BLEU={top_bleu_4}, epoch={top_epoch_4}):",
+      "```\n{top_code_4}\n```",
+      "",
+      "2. Identify and combine the best architectural elements (e.g., encoders, decoders, attention, embedding layers) to build a superior model.",
+      "3. Modify and enhance as needed to maximize BLEU score.",
+      "",
+      "4. OUTPUT MUST BE ONLY the following two blocks, and NOTHING ELSE:",
+      "   <hp>...</hp>",
+      "   <nn>...</nn>",
+      "",
+      "Inside <hp>...</hp>, write ONLY a valid compact JSON object with all improved hyperparameters required by supported_hyperparameters() (e.g., {{\"batch\": 32, \"lr\": 0.001, ...}}).",
+      "Inside <nn>...</nn>, write ONLY the full, correct Python code for class Net (not a placeholder).",
+      "DO NOT include any extra commentary, Markdown, code fences, curly braces, or placeholder text.",
+      "DO NOT copy this instruction, just return the <hp> and <nn> blocks filled in.",
+      "If you cannot generate either block, leave the block empty (e.g., <hp></hp>), but DO NOT output explanations."
+    ],
+    "output": [
+      "<hp>{addon_prm}</hp>",
+      "<nn>{addon_nn_code}</nn>"
+    ]
+  }
+}

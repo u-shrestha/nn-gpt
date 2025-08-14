@@ -1,0 +1,81 @@
+{
+  "improvement_captioning_structural": {
+    "comment": [
+      "architectural redesign for image captioning model using classification models as inspiration.",
+      "Must keep NN-Dataset interfaces and The resulting model must have comparatively different structure from the original.",
+      "task(only in addon_list): which task the additional content come from."
+    ],
+    "input_list": [{"para": "nn_code", "value": "nn_code"}],
+    "addon_list": [{"para": "addon_nn_code", "value": "nn_code"}],
+    "task": "img-captioning",
+    "addon_task": "img-classification",
+    "prompt": [
+      "Your task is to revising and pick and modify 1 or 2 functions or methods or class or design structure or 1 or 2 neighboring pair of `nn.Conv2d()` according to requirements below into image captioning task model and return ONLY the full result.",
+      "",
+      "## HARD INTERFACE (DO NOT BREAK):",
+      "- main class name: Net",
+      "- __init__(in_shape, out_shape, prm, device)",
+      "- train_setup(self, prm), learn(self, train_data)",
+      "- forward(self, images, captions, hidden_state) -> (logits, hidden_state)",
+      "- expose self.rnn with init_zero_hidden(batch, device) -> (h0, c0) (create a shim if not using LSTM).",
+      "- logits shape: [B, T-1, vocab_size].",
+      "- supported_hyperparameters() MUST include at least {{'lr','momentum'}}.",
+      "",
+      "## RULES:",
+      "1) Use only torch/torch.nn (only torch/torchvision or layers without pretrained weights).",
+      "2) Teacher forcing: consume captions[:, :-1], predict captions[:, 1:].",
+      "",
+      "## GOAL:",
+      "Redesign encoder/decoder/class/layer with meaningful changes (e.g., attention pooling, attention mechanisms, residual bottlenecks, GRU/LSTM + attention, tiny Transformer decoder from scratch, gradient-based optimization, augmentation, label smoothing, embeddings, Learning Rate Scheduling, Contrastive Learning loss, ), small enough to train on limited compute.",
+      "You must make meaningful changes to the architecture (e.g., reordering, adding, or removing layers).",
+      "CNN backbone processes the image into high-level feature maps or embeddings, which are then fed into the captioning model.",
+      "use transfer learning, Knowledge Distillation  to improve the model performance.",
+      "Redesign the convolutional backbone so the layer structure differs from the original.",
+      "The in_shape and out_shape of the model must be different from the original model to reflect a true architectural overhaul.",
+      "",
+      "## Inspiration (classification only; structure ideas, DO NOT output a classifier):",
+      "```python",
+      "{addon_nn_code}",
+      "```",
+      "",
+      "## ORIGINAL CAPTIONING CODE TO MODIFY:",
+      "```python",
+      "{nn_code}",
+      "```",
+      "",
+      "## OUTPUT:",
+      "Return a complete and only valid full Python module (single code) that can compile and train the model.",
+      "Ensure the new architecture is relatively different from the original model (no repetition of the same blocks).",
+      "Return ONLY the full Python module. Be concise in comments; avoid long docstrings.",
+      "You should answer not only the class or method you modified but integrated it with ***FULL CODES INCLUDING EVERYTHING (Other classes, methods, functions etc. of orignal code) NOT CHANGED***."
+    ]
+  },
+  "improvement_captioning_numeric": {
+    "comment": [
+      "Small numeric mutations for exploration while preserving interfaces."
+    ],
+    "input_list": [{"para": "nn_code", "value": "nn_code"}],
+    "addon_list": [],
+    "task": "img-captioning",
+    "addon_task": null,
+    "prompt": [
+      "Randomly pick **2 or 4 numeric constants** in the code and change them to plausible new values.",
+      "",
+      "Rules:",
+      "1) **DO NOT** add/remove methods, args, imports, or classes.",
+      "2) Keep exact interfaces:",
+      "   - Net(in_shape, out_shape, prm, device)",
+      "   - train_setup(prm), learn(train_data)",
+      "   - forward(images, captions, hidden_state)->(logits, hidden_state)",
+      "   - self.rnn.init_zero_hidden(batch, device).",
+      "3) Keep shapes intact (logits [B, T-1, vocab]).",
+      "4) Return the **entire module** with only the few numeric edits.",
+      "",
+      "Code:",
+      "```python",
+      "{nn_code}",
+      "```"
+    ]
+  }
+}
+
