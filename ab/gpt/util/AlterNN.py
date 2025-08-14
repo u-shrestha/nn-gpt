@@ -80,4 +80,4 @@ def alter(epochs, test_conf, llm_name, gguf_file=None):
                 B_index += 1
             else:
                 print("[INFO]Response Invalid!")
-                continue
+                continue 
