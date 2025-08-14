@@ -23,7 +23,7 @@ NUM_EPOCHS_PER_EVAL = 5
 
 ARCHITECTURE_SAVE_DIR = os.path.join(os.path.dirname(__file__), 'nn')
 STATS_SAVE_DIR = os.path.join(os.path.dirname(__file__), 'stat')
-CHAMPION_SAVE_PATH = os.path.join(os.path.dirname(__file__), 'ga-champ-alexnet.py')
+CHAMPION_SAVE_PATH = os.path.join(os.path.dirname(__file__), 'ga-champ.py')
 os.makedirs(ARCHITECTURE_SAVE_DIR, exist_ok=True)
 os.makedirs(STATS_SAVE_DIR, exist_ok=True)
 
@@ -71,8 +71,7 @@ if __name__ == "__main__":
             model = Net(in_shape, out_shape, chromosome, device)
             model.train_setup(prm=chromosome)
 
-            current_arch_number = architecture_counter
-            model_base_name = f"ga-alexnet-{current_arch_number}"
+            model_base_name = f"ga-{model_checksum}"
             arch_filename = f"{model_base_name}.py"
             model_stats_dir_name = f"img-classification_cifar-10_acc_{model_base_name}"
             model_stats_dir_path = os.path.join(STATS_SAVE_DIR, model_stats_dir_name)
@@ -141,11 +140,11 @@ if __name__ == "__main__":
     print("\n--- Starting Genetic Algorithm ---")
 
     try:
-        existing_arch_files = [f for f in os.listdir(ARCHITECTURE_SAVE_DIR) if f.startswith("ga-alexnet-") and f.endswith(".py")]
+        existing_arch_files = [f for f in os.listdir(ARCHITECTURE_SAVE_DIR) if f.startswith("ga-") and f.endswith(".py")]
         if existing_arch_files:
             numbers = []
             for f in existing_arch_files:
-                 parts = f.replace("ga-alexnet-", "").replace(".py", "").split('-')
+                 parts = f.replace("ga-", "").replace(".py", "").split('-')
                  for part in parts:
                      if part.isdigit():
                          numbers.append(int(part))
