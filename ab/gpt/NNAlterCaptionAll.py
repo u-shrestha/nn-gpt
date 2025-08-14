@@ -55,7 +55,7 @@ def main():
         # We can temporarily copy: but easiest is to pass absolute path by making a temp in conf_test_dir.
         # For portability, just generate another temp in conf_test_dir.
         conf_file_to_use = Path(temp_json).name
-        # Move/copy into conf_test_dir so AlterNN can find it
+        # Move/copy into conf_test_dir so AlterCaptionNN can find it
         dest = conf_test_dir / conf_file_to_use
         Path(temp_json).replace(dest)
 
