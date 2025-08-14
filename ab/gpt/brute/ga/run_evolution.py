@@ -28,7 +28,6 @@ os.makedirs(ARCHITECTURE_SAVE_DIR, exist_ok=True)
 os.makedirs(STATS_SAVE_DIR, exist_ok=True)
 
 seen_checksums = set()
-architecture_counter = 0
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -50,8 +49,6 @@ if __name__ == "__main__":
     print(f"Input shape: {in_shape}, Output shape: {out_shape}")
 
     def fitness_function(chromosome: dict) -> float:
-        global architecture_counter
-
         try:
             model_code_string = generate_model_code_string(chromosome, in_shape, out_shape)
         except Exception as e:
@@ -125,7 +122,6 @@ if __name__ == "__main__":
                 with open(arch_filepath, 'w') as f:
                     f.write(model_code_string)
                 print(f"  - Unique architecture code saved to: {arch_filepath}")
-                architecture_counter += 1
             except Exception as save_error:
                 print(f"  - Error saving architecture file {arch_filepath}: {save_error}")
 
@@ -148,9 +144,6 @@ if __name__ == "__main__":
                  for part in parts:
                      if part.isdigit():
                          numbers.append(int(part))
-            if numbers:
-                architecture_counter = max(numbers) + 1
-                print(f"  - Resumed architecture counter from existing files: {architecture_counter}")
     except OSError as e:
         print(f"  - Could not scan {ARCHITECTURE_SAVE_DIR} to resume counter: {e}. Starting from 0.")
 
