@@ -23,12 +23,11 @@ NUM_EPOCHS_PER_EVAL = 5
 
 ARCHITECTURE_SAVE_DIR = os.path.join(os.path.dirname(__file__), 'nn')
 STATS_SAVE_DIR = os.path.join(os.path.dirname(__file__), 'stat')
-CHAMPION_SAVE_PATH = os.path.join(os.path.dirname(__file__), 'ga-champ-alexnet.py')
+CHAMPION_SAVE_PATH = os.path.join(os.path.dirname(__file__), 'ga-champ.py')
 os.makedirs(ARCHITECTURE_SAVE_DIR, exist_ok=True)
 os.makedirs(STATS_SAVE_DIR, exist_ok=True)
 
 seen_checksums = set()
-architecture_counter = 0
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -50,8 +49,6 @@ if __name__ == "__main__":
     print(f"Input shape: {in_shape}, Output shape: {out_shape}")
 
     def fitness_function(chromosome: dict) -> float:
-        global architecture_counter
-
         try:
             model_code_string = generate_model_code_string(chromosome, in_shape, out_shape)
         except Exception as e:
@@ -71,8 +68,7 @@ if __name__ == "__main__":
             model = Net(in_shape, out_shape, chromosome, device)
             model.train_setup(prm=chromosome)
 
-            current_arch_number = architecture_counter
-            model_base_name = f"ga-alexnet-{current_arch_number}"
+            model_base_name = f"ga-{model_checksum}"
             arch_filename = f"{model_base_name}.py"
             model_stats_dir_name = f"img-classification_cifar-10_acc_{model_base_name}"
             model_stats_dir_path = os.path.join(STATS_SAVE_DIR, model_stats_dir_name)
@@ -126,7 +122,6 @@ if __name__ == "__main__":
                 with open(arch_filepath, 'w') as f:
                     f.write(model_code_string)
                 print(f"  - Unique architecture code saved to: {arch_filepath}")
-                architecture_counter += 1
             except Exception as save_error:
                 print(f"  - Error saving architecture file {arch_filepath}: {save_error}")
 
@@ -139,21 +134,6 @@ if __name__ == "__main__":
             return 0.0
 
     print("\n--- Starting Genetic Algorithm ---")
-
-    try:
-        existing_arch_files = [f for f in os.listdir(ARCHITECTURE_SAVE_DIR) if f.startswith("ga-alexnet-") and f.endswith(".py")]
-        if existing_arch_files:
-            numbers = []
-            for f in existing_arch_files:
-                 parts = f.replace("ga-alexnet-", "").replace(".py", "").split('-')
-                 for part in parts:
-                     if part.isdigit():
-                         numbers.append(int(part))
-            if numbers:
-                architecture_counter = max(numbers) + 1
-                print(f"  - Resumed architecture counter from existing files: {architecture_counter}")
-    except OSError as e:
-        print(f"  - Could not scan {ARCHITECTURE_SAVE_DIR} to resume counter: {e}. Starting from 0.")
 
     ga = GeneticAlgorithm(
         population_size=POPULATION_SIZE,

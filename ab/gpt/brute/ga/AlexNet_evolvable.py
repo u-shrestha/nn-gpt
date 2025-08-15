@@ -55,7 +55,7 @@ class Net(nn.Module):
         self.chromosome = chromosome
 
         layers = []
-        in_channels = in_shape[0]
+        in_channels = in_shape[1]
 
         layers += [
             nn.Conv2d(in_channels, chromosome['conv1_filters'], kernel_size=chromosome['conv1_kernel'],
@@ -150,7 +150,7 @@ def generate_model_code_string(chromosome: dict, in_shape: tuple = (3, 32, 32), 
         f"        self.device = device",
         # --- Feature Extractor ---
         "        layers = []",
-        f"        in_channels = in_shape[0]",
+        f"        in_channels = in_shape[1]",
         "",
         # Layer 1
         f"        layers += [",

@@ -18,9 +18,9 @@ The workflow consists of:
 *   `AlexNet_evolvable.py`: Defines the CNN model (`Net`), the search space (`SEARCH_SPACE`), and a function to generate Python code strings for architectures.
 *   `genetic_algorithm.py`: Implements the core Genetic Algorithm logic (`GeneticAlgorithm` class).
 *   `run_evolution.py`: The main script to configure and run the NAS experiment. It handles data loading, defines the fitness function (including training/evaluation, duplicate checking, and saving results), and orchestrates the GA.
-*   `nn/` (created during run): Stores the Python code (`.py` files) for each unique architecture evaluated, named `ga-alexnet-X.py`.
-*   `stat/` (created during run): Stores evaluation statistics. For each unique architecture `ga-alexnet-X`, a subfolder `img-classification_cifar-10_acc_ga-alexnet-X` is created containing per-epoch accuracy files named `0.json`, `1.json`, etc.
-*   `ga-champ-alexnet.py`: The Python code for the best-performing architecture found during the search.
+*   `nn/` (created during run): Stores the Python code (`.py` files) for each unique architecture evaluated, named `ga-X.py`.
+*   `stat/` (created during run): Stores evaluation statistics. For each unique architecture `ga-X`, a subfolder `img-classification_cifar-10_acc_ga-X` is created containing per-epoch accuracy files named `0.json`, `1.json`, etc.
+*   `ga-champ.py`: The Python code for the best-performing architecture found during the search.
 *   `ga_evolution_checkpoint.pkl`: Checkpoint file to resume the GA from the last completed generation if interrupted.
 
 ## How to Run
@@ -37,7 +37,3 @@ The workflow consists of:
     python run_evolution.py
     ```
     This will start the evolution process with the parameters defined in `run_evolution.py` (e.g., Population=50, Generations=25, 5 epochs per evaluation). The script will automatically download the CIFAR-10 dataset if needed.
-
-**NOTE**
-
-Running the script again will not intelligently skip architectures that were evaluated in previous runs. It will likely re-evaluate many of them and overwrite the output files (architecture .py files, stat .json files, and the champion file) from the previous runs.
