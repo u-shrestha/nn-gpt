@@ -135,18 +135,6 @@ if __name__ == "__main__":
 
     print("\n--- Starting Genetic Algorithm ---")
 
-    try:
-        existing_arch_files = [f for f in os.listdir(ARCHITECTURE_SAVE_DIR) if f.startswith("ga-") and f.endswith(".py")]
-        if existing_arch_files:
-            numbers = []
-            for f in existing_arch_files:
-                 parts = f.replace("ga-", "").replace(".py", "").split('-')
-                 for part in parts:
-                     if part.isdigit():
-                         numbers.append(int(part))
-    except OSError as e:
-        print(f"  - Could not scan {ARCHITECTURE_SAVE_DIR} to resume counter: {e}. Starting from 0.")
-
     ga = GeneticAlgorithm(
         population_size=POPULATION_SIZE,
         search_space=SEARCH_SPACE,

@@ -37,7 +37,3 @@ The workflow consists of:
     python run_evolution.py
     ```
     This will start the evolution process with the parameters defined in `run_evolution.py` (e.g., Population=50, Generations=25, 5 epochs per evaluation). The script will automatically download the CIFAR-10 dataset if needed.
-
-**NOTE**
-
-Running the script again will not intelligently skip architectures that were evaluated in previous runs. It will likely re-evaluate many of them and overwrite the output files (architecture .py files, stat .json files, and the champion file) from the previous runs.
