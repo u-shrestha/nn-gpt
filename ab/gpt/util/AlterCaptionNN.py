@@ -117,7 +117,7 @@ def alter(epochs, test_conf, llm_name, gguf_file=None, final_out_dir=None, only_
 
             outputs = model.generate(
                 inputs,
-                max_new_tokens=10000,
+                max_new_tokens=64 * 1024,
                 do_sample=True,
                 temperature=0.6,
                 top_k=50,
