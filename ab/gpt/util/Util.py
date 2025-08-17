@@ -49,7 +49,7 @@ def strip_comments(code: str):
                 result.append(tok)
                 prev_toktype = tok_type
 
-            return tokenize.untokenize(result)
+            return tokenize.untokenize(result).strip()
     except:
         pass
     return None
