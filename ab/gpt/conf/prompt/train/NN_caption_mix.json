@@ -26,7 +26,7 @@
       "2) Teacher forcing: consume captions[:, :-1], predict captions[:, 1:].",
       "",
       "## GOAL:",
-      "Redesign encoder/decoder/class/layer with meaningful changes (e.g., attention pooling, attention mechanisms, residual bottlenecks, GRU/LSTM + attention, tiny Transformer decoder from scratch, gradient-based optimization, augmentation, label smoothing, embeddings, Learning Rate Scheduling, Contrastive Learning loss, ), small enough to train on limited compute.",
+      "Your task is to Redesign encoder/decoder/class/layer with meaningful changes (e.g., attention pooling, attention mechanisms, residual bottlenecks, GRU/LSTM + attention, tiny Transformer decoder from scratch, gradient-based optimization, augmentation, label smoothing, embeddings, Learning Rate Scheduling, Contrastive Learning loss, ), small enough to train on limited compute.",
       "You must make meaningful changes to the architecture (e.g., reordering, adding, or removing layers).",
       "CNN backbone processes the image into high-level feature maps or embeddings, which are then fed into the captioning model.",
       "use transfer learning, Knowledge Distillation  to improve the model performance.",
@@ -78,3 +78,4 @@
     ]
   }
 }
+
