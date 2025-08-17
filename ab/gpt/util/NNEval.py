@@ -1,5 +1,6 @@
 import os
 import re
+import ast
 
 import ab.nn.api as api
 from ab.nn.util.Util import read_py_file_as_string, uuid4
@@ -32,9 +33,23 @@ class NNEval:
     def evaluate(self, nn_file):
         os.listdir(self.model_package)
         code = read_py_file_as_string(nn_file)
-        for fn in {'supported_hyperparameters', 'train_setup', 'learn'}:
-            if not code or not re.match(r'[\s\S]*\s+def\s' + re.escape(fn) + r'\(.*', code):
+        if not code or not code.strip():
+            raise Exception(f'Code is missing.')
+        sup_prm = 'supported_hyperparameters'
+        for fn in {sup_prm, 'train_setup', 'learn'}:
+            if not re.match(r'[\s\S]*\s+def\s' + re.escape(fn) + r'\(.*', code):
                 raise Exception(f'The NN code lacks the required function \'{fn}\'.')
+
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == sup_prm:
+                if isinstance(node.body[0], ast.Return):
+                    return_node = node.body[0].value
+                    prm_keys = ast.literal_eval(return_node)
+        for prm_key in prm_keys:
+            if code.count('"' + prm_key + '"') + code.count("'" + prm_key + "'") < 2:
+                raise Exception(f'The param \'{prm_key}\' is not used in the code.')
+
         nn_dataset.data.cache_clear()
         ids_list = nn_dataset.data()["nn_id"].unique().tolist()
         new_checksum = uuid4(code)
