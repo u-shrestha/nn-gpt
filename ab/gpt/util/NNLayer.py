@@ -96,7 +96,7 @@ def alter(epochs, test_conf, llm_name):
                 inputs = tokenizer.apply_chat_template([
                     {'role': 'user', 'content': prompt},
                 ], add_generation_prompt=True, return_tensors="pt").to(model.device)
-                outputs = model.generate(inputs, max_new_tokens=10000, do_sample=True, temperature=0.6, top_k=50, top_p=0.95, num_return_sequences=1,
+                outputs = model.generate(inputs, max_new_tokens=64 * 1024, do_sample=True, temperature=0.6, top_k=50, top_p=0.95, num_return_sequences=1,
                                          eos_token_id=tokenizer.eos_token_id)
                 out = tokenizer.decode(outputs[0][len(inputs[0]):], skip_special_tokens=True)
                 print("[DEBUG] Model Output:\n", out)

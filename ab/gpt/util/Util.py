@@ -2,6 +2,8 @@ import os.path
 import re
 import shutil
 from pathlib import Path
+import io
+import tokenize
 
 from ab.gpt.util.Const import new_lemur_nn_dir, new_nn_file, new_lemur_stat_dir
 
@@ -26,19 +28,50 @@ def verify_nn_code(nn_dir, nn_file):
 def exists(f):
     return f and os.path.exists(f)
 
+def strip_comments(code: str):
+    try:
+        if code:
+            result = []
+            tokens = tokenize.generate_tokens(io.StringIO(code).readline)
+
+            prev_toktype = tokenize.INDENT
+            for tok in tokens:
+                tok_type, tok_string, _, _, _ = tok
+
+                if tok_type == tokenize.COMMENT:
+                    # skip comments
+                    continue
+                elif tok_type == tokenize.STRING:
+                    # skip likely docstrings (standalone strings right after indent or at start)
+                    if prev_toktype == tokenize.INDENT or prev_toktype == tokenize.NEWLINE:
+                        continue
+
+                result.append(tok)
+                prev_toktype = tok_type
+
+            return tokenize.untokenize(result)
+    except:
+        pass
+    return None
+
+
 def extract_str(s: str, start: str, end: str):
     try:
-        return s[:s.rindex(end)].split(start)[-1].strip()
+        s = s[:s.rindex(end)]
+        spl = s.split(start)
+        if len(spl) > 1:
+            return spl[-1].strip()
     except:
-        return None
+        pass
+    return None
 
 
 def extract_code(txt):
-    return next(filter(None, map(lambda l: extract_str(txt, *l), (('<nn>', '</nn>'), ('```python', '```'), ('```', '```')))), '')
+    return strip_comments(next(filter(None, map(lambda l: extract_str(txt, *l), (('<nn>', '</nn>'), ('```python', '```'), ('```', '```')))), ''))
 
 
 def extract_hyperparam(txt):
-    return next(filter(None, map(lambda l: extract_str(txt, *l), (('<hp>', '</hp>'),))), '')
+    return strip_comments(next(filter(None, map(lambda l: extract_str(txt, *l), (('<hp>', '</hp>'),))), ''))
 
 
 def copy_to_lemur(df, gen_nn_dir, name):
