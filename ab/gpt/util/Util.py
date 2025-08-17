@@ -28,9 +28,13 @@ def exists(f):
 
 def extract_str(s: str, start: str, end: str):
     try:
-        return s[:s.rindex(end)].split(start)[-1].strip()
+        s = s[:s.rindex(end)]
+        spl = s.split(start)
+        if len(spl) > 1:
+            return spl[-1].strip()
     except:
-        return None
+        pass
+    return None
 
 
 def extract_code(txt):
