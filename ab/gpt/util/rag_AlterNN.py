@@ -213,7 +213,7 @@ def alter(epochs: int, test_conf: str, llm_name: str) -> None:
             prev_error = ""
             for attempt in range(MAX_TRIES):
                 tried += 1
-                sys_msg = f"DeepSeek-Coder-7B-Instruct – retry={attempt}"
+                sys_msg = f"{llm_name} – retry={attempt}"
                 if attempt and prev_error:
                     sys_msg += f" | previous error: {prev_error}"
 
