@@ -256,7 +256,7 @@ def alter(epochs: int, test_conf: str, llm_name: str) -> None:
                         raise ValueError("param budget exceeded")
 
                 except Exception as e:
-                    prev_error = str(e)[:160]
+                    prev_error = str(e)[:ERROR_MSG_TRUNC_LEN]
                     print(f"[GATE] {name} failed ({prev_error})")
                     continue  # retry
 
