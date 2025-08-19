@@ -207,7 +207,7 @@ def alter(epochs: int, test_conf: str, llm_name: str) -> None:
             block = _normalize_top_indent(textwrap.dedent(block).lstrip("\n"))
 
             user_prompt = _escape_braces("\n".join(prompt_tpl)).format(block=block)
-            if len(tok.tokenize(user_prompt)) + 50 > 3_800:
+            if len(tok.tokenize(user_prompt)) + 50 > CONTEXT_WINDOW_LIMIT:
                 print("[WARN] prompt near context window")
 
             prev_error = ""
