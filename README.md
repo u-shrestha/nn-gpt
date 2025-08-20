@@ -14,11 +14,13 @@ For Linux/Mac:
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate
+   python -m pip install --upgrade pip
    ```
 For Windows:
    ```bash
    python3 -m venv .venv
    .venv\Scripts\activate
+   python -m pip install --upgrade pip
    ```
 
 It is also assumed that CUDA 12.6 is installed. If you have a different version, please replace 'cu126' with the appropriate version number.
