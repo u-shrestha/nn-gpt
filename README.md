@@ -45,7 +45,7 @@ Create a virtual environment, activate it, and run the following command to inst
 ```bash
 python -m pip install --upgrade pip
 pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu126
-pip install -r requirements-no-isolation.txt --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu126
+pip install -r req-no-isolation.txt --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu126
 ```
 
 If there are installation problems, install the dependencies from the 'requirements.txt' file one by one.

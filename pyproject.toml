@@ -37,7 +37,8 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 'ab' = ['*.md']
-'*' = ['requirements.txt', 'requirements-no-isolation.txt', 'README.md', 'LICENSE', 'version']
+'*' = ['requirements.txt', 'README.md', 'LICENSE', 'version']
 
 [project.optional-dependencies]
+flash = ['flash_attn']
 stat = ['nn-stat']
