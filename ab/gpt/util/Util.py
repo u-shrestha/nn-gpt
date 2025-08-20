@@ -2,10 +2,9 @@ import os.path
 import re
 import shutil
 from pathlib import Path
-import io
-import tokenize
 
 from ab.gpt.util.Const import new_lemur_nn_dir, new_nn_file, new_lemur_stat_dir
+from ..util.Code import *
 
 
 # todo: Verify that the model's accuracy does not decrease by more than 10%, or increase at some epochs
@@ -28,32 +27,6 @@ def verify_nn_code(nn_dir, nn_file):
 def exists(f):
     return f and os.path.exists(f)
 
-def strip_comments(code: str):
-    try:
-        if code:
-            result = []
-            tokens = tokenize.generate_tokens(io.StringIO(code).readline)
-
-            prev_toktype = tokenize.INDENT
-            for tok in tokens:
-                tok_type, tok_string, _, _, _ = tok
-
-                if tok_type == tokenize.COMMENT:
-                    # skip comments
-                    continue
-                elif tok_type == tokenize.STRING:
-                    # skip likely docstrings (standalone strings right after indent or at start)
-                    if prev_toktype == tokenize.INDENT or prev_toktype == tokenize.NEWLINE:
-                        continue
-
-                result.append(tok)
-                prev_toktype = tok_type
-
-            return tokenize.untokenize(result).strip()
-    except:
-        pass
-    return None
-
 
 def extract_str(s: str, start: str, end: str):
     try:
@@ -67,11 +40,11 @@ def extract_str(s: str, start: str, end: str):
 
 
 def extract_code(txt):
-    return strip_comments(next(filter(None, map(lambda l: extract_str(txt, *l), (('<nn>', '</nn>'), ('```python', '```'), ('```', '```')))), ''))
+    return improve_code(next(filter(None, map(lambda l: extract_str(txt, *l), (('<nn>', '</nn>'), ('```python', '```'), ('```', '```')))), ''))
 
 
 def extract_hyperparam(txt):
-    return strip_comments(next(filter(None, map(lambda l: extract_str(txt, *l), (('<hp>', '</hp>'),))), ''))
+    return improve_code(next(filter(None, map(lambda l: extract_str(txt, *l), (('<hp>', '</hp>'),))), ''))
 
 
 def copy_to_lemur(df, gen_nn_dir, name):

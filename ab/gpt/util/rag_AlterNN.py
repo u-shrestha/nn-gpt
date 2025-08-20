@@ -11,15 +11,11 @@
 
 from __future__ import annotations
 
-import ast
-import hashlib
 import importlib.util
 import json
 import random
-import re
 import shutil
 import textwrap
-import tokenize
 from pathlib import Path
 from typing import List
 
@@ -34,6 +30,7 @@ from ..util.Const import (
     new_out_file,
     new_nn_file,
 )
+from ..util.Code import *
 from ..util.Util import extract_code
 from ab.nn.util.Util import create_file
 
@@ -70,18 +67,6 @@ def _escape_braces(s: str) -> str:
     return s.replace("{block}", sent).replace("{", "{{").replace("}", "}}").replace(
         sent, "{block}"
     )
-
-
-def _dedup_imports(src: str) -> str:
-    """Merge duplicate torch import lines."""
-    seen, out = set(), []
-    for ln in src.splitlines():
-        if ln.startswith("import torch") or ln.startswith("from torch import nn"):
-            if ln in seen:
-                continue
-            seen.add(ln)
-        out.append(ln)
-    return "\n".join(out)
 
 
 # ────────────────────────────────────────────────────────────────
@@ -138,24 +123,6 @@ def _strip_unavailable_imports(src: str) -> tuple[str, bool]:
 
 
 # ────────────────────────────────────────────────────────────────
-#  Normalise stray top-level indentation (safe for half-finished files)
-# ────────────────────────────────────────────────────────────────
-def _normalize_top_indent(src: str) -> str:
-    try:
-        ast.parse(src)
-        return src
-    except (SyntaxError, IndentationError):
-        pass
-
-    lines = src.splitlines(True)
-    for i, ln in enumerate(lines):
-        if ln.strip():
-            lines[i] = ln.lstrip()
-            break
-    return "".join(lines)
-
-
-# ────────────────────────────────────────────────────────────────
 # Main pipeline
 # ────────────────────────────────────────────────────────────────
 def alter(epochs: int, test_conf: str, llm_name: str) -> None:
@@ -204,7 +171,7 @@ def alter(epochs: int, test_conf: str, llm_name: str) -> None:
             if flag:
                 print(f"[STRIP] {name}: removed unused imports of unavailable packages")
 
-            block = _normalize_top_indent(textwrap.dedent(block).lstrip("\n"))
+            block = normalize_top_indent(textwrap.dedent(block).lstrip("\n"))
 
             user_prompt = _escape_braces("\n".join(prompt_tpl)).format(block=block)
             if len(tok.tokenize(user_prompt)) + 50 > CONTEXT_WINDOW_LIMIT:
@@ -239,7 +206,7 @@ def alter(epochs: int, test_conf: str, llm_name: str) -> None:
                     (extract_code(raw) or "").replace("```python", "").replace("```", "")
                 ).strip()
 
-                full_code = _dedup_imports(block + "\n\n" + wrapper)
+                full_code = dedup_imports(block + "\n\n" + wrapper)
 
                 try:
                     compiled = compile(full_code, "<string>", "exec")
