@@ -23,7 +23,7 @@ For Windows:
    python -m pip install --upgrade pip
    ```
 
-It is also assumed that CUDA 12.6 is installed. If you have a different version, please replace 'cu126' with the appropriate version number.
+It is assumed that CUDA 12.6 is installed. If you have a different version, please replace 'cu126' with the appropriate version number. Most LLM usage scenarios require GPUs with at least 24 GB of memory.
 
 ## Installation of NNGPT with pip
 
