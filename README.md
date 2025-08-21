@@ -25,6 +25,14 @@ For Windows:
 
 It is also assumed that CUDA 12.6 is installed. If you have a different version, please replace 'cu126' with the appropriate version number.
 
+## Installation of NNGPT with pip
+
+```bash
+   pip install nn-gpt --extra-index-url https://download.pytorch.org/whl/cu126
+   pip install nn-gpt[flash] --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu126
+   ```
+
+
 ## Environment for NNGPT Developers
 ### Pip package manager
 
