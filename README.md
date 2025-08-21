@@ -14,19 +14,18 @@ For Linux/Mac:
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate
+   python -m pip install --upgrade pip
    ```
 For Windows:
    ```bash
    python3 -m venv .venv
    .venv\Scripts\activate
+   python -m pip install --upgrade pip
    ```
 
-It is also assumed that CUDA 12.6 is installed. If you have a different version, please replace 'cu126' with the appropriate version number.
+It is assumed that CUDA 12.6 is installed; otherwise, consider replacing 'cu126' with the appropriate version. Most LLM usage scenarios require GPUs with at least 24 GB of memory.
 
-## Environment for NNGPT Developers
-### Pip package manager
-
-#### Prerequisites for mpi4py package:
+### Prerequisites for mpi4py package:
 * On Debian/Ubuntu systems, run:
   
          sudo apt install libmpich-dev    # for MPICH
@@ -39,11 +38,23 @@ It is also assumed that CUDA 12.6 is installed. If you have a different version,
   
          sudo dnf install openmpi-devel   # for Open MPI
   
+
+## Installation of NNGPT with pip
+
+```bash
+   pip install nn-gpt --extra-index-url https://download.pytorch.org/whl/cu126
+   pip install nn-gpt[flash] --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu126
+   ```
+
+
+## Environment for NNGPT Developers
+### Pip package manager
+
 Create a virtual environment, activate it, and run the following command to install all the project dependencies:
 ```bash
 python -m pip install --upgrade pip
 pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu126
-pip install -r requirements-no-isolation.txt --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu126
+pip install -r req-no-isolation.txt --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu126
 ```
 
 If there are installation problems, install the dependencies from the 'requirements.txt' file one by one.
@@ -81,7 +92,7 @@ Running script
 docker run --rm -u $(id -u):ab --shm-size=16G -v $(pwd)/nn-gpt:/a/mm abrainone/ai-linux bash -c "python -m ab.gpt.TuneNNGen_8B"
 ```
 
-The recently added dependencies might be missing in the <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a>. In this case, you can create a container from the Docker image ```abrainone/ai-linux```, install the missing packages (preferably using ```pip install <package name>```), and then create a new image from the container using ```docker commit <container name> <new image name>```. You can use this new image locally or push it to the registry for deployment on the computer cluster.
+If recently added dependencies are missing in the <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a>, you can create a container from the Docker image ```abrainone/ai-linux```, install the missing packages (preferably using ```pip install <package name>```), and then create a new image from the container using ```docker commit <container name> <new image name>```. You can use this new image locally or push it to the registry for deployment on the computer cluster.
 
 ## Use
 
