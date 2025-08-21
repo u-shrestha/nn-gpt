@@ -25,18 +25,7 @@ For Windows:
 
 It is assumed that CUDA 12.6 is installed; otherwise, consider replacing 'cu126' with the appropriate version. Most LLM usage scenarios require GPUs with at least 24 GB of memory.
 
-## Installation of NNGPT with pip
-
-```bash
-   pip install nn-gpt --extra-index-url https://download.pytorch.org/whl/cu126
-   pip install nn-gpt[flash] --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu126
-   ```
-
-
-## Environment for NNGPT Developers
-### Pip package manager
-
-#### Prerequisites for mpi4py package:
+### Prerequisites for mpi4py package:
 * On Debian/Ubuntu systems, run:
   
          sudo apt install libmpich-dev    # for MPICH
@@ -49,6 +38,18 @@ It is assumed that CUDA 12.6 is installed; otherwise, consider replacing 'cu126'
   
          sudo dnf install openmpi-devel   # for Open MPI
   
+
+## Installation of NNGPT with pip
+
+```bash
+   pip install nn-gpt --extra-index-url https://download.pytorch.org/whl/cu126
+   pip install nn-gpt[flash] --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu126
+   ```
+
+
+## Environment for NNGPT Developers
+### Pip package manager
+
 Create a virtual environment, activate it, and run the following command to install all the project dependencies:
 ```bash
 python -m pip install --upgrade pip
