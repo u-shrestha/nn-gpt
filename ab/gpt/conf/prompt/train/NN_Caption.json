@@ -27,7 +27,7 @@
       "   - If captions.ndim == 3, first do captions = captions[:, 0, :].",
       "   - inputs = captions[:, :-1]; targets = captions[:, 1:].",
       "   - forward() MUST return (logits, hidden_state), where logits is [B, T-1, V].",
-      "4) Optimizer MUST be: torch.optim.Adam(self.parameters(), lr=prm['lr']). Do NOT read any other prm key.",
+      "4) Optimizer MUST be: torch.optim.SGD(self.parameters(), lr=prm['lr']). Do NOT read any other prm key.",
       "5) Libraries: use torch / torch.nn ONLY. Do NOT import weights or enums from torchvision (no ResNet50_Weights / WeightsEnum / EfficientNet / einops / etc.). Define every helper in this file.",
       "6) Shapes & sanity:",
       "6) Shapes & sanity:",
