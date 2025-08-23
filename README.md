@@ -118,7 +118,7 @@ The original version of this project was created at the Computer Vision Laborato
 @article{ABrain.HPGPT,
   title={Optuna vs Code Llama: Are LLMs a New Paradigm for Hyperparameter Tuning?},
   author={Kochnev, Roman and Goodarzi, Arash Torabi and Bentyn, Zofia Antonina and Ignatov, Dmitry and Timofte, Radu},
-  journal={arXiv preprint arXiv:2504.06006},
+  journal={IEEE/CVF International Conference on Computer Vision Workshops},
   year={2025}
 }
 ```
