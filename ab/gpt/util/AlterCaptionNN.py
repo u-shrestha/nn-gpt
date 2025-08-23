@@ -109,53 +109,59 @@ def alter(epochs, test_conf, llm_name, gguf_file=None, final_out_dir=None, only_
             df_file = model_dir / 'dataframe.df'
 
             # Chat template -> generate
-            inputs = tokenizer.apply_chat_template(
+            input_ids = tokenizer.apply_chat_template(
                 [{'role': 'user', 'content': the_prompt}],
                 add_generation_prompt=True,
                 return_tensors="pt"
             ).to(model.device)
 
+            if tokenizer.pad_token_id is None:
+                tokenizer.pad_token_id = tokenizer.eos_token_id  # ok for generation
+
+            attention_mask = (input_ids != tokenizer.pad_token_id).long()
+
             outputs = model.generate(
-                inputs,
-                max_new_tokens=64 * 1024,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                max_new_tokens=32 * 1024,
                 do_sample=True,
                 temperature=0.6,
                 top_k=50,
                 top_p=0.95,
-                num_return_sequences=1,
-                eos_token_id=tokenizer.eos_token_id
+                num_return_sequences=1
             )
 
-            out = tokenizer.decode(outputs[0][len(inputs[0]):], skip_special_tokens=True)
+            # slice off the prompt tokens; NO len() here
+            prompt_len = input_ids.shape[-1]
+            gen_tokens = outputs[0][prompt_len:]
+            out = tokenizer.decode(gen_tokens, skip_special_tokens=True)
+            
             print("Response Available!")
             nn_code = extract_code(out)
 
             if nn_code:
-                # Save to synth dir (existing behaviour)
                 print(f"[INFO]Saving code to: {code_file}")
                 code_file.parent.mkdir(exist_ok=True, parents=True)
-                with open(code_file, 'w') as file:
-                    file.write(nn_code)
+                with open(code_file, 'w') as f:
+                    f.write(nn_code)
                 create_file(model_dir, new_out_file, out)
 
-                # Save metadata/df
                 if origdf is None:
                     if os.path.isfile(df_file):
                         os.remove(df_file)
                 else:
                     orig_code_file = model_dir / f"original_{origdf['nn']}.py"
-                    with open(orig_code_file, 'w') as file:
-                        file.write(origdf['nn_code'])
+                    with open(orig_code_file, 'w') as f:
+                        f.write(origdf['nn_code'])
                     origdf.to_pickle(df_file)
 
-                # NEW: optional export to final_out_dir
                 if final_out_dir:
                     try:
-                        # Prefer 'nn' column; fallback to a generic name
                         orig_name = str(origdf.get('nn', 'CAPTIONNET'))
                         _export_single_file(code_file, orig_name, Path(final_out_dir))
                     except Exception as e:
-                        # Never crash the main pipeline; just log
                         print(f"[WARN] Final export skipped due to error: {e}")
 
                 B_index += 1
