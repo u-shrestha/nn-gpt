@@ -109,17 +109,18 @@ If recently added dependencies are missing in the <a href='https://hub.docker.co
 
 The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing our articles for NNGPT framework and <a target='_blank' href='https://arxiv.org/pdf/2504.06006'>hyperparameter tuning</a>:
 ```bibtex
+
+@InProceedings{ABrain.HPGPT,
+  title={Optuna vs Code Llama: Are LLMs a New Paradigm for Hyperparameter Tuning?},
+  author={Kochnev, Roman and Goodarzi, Arash Torabi and Bentyn, Zofia Antonina and Ignatov, Dmitry and Timofte, Radu},
+  booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision Workshops},
+  year={2025}
+}
+
 @article{ABrain.NNGPT,
   title        = {NNGPT: Rethinking AutoML with Large Language Models},
   author       = {Kochnev, Roman and Khalid, Waleed and Uzun, Tolgay Atinc and Zhang, Xi and Dhameliya, Yashkumar Sanjaybhai and Qin, Furui and Ignatov, Dmitry and Timofte, Radu},
   year         = {2025}
-}
-
-@article{ABrain.HPGPT,
-  title={Optuna vs Code Llama: Are LLMs a New Paradigm for Hyperparameter Tuning?},
-  author={Kochnev, Roman and Goodarzi, Arash Torabi and Bentyn, Zofia Antonina and Ignatov, Dmitry and Timofte, Radu},
-  journal={IEEE/CVF International Conference on Computer Vision Workshops},
-  year={2025}
 }
 ```
 ## Licenses
