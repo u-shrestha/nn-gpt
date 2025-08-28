@@ -1,125 +1,142 @@
 import json
 import os
 import shutil
-import re
 from pathlib import Path
-
-import torch
+from typing import Optional
 
 import ab.nn.api as nn_dataset
-from ab.nn.util.Util import create_file
 from tqdm import tqdm
 
-from ab.gpt.util.Const import conf_test_dir, epoch_dir, new_nn_file, synth_dir, new_out_file
+from ab.nn.util.Util import create_file
+from ab.gpt.util.Const import (
+    conf_test_dir,
+    epoch_dir,
+    synth_dir,
+    new_nn_file,
+    new_out_file,
+)
 from ab.gpt.util.LLM import LLM
 from ab.gpt.util.Util import extract_code
 
-# --- Export helper (kept minimal and self-contained) --------------------------
 
-def _export_single_file(src_file: Path, original_nn_name: str, final_dir: Path) -> Path:
+def alter(
+    epochs: int,
+    test_conf: str,
+    llm_name: str,
+    gguf_file: Optional[str] = None,
+    only_nn: Optional[str] = None,
+) -> None:
     """
-    Copy src_file to final_dir as <original_nn_name>_ALTER_<N>.py (N auto-incremented).
-    Safe to call repeatedly; it scans existing files to pick the next number.
+    Generate altered captioning models.
+
+    Args:
+        epochs: number of generation epochs (A0..A{epochs-1})
+        test_conf: filename (under conf_test_dir) for the prompt JSON
+        llm_name: HF model id or local path
+        gguf_file: optional GGUF file for local/llama.cpp backends
+        only_nn: if set, generate variants ONLY for this NN name (e.g. 'RESNETLSTM')
     """
-    final_dir.mkdir(parents=True, exist_ok=True)
-
-    # strip .py if user stored names like 'ResNetTransformer.py'
-    base = original_nn_name.rsplit('.', 1)[0]
-    pat = re.compile(re.escape(base) + r"_ALTER_(\d+)\.py$")
-
-    max_n = 0
-    for p in final_dir.glob(f"{base}_ALTER_*.py"):
-        m = pat.search(p.name)
-        if m:
-            try:
-                max_n = max(max_n, int(m.group(1)))
-            except ValueError:
-                pass
-
-    out_path = final_dir / f"{base}_ALTER_{max_n + 1}.py"
-    shutil.copy2(src_file, out_path)
-    print(f"[INFO]Exported final single-file model -> {out_path}")
-    return out_path
-
-# -----------------------------------------------------------------------------
-
-def alter(epochs, test_conf, llm_name, gguf_file=None, final_out_dir=None, only_nn=None):
-    """
-    Args (new):
-        only_nn (str|None): if set, generate variants ONLY for this NN name
-                            (e.g. 'RESNETLSTM', 'ResNetTransformer').
-    """
-    with open(conf_test_dir / test_conf) as f:
+    # 1) Load prompt configuration
+    with open(conf_test_dir / test_conf, "r", encoding="utf-8") as f:
         prompt_dict = json.load(f)
     assert isinstance(prompt_dict, dict)
 
+    # 2) Load LLM + tokenizer
     model_loader = LLM(llm_name, gguf_file=gguf_file)
     model = model_loader.get_model()
     tokenizer = model_loader.get_tokenizer()
     print("Load Model Complete, Start Loop...")
 
+    # 3) Reset epoch output root
     shutil.rmtree(epoch_dir(), ignore_errors=True)
-    for epoch in range(epochs):
-        out_path = epoch_dir(epoch)
 
-        prompts = []
+    # 4) Epoch loop
+    for ep in range(epochs):
+        base_out = epoch_dir(ep)
+
+        prompts = []  # (the_prompt:str, caption_row:pd.Series, addons_df:Optional[pd.DataFrame])
+
+        # Build prompts for every template key
         for key in prompt_dict.keys():
-            prompt = ""
-            for pr in prompt_dict[key]['prompt']:
-                prompt += pr + "\n"
+            # Join prompt lines into a single template string
+            prompt_tpl = "\n".join(prompt_dict[key]["prompt"]) + "\n"
 
-            # pull captioning rows (1 per nn)
-            data = nn_dataset.data(
-                only_best_accuracy=True,
-                task=prompt_dict[key]['task']
-            ).groupby(by="nn").sample(n=1)
+            # Pull captioning rows (1 sample per NN)
+            cap_df = (
+                nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]["task"])
+                .groupby(by="nn")
+                .sample(n=1)
+            )
 
-            # NEW: filter to a single NN if requested
+            # Optional filter to a single NN by name
             if only_nn:
-                data = data[data["nn"] == only_nn]
-                if len(data) == 0:
-                    print(f"[WARN] No rows found for nn='{only_nn}' under task='{prompt_dict[key]['task']}'. Skipping.")
+                cap_df = cap_df[cap_df["nn"] == only_nn]
+                if len(cap_df) == 0:
+                    print(
+                        f"[WARN] No rows found for nn='{only_nn}' under task='{prompt_dict[key]['task']}'. Skipping."
+                    )
                     continue
 
-            # addon rows (optional)
-            addon_data = nn_dataset.data(
-                only_best_accuracy=True,
-                task=prompt_dict[key]['addon_task']
-            ) if prompt_dict[key].get('addon_task') else None
+            # Pull classification addons if configured
+            addon_df = None
+            if prompt_dict[key].get("addon_task"):
+                addon_df = nn_dataset.data(task=prompt_dict[key]["addon_task"])
 
-            for _, row in data.iterrows():
+            # For each chosen captioning row, fill placeholders
+            addon_entries = prompt_dict[key].get("addon_list", [])  # list of dicts
+            K = len(addon_entries)
+
+            for _, cap_row in cap_df.iterrows():
+                # Base placeholder dict from captioning row
                 para_dict = {}
                 for it in prompt_dict[key]["input_list"]:
-                    para_dict[it['para']] = row[it['value']]
+                    para_dict[it["para"]] = cap_row[it["value"]]
 
-                if addon_data is not None and len(addon_data) > 0:
-                    filtered = addon_data.loc[addon_data.nn != row['nn']]
-                    addon_row = (filtered if len(filtered) > 0 else addon_data).sample(n=1).iloc[0]
-                    for it in prompt_dict[key].get('addon_list', []):
-                        para_dict[it['para']] = addon_row[it['value']]
+                # Choose up to K distinct classification inspiration rows
+                chosen_addons = None
+                if addon_df is not None and len(addon_df) > 0 and K > 0:
+                    filtered = addon_df.loc[addon_df.nn != cap_row["nn"]] if len(addon_df) > 0 else addon_df
+                    base_pool = filtered if len(filtered) > 0 else addon_df
+                    n_pick = min(K, len(base_pool))
+                    chosen_addons = base_pool.sample(n=n_pick, replace=False, random_state=ep)
+                    for i, entry in enumerate(addon_entries):
+                        if i < chosen_addons.shape[0]:
+                            para_dict[entry["para"]] = chosen_addons.iloc[i][entry["value"]]
+                        else:
+                            para_dict[entry["para"]] = ""
+                else:
+                    for entry in addon_entries:
+                        para_dict[entry["para"]] = ""
 
-                prompts.append((prompt.format(**para_dict), row))
+                # Render final prompt text
+                the_prompt = prompt_tpl.format(**para_dict)
+                prompts.append((the_prompt, cap_row, chosen_addons))
 
-        # Produce new CV models
+        # 5) Generate code for each prepared prompt
         B_index = 0
-        for idx, item in tqdm(enumerate(prompts), desc="Generate Codes"):
-            the_prompt, origdf = item
-            model_dir = synth_dir(out_path) / f"B{B_index}"
-            code_file = model_dir / new_nn_file
-            df_file = model_dir / 'dataframe.df'
+        for idx, (the_prompt, cap_row, addons_df) in tqdm(
+            enumerate(prompts), total=len(prompts), desc="Generate Codes"
+        ):
+            model_dir = synth_dir(base_out) / f"B{B_index}"
+            code_file = model_dir / new_nn_file           # generated: new_nn.py
+            df_file = model_dir / "dataframe.df"          # original captioning row
+            orig_caption_py = model_dir / "original_caption.py"
 
-            # Chat template -> generate
+            # --- Tokenize with chat template
+            messages = [
+                {"role": "system", "content": CODE_ONLY_SYSTEM},
+                {"role": "user", "content": the_prompt},
+            ]
             input_ids = tokenizer.apply_chat_template(
-                [{'role': 'user', 'content': the_prompt}],
-                add_generation_prompt=True,
-                return_tensors="pt"
+                messages, add_generation_prompt=True, return_tensors="pt"
             ).to(model.device)
 
             if tokenizer.pad_token_id is None:
-                tokenizer.pad_token_id = tokenizer.eos_token_id  # ok for generation
+                tokenizer.pad_token_id = tokenizer.eos_token_id  # safe fallback
 
             attention_mask = (input_ids != tokenizer.pad_token_id).long()
 
+            # --- Generate
             outputs = model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -127,44 +144,56 @@ def alter(epochs, test_conf, llm_name, gguf_file=None, final_out_dir=None, only_
                 eos_token_id=tokenizer.eos_token_id,
                 max_new_tokens=32 * 1024,
                 do_sample=True,
-                temperature=0.6,
+                temperature=0.9,
                 top_k=50,
                 top_p=0.95,
-                num_return_sequences=1
+                repetition_penalty=1.08,
+                num_beams=1,   
+                num_return_sequences=1,
             )
 
-            # slice off the prompt tokens; NO len() here
-            prompt_len = input_ids.shape[-1]
+            # --- Decode only new tokens (strip prompt echo)
+            prompt_len = int(input_ids.shape[-1])
             gen_tokens = outputs[0][prompt_len:]
-            out = tokenizer.decode(gen_tokens, skip_special_tokens=True)
-            
-            print("Response Available!")
-            nn_code = extract_code(out)
+            out_text = tokenizer.decode(gen_tokens, skip_special_tokens=True)
 
+            print("Response Available!")
+            nn_code = extract_code(out_text)
+
+            # Always create dir and save raw response + original artifacts
+            model_dir.mkdir(exist_ok=True, parents=True)
+            create_file(model_dir, new_out_file, out_text)  # raw LLM response
+
+            # Save original captioning row (pickle) and its code
+            try:
+                cap_row.to_pickle(df_file)
+            except Exception as e:
+                print(f"[WARN] Failed to pickle caption row: {e}")
+            try:
+                with open(orig_caption_py, "w", encoding="utf-8") as f:
+                    f.write(str(cap_row.get("nn_code", "")))
+            except Exception as e:
+                print(f"[WARN] Failed to save original caption code: {e}")
+
+            # Save chosen add-ons' code as plain numbered files
+            if addons_df is not None and len(addons_df) > 0:
+                addons_dir = model_dir / "addons"
+                addons_dir.mkdir(exist_ok=True, parents=True)
+                for j, (_, addon_row) in enumerate(addons_df.iterrows(), start=1):
+                    addon_file = addons_dir / f"addon_{j}.py"
+                    try:
+                        with open(addon_file, "w", encoding="utf-8") as f:
+                            f.write(str(addon_row.get("nn_code", "")))
+                    except Exception as e:
+                        print(f"[WARN] Failed to save add-on #{j}: {e}")
+
+            # Save generated code if present
             if nn_code:
                 print(f"[INFO]Saving code to: {code_file}")
-                code_file.parent.mkdir(exist_ok=True, parents=True)
-                with open(code_file, 'w') as f:
+                with open(code_file, "w", encoding="utf-8") as f:
                     f.write(nn_code)
-                create_file(model_dir, new_out_file, out)
-
-                if origdf is None:
-                    if os.path.isfile(df_file):
-                        os.remove(df_file)
-                else:
-                    orig_code_file = model_dir / f"original_{origdf['nn']}.py"
-                    with open(orig_code_file, 'w') as f:
-                        f.write(origdf['nn_code'])
-                    origdf.to_pickle(df_file)
-
-                if final_out_dir:
-                    try:
-                        orig_name = str(origdf.get('nn', 'CAPTIONNET'))
-                        _export_single_file(code_file, orig_name, Path(final_out_dir))
-                    except Exception as e:
-                        print(f"[WARN] Final export skipped due to error: {e}")
-
                 B_index += 1
             else:
-                print("[INFO]Response Invalid!")
+                print("[INFO]Response Invalid! (no fenced code block found)")
+                # keep artifacts for debugging and continue
                 continue
