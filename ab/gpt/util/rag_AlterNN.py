@@ -22,7 +22,7 @@ from typing import List
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from ab.rag.retriever import Retriever, BLOCKS_100
+from ab.rag.extract_blocks import BlockExtractor
 from ..util.Const import (
     conf_test_dir,
     epoch_dir,
@@ -35,34 +35,43 @@ from ..util.Util import extract_code
 from ab.nn.util.Util import create_file
 
 # ────────────────────────────────────────────────────────────────
-MAX_TRIES      = 3
-LLM_MAX_TOKENS = 3_500
-PARAM_BUDGET   = 2_000_000
+MAX_TRIES           = 3
+LLM_MAX_TOKENS      = 3_500
+PARAM_BUDGET        = 2_000_000
+CONTEXT_WINDOW_LIMIT = 4_000  # Conservative limit for most models
+ERROR_MSG_TRUNC_LEN = 200     # Truncate error messages for retry feedback
 random.seed(42)
 
+# Set up blocks directory and lazily fetch code blocks only if not cached
 blocks_dir = Path(__file__).resolve().parents[3] / "blocks"
 blocks_dir.mkdir(exist_ok=True)
 
-retriever = Retriever()
+# If the directory is empty (no cached blocks), run BlockExtractor to populate it; otherwise skip.
+if any(blocks_dir.glob("*.py")):
+    print("[INFO] Existing blocks detected – skipping extraction")
+else:
+    print("[INFO] No cached blocks found – extracting with BlockExtractor …")
+    extractor = BlockExtractor()
+    extractor.extract_blocks_from_file()
+
+# Refresh list of available block files from the blocks directory
+available_blocks = [f.stem for f in blocks_dir.glob("*.py") if f.is_file()]
 
 # ────────────────────────────────────────────────────────────────
 # Helper utilities
 # ────────────────────────────────────────────────────────────────
 def _load_block(name: str) -> str | None:
-    """Fetch a code block from cache or retriever."""
+    """Fetch a code block from the blocks directory."""
     p = blocks_dir / f"{name}.py"
     if p.is_file():
-        print(f"[CACHE] {name}")
+        print(f"[LOAD] {name}")
         return p.read_text()
-    print(f"[FETCH] {name}")
-    code = retriever.get_block(name)
-    if code:
-        p.write_text(code)
-    return code
+    print(f"[MISS] {name} not found in blocks directory")
+    return None
 
 
 def _escape_braces(s: str) -> str:
-    """Double every literal brace except {block} placeholder."""
+    """Double every literal brace except {blockd} placeholder."""
     sent = "<<BLOCK>>"
     return s.replace("{block}", sent).replace("{", "{{").replace("}", "}}").replace(
         sent, "{block}"
@@ -154,7 +163,7 @@ def alter(epochs: int, test_conf: str, llm_name: str) -> None:
     kept = tried = 0
 
     for ep in range(epochs):
-        queue = BLOCKS_100.copy()
+        queue = available_blocks.copy()
         base_out = epoch_dir(ep)
         idx = 0
 
@@ -192,14 +201,26 @@ def alter(epochs: int, test_conf: str, llm_name: str) -> None:
                     messages, add_generation_prompt=True, return_tensors="pt"
                 ).to(model.device)
 
-                gen = model.generate(
-                    inp,
-                    max_new_tokens=LLM_MAX_TOKENS,
-                    temperature=(0.2 if attempt == 0 else 0.7),
-                    top_p=0.9,
-                    do_sample=(attempt > 0),
-                    eos_token_id=tok.eos_token_id,
-                )
+                # Guard against CUDA OOM: attempt the generation; if memory error occurs
+                # clear the cache and skip this block instead of crashing the whole run.
+                try:
+                    gen = model.generate(
+                        inp,
+                        max_new_tokens=LLM_MAX_TOKENS,
+                        temperature=(0.2 if attempt == 0 else 0.7),
+                        top_p=0.9,
+                        do_sample=(attempt > 0),
+                        eos_token_id=tok.eos_token_id,
+                    )
+                except (torch.cuda.OutOfMemoryError, RuntimeError) as oom_err:
+                    # Some backends raise RuntimeError with "out of memory" in the message
+                    if "out of memory" in str(oom_err).lower():
+                        print("[OOM] Skipping block due to CUDA memory exhaustion")
+                        torch.cuda.empty_cache()
+                        prev_error = "CUDA OOM"
+                        break  # exit retry loop and move to next block
+                    else:
+                        raise
 
                 raw = tok.decode(gen[0][len(inp[0]):], skip_special_tokens=True)
                 wrapper = textwrap.dedent(
