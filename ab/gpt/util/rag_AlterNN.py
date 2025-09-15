@@ -71,7 +71,7 @@ def _load_block(name: str) -> str | None:
 
 
 def _escape_braces(s: str) -> str:
-    """Double every literal brace except {blockd} placeholder."""
+    """Double every literal brace except {block} placeholder."""
     sent = "<<BLOCK>>"
     return s.replace("{block}", sent).replace("{", "{{").replace("}", "}}").replace(
         sent, "{block}"
