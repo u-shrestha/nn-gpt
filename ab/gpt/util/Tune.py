@@ -57,7 +57,8 @@ def flatten_chunks(data):
 
 
 def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf,
-         training_args, peft_config, nn_regenerate_after_exception=False, n_training_prompt_limit=None, always_save_full_output=False):
+         training_args, peft_config, nn_regenerate_after_exception=False, n_training_prompt_limit=None, always_save_full_output=True,
+         max_new_tokens=32 * 1024):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
     with open(conf_llm_dir / llm_conf) as f:
@@ -123,8 +124,7 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
         if epoch < skip_epoch:
             print(f'Skipped nn generation at epoch {epoch}')
         else:
-            nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exception, prompt_dict, test_nn, model_loader.get_max_length(),
-                   always_save_full_output=always_save_full_output)
+            nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exception, prompt_dict, test_nn, max_new_tokens, always_save_full_output=always_save_full_output)
         # fine tune model for 1 epoch / Using training_args and save copy
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')
         # data_processor = NNGenPrompt(model_loader.get_max_length(), tokenizer, train_config_path)
@@ -146,7 +146,7 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
         model = lora_tuner.train(dataset, tokenizer, out_path / base_model_name)
 
 
-def nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exception, prompt_dict, test_nn, max_length, always_save_full_output=False):
+def nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exception, prompt_dict, test_nn, max_new_tokens, always_save_full_output=False):
     # Move inside the loop to create new prompt with newly created models.
     print('Preparing prompts for generation, this might take a while...')
     prompts = []
@@ -176,7 +176,7 @@ def nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exceptio
         code, hp, full_out = chat_bot.chat(
             prompt,
             engineer_prompt=False,
-            max_words=max_length  ## Reduce memory usage
+            max_new_tokens=max_new_tokens  ## Reduce memory usage
         )
         if always_save_full_output: create_file(model_dir, new_out_file, full_out)
         print(f'1 gen hyperparams: {hp}')
@@ -248,7 +248,7 @@ def nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exceptio
                                 "Provide only the code. Don't provide any explanation. Remove any text from this reply. + \n " +
                                 code_txt,
                                 engineer_prompt=False,
-                                max_words=5000)
+                                max_new_tokens=max_new_tokens)
                             print(f'2 gen hyperparams: {new_hp}')
                             create_file(gen_nn_dir, hp_file, new_hp)
                             create_file(gen_nn_dir, new_nn_file, new_code)

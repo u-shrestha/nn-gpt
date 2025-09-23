@@ -42,7 +42,8 @@ def main():
     parser.add_argument('-p', '--peft', type=str, default=None, help='Path to saved LoRA layers.')
     args = parser.parse_args()
     tune(10, 1, args.skip, args.peft, 'NN_gen.json', 'NN_gen.json', 'improve_classification_only',
-         'nngpt_dsr1_distill_qwen_7b_r.json', training_args, peft_config, n_training_prompt_limit= 40 * 1024)
+         'ds_coder_7b_olympic.json', training_args, peft_config, n_training_prompt_limit= 40 * 1024  # , always_save_full_output=False
+         )
 
 if __name__ == '__main__':
     main()
