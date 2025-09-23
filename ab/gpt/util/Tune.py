@@ -58,7 +58,7 @@ def flatten_chunks(data):
 
 def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf,
          training_args, peft_config, nn_regenerate_after_exception=False, n_training_prompt_limit=None, always_save_full_output=True,
-         max_new_tokens=32 * 1024):
+         max_new_tokens=16 * 1024):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
     with open(conf_llm_dir / llm_conf) as f:
