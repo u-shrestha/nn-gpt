@@ -132,45 +132,6 @@ def _quick_text_fixes(code: str) -> str:
     # Replace obvious typos that break parsing
     fixed = fixed.replace("not_defaut", "is not None and")
 
-    # === Custom improvements for BLEU/stability ===
-    # Replace bare CrossEntropyLoss with label_smoothing=0.1
-    fixed = re.sub(
-        r"nn\.CrossEntropyLoss\(\s*ignore_index\s*=\s*0\s*\)",
-        "nn.CrossEntropyLoss(ignore_index=0, label_smoothing=0.1)",
-        fixed,
-    )
-
-    # Clamp learning rate in optimiser definitions (AdamW)
-    # Replace lr assignments to prm['lr'] or prm.get('lr',...) with max(..., 3e-4)
-    fixed = re.sub(
-        r"lr\s*=\s*prm\[['\"]lr['\"]\]",
-        "lr=max(float(prm.get('lr', 1e-3)), 3e-4)",
-        fixed,
-    )
-    fixed = re.sub(
-        r"lr\s*=\s*prm\.get\([^)]*\)",
-        "lr=max(float(prm.get('lr', 1e-3)), 3e-4)",
-        fixed,
-    )
-
-    # Clamp momentum (beta1) inside AdamW betas
-    fixed = re.sub(
-        r"betas\s*=\s*\(\s*prm\.get\(['\"]momentum['\"],\s*0\.9\)\s*,\s*0\.999\s*\)",
-        "betas=(min(max(float(prm.get('momentum',0.9)),0.7),0.99), 0.999)",
-        fixed,
-    )
-    fixed = re.sub(
-        r"betas\s*=\s*\(\s*prm\[['\"]momentum['\"]\]\s*,\s*0\.999\s*\)",
-        "betas=(min(max(float(prm.get('momentum',0.9)),0.7),0.99), 0.999)",
-        fixed,
-    )
-
-    # fix nn.MultiHeadAttention -> nn.MultiheadAttention
-    fixed = re.sub(r'\\bnn\\.MultiHeadAttention\\b', 'nn.MultiheadAttention', fixed)
-    # fix nn.SelfAttention -> nn.MultiheadAttention (PyTorch has no SelfAttention class)
-    fixed = re.sub(r'\\bnn\\.SelfAttention\\b', 'nn.MultiheadAttention', fixed)
-
-
     return fixed
 
 
