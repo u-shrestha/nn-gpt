@@ -227,7 +227,8 @@ def nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exceptio
                             evaluator = NNEval(gen_nn_dir)
                         eval_results = evaluator.evaluate(code_file)
                         eval_info = {str(evaluator.get_args()): eval_results}
-                        name, new_accuracy, code_quality = eval_results
+                        name, new_accuracy, new_accuracy_to_time, code_quality = eval_results
+
                         with open(gen_nn_dir / 'eval_info.json', 'w+') as f:
                             json.dump(eval_info, f)
                         if nn_accepted(gen_nn_dir):
