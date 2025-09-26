@@ -3,7 +3,7 @@
 <sub><a href='https://pypi.python.org/pypi/nn-gpt'><img src='https://img.shields.io/pypi/v/nn-gpt.svg'/></a> <a href="https://pepy.tech/project/nn-gpt"><img alt="GitHub release" src="https://static.pepy.tech/badge/nn-gpt"></a><br/>
 short alias  <a href='https://pypi.python.org/pypi/lmurg'>lmurg</a> 
 </sub> 
-<br/><br/>
+<br/>
 <img src='https://abrain.one/img/nngpt-logo-tr.png' width='25%'/>
 <h3>Overview 📖</h3>
 
