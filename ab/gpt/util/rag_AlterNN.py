@@ -74,7 +74,7 @@ def _detect_block_type(block_code: str) -> str:
     # Parse the code to understand its structure
     try:
         tree = ast.parse(block_code)
-    except:
+    except SyntaxError:
         # If parsing fails, fall back to keyword matching
         return _fallback_detection(block_lower)
     
