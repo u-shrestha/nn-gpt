@@ -1,0 +1,9 @@
+{
+  "accuracy": 0.5394,
+  "batch": 64,
+  "duration": 23333169747,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "GaussianBlur_Pad_2",
+  "uid": "3497198e87b628c7263642659e311204"
+}

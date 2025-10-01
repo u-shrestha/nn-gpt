@@ -1,0 +1,9 @@
+{
+  "accuracy": 0.5029,
+  "batch": 64,
+  "duration": 24576267058,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "RandomAutocontrast_GaussianBlur",
+  "uid": "a07785d32c3277408f98bf1532cda879"
+}

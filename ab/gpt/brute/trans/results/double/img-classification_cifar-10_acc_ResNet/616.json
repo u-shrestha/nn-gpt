@@ -1,0 +1,9 @@
+{
+  "accuracy": 0.5659,
+  "batch": 64,
+  "duration": 11965802534,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "RandomAdjustSharpnes_RandomRotation_2",
+  "uid": "0a90cdd24100eacf0d203c33fdcb660b"
+}

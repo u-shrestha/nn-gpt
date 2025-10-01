@@ -1,0 +1,9 @@
+{
+  "accuracy": 0.5127,
+  "batch": 64,
+  "duration": 15768587383,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "CenterCrop_RandomPerspective_3",
+  "uid": "fbca95c151a345b63b34fe73905f9455"
+}

@@ -1,0 +1,9 @@
+{
+  "accuracy": 0.4955,
+  "batch": 64,
+  "duration": 24387244603,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "RandomRotation_GaussianBlur_3",
+  "uid": "f97e21c5e494d90a4ba5f61ddd2645e2"
+}

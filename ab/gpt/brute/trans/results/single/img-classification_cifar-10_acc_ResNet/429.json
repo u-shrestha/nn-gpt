@@ -1,0 +1,9 @@
+{
+  "accuracy": 0.5931,
+  "batch": 64,
+  "duration": 9535151587,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "Pad",
+  "uid": "607b8504d98d2848b02a7e7888cfad94"
+}

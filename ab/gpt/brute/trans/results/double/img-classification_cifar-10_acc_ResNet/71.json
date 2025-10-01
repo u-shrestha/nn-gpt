@@ -1,0 +1,9 @@
+{
+  "accuracy": 0.3695,
+  "batch": 64,
+  "duration": 23612044223,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "RandomResizedCrop_ColorJitter",
+  "uid": "58c202bb4bc6cda122ce783322b9f43c"
+}

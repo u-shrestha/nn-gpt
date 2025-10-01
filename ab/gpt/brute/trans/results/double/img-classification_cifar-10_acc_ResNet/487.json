@@ -1,0 +1,9 @@
+{
+  "accuracy": 0.5088,
+  "batch": 64,
+  "duration": 11472177473,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "RandomSolarize_RandomVerticalFlip_3",
+  "uid": "ddfa7adb27d5d0e6a6f9b9eddc5e65c1"
+}

@@ -1,0 +1,9 @@
+{
+  "accuracy": 0.3392,
+  "batch": 64,
+  "duration": 34015414952,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "ColorJitter_GaussianBlur",
+  "uid": "6060ca22ca66fd8653a3f58a2d6ab8b0"
+}

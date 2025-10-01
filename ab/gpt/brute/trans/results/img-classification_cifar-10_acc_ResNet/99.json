@@ -1,0 +1,9 @@
+{
+  "accuracy": 0.5749,
+  "batch": 64,
+  "duration": 20592842593,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "RandomRotation_30",
+  "uid": "8323809266d2be31db49415fef5b2151"
+}

@@ -1,0 +1,9 @@
+{
+  "accuracy": 0.5202,
+  "batch": 64,
+  "duration": 10841573057,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "Grayscale_21",
+  "uid": "e80a3605220ce52d13bdfd8cdcb52e26"
+}

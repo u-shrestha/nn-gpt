@@ -4,55 +4,25 @@ import re
 import torchvision.transforms as transforms
 import torch
 import itertools
+import argparse
 
 # available transforms with parameter generators
 variable_transforms = [
     {
         'name': 'CenterCrop',
-        'params': lambda: {'size': random.randint(8, 64)}
+        'params': lambda: {'size': random.randint(24, 32)}  # Reduced max size to fit CIFAR-10 (32x32)
     },
     {
         'name': 'Pad',
         'params': lambda: {
-            'padding': random.randint(0, 10),
+            'padding': random.randint(0, 5),  
             'fill': (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)),
-            'padding_mode': random.choice(['constant', 'edge', 'reflect', 'symmetric'])
-        }
-    },
-    {
-        'name': 'RandomApply',
-        'params': lambda: {
-            'transforms': [random.choice([
-                transforms.RandomRotation(degrees=10),
-                transforms.ColorJitter(brightness=0.2),
-                transforms.RandomHorizontalFlip(p=0.5)
-            ])],
-            'p': round(random.uniform(0.1, 0.9), 2)
-        }
-    },
-    {
-        'name': 'RandomChoice',
-        'params': lambda: {
-            'transforms': [random.choice([
-                transforms.RandomRotation(degrees=10),
-                transforms.ColorJitter(brightness=0.2),
-                transforms.RandomHorizontalFlip(p=0.5)
-            ])]
-        }
-    },
-    {
-        'name': 'RandomOrder',
-        'params': lambda: {
-            'transforms': [random.choice([
-                transforms.RandomRotation(degrees=10),
-                transforms.ColorJitter(brightness=0.2),
-                transforms.RandomHorizontalFlip(p=0.5)
-            ]) for _ in range(3)]
+            'padding_mode': random.choice(["'constant'", "'edge'", "'reflect'", "'symmetric'"])
         }
     },
     {
         'name': 'RandomCrop',
-        'params': lambda: {'size': (random.randint(16, 64), random.randint(16, 64))}
+        'params': lambda: {'size': random.randint(24, 32)}  
     },
     {
         'name': 'RandomHorizontalFlip',
@@ -65,23 +35,9 @@ variable_transforms = [
     {
         'name': 'RandomResizedCrop',
         'params': lambda: {
-            'size': random.randint(32, 64),
+            'size': 32, # Fixed size for CIFAR-10
             'scale': (round(random.uniform(0.5, 0.8), 2), round(random.uniform(0.8, 1.0), 2)),
-            'ratio': (round(random.uniform(0.75, 1.0), 2), round(random.uniform(1.0, 1.33), 2))
-        }
-    },
-    {
-        'name': 'FiveCrop',
-        'params': lambda: {'size': random.randint(16, 64)}
-    },
-    {
-        'name': 'TenCrop',
-        'params': lambda: {'size': random.randint(16, 64)}
-    },
-    {
-        'name': 'LinearTransformation',
-        'params': lambda: {
-            'transformation_matrix': torch.randn(3, 3) * 100  # Random matrix
+            'ratio': (round(random.uniform(0.75, 1.33), 2), round(random.uniform(1.33, 3.0), 2)) 
         }
     },
     {
@@ -90,7 +46,7 @@ variable_transforms = [
             'brightness': round(random.uniform(0.8, 1.2), 2),
             'contrast': round(random.uniform(0.8, 1.2), 2),
             'saturation': round(random.uniform(0.8, 1.2), 2),
-            'hue': round(random.uniform(-0.1, 0.1), 2)
+            'hue': round(random.uniform(0.0, 0.1), 2)  
         }
     },
     {
@@ -102,39 +58,43 @@ variable_transforms = [
         'params': lambda: {
             'degrees': random.randint(0, 30),
             'translate': (round(random.uniform(0.0, 0.2), 2), round(random.uniform(0.0, 0.2), 2)),
-            'scale': (round(random.uniform(0.8, 1.2), 2), round(random.uniform(0.8, 1.2), 2)),
-            'shear': round(random.uniform(-10, 10), 2)
+            'scale': (round(random.uniform(0.8, 1.2), 2), round(random.uniform(1.2, 2.0), 2)),
+            'shear': (round(random.uniform(0, 5), 2), round(random.uniform(5, 10), 2))  
         }
     },
     {
-        'name': 'Grayscale',
-        'params': lambda: {'num_output_channels': random.choice([1, 3])}
+    'name': 'Grayscale',
+    'params': lambda: {'num_output_channels': 3}  # Always output 3 channels
+    #'params': lambda: {'num_output_channels': random.choice([1, 3])}
+
     },
     {
-        'name': 'RandomGrayscale',
-        'params': lambda: {'p': round(random.uniform(0.1, 0.9), 2)}
+    'name': 'RandomGrayscale',  
+    'params': lambda: {
+        'p': round(random.uniform(0.1, 0.9), 2)
+    }
     },
     {
         'name': 'RandomPerspective',
         'params': lambda: {
-            'distortion_scale': round(random.uniform(0.1, 0.5), 2),
+            'distortion_scale': round(random.uniform(0.1, 0.3), 2),  # Reduced distortion
             'p': round(random.uniform(0.1, 0.9), 2)
         }
     },
-    {
-        'name': 'RandomErasing',
-        'params': lambda: {
-            'p': round(random.uniform(0.1, 0.9), 2),
-            'scale': (round(random.uniform(0.02, 0.33), 2), round(random.uniform(0.02, 0.33), 2)),
-            'ratio': (round(random.uniform(0.3, 3.3), 2), round(random.uniform(0.3, 3.3), 2)),
-            'value': random.choice(['random', (0, 0, 0)])
-        }
-    },
+    #{
+    #    'name': 'RandomErasing',
+    #    'params': lambda: {
+    #        'p': round(random.uniform(0.1, 0.9), 2),
+    #        'scale': (round(random.uniform(0.02, 0.2), 2), round(random.uniform(0.02, 0.2), 2)),
+    #        'ratio': (round(random.uniform(0.3, 3.3), 2), round(random.uniform(0.3, 3.3), 2)),
+    #        'value': random.choice(["'random'", "[0, 0, 0]"])  
+    #    }
+    #},
     {
         'name': 'GaussianBlur',
         'params': lambda: {
-            'kernel_size': random.choice([3, 5, 7]),
-            'sigma': (round(random.uniform(0.1, 2.0), 2), round(random.uniform(0.1, 2.0), 2))
+            'kernel_size': random.choice([3, 5]),
+            'sigma': (round(random.uniform(0.1, 1.0), 2), round(random.uniform(1.0, 2.0), 2)) 
         }
     },
     {
@@ -172,84 +132,126 @@ variable_transforms = [
     }
 ]
 
+
+# Default settings
+OUTPUT_DIR = "ab/gpt/brute/trans/transform_files"
+MAX_FILENAME_LENGTH = 250
+
 filename_counter = {}
 
-def generate_transform_file(t1,t2, directory):
-    
-    # fixed transformations
+def generate_transform_file(transforms_list, directory):
+    """
+    Generate a transform file with 1 or 2 transforms + fixed transforms.
+    """
+    # Build base filename from transform names
+    name_parts = [t['name'][:20] for t in transforms_list]
+    base_name = '_'.join(name_parts)
+    base_name = re.sub(r'[^a-zA-Z0-9_]', '', base_name)
+
+    # Handle name clashes
+    count = filename_counter.get(base_name, 0) + 1
+    filename_counter[base_name] = count
+    output_filename = f"{base_name}_{count}.py" if count > 1 else f"{base_name}.py"
+
+
+    # Generate transform code lines
+    transform_lines = []
+    for vt in transforms_list:
+        name = vt['name']
+        params = vt['params']()
+        param_str = ', '.join([f"{k}={v}" for k, v in params.items()])
+        transform_lines.append(f"transforms.{name}({param_str})")
+
+    # Fixed transforms
     fixed_transforms = [
         'transforms.Resize((64,64))',
         'transforms.ToTensor()',
         'transforms.Normalize(*norm)'
     ]
-    
-    # truncate transform names to 5 letters
-    name1 = t1['name']
-    name2 = t2['name']
-    base_name = f"{name1}_{name2}"
 
-    # emove invalid characters
-    base_name = re.sub(r'[^a-zA-Z0-9_]', '', base_name)
-
-    # handle name clashes with counter
-    if base_name in filename_counter:
-        count = filename_counter[base_name] + 1
-        filename_counter[base_name] = count
-        output_filename = f"{base_name}_{count}.py"
-    else:
-        filename_counter[base_name] = 1
-        output_filename = f"{base_name}.py"
-
-    # ensure filename isn't too long
-    max_filename_len = 250
-    if len(output_filename) > max_filename_len:
-        output_filename = output_filename[:max_filename_len - 4] + ".py"
-
-    
-    # generate transform code lines
-    selected_transforms = []
-    
-    for vt in [t1,t2]:
-        name = vt['name']
-        params = vt['params']()
-        param_str = ', '.join([f"{k}={v}" for k, v in params.items()])
-        
-        selected_transforms.append(f"transforms.{name}({param_str})")
-    
-    all_transforms = selected_transforms + fixed_transforms
-
+    # Combine with fixed transforms
+    all_transforms = transform_lines + fixed_transforms
     transforms_code = ',\n    '.join(all_transforms)
 
-    module_code = f"""import torch
-import torchvision.transforms as transforms
-
-def get_transform(norm):
-    return transform = Compose([
-    {transforms_code}
-])
-"""
-   
+    # Write to file
     full_path = os.path.join(directory, output_filename)
     with open(full_path, 'w') as f:
-        f.write(module_code)
-        
+        f.write(f"""import torch
+import torchvision.transforms as transforms
 
-    print(f"Saved transform to {full_path}")
+def transform(norm):
+    return transforms.Compose([
+    {transforms_code}
+])
+""")
+
+    print(f"Saved: {full_path}")
+
     return full_path
 
 
 
-# generate all permutations as a list
-all_combinations = list(itertools.permutations(variable_transforms, 2))
+def generate_files(transform_no, file_num, output_dir):
+    """
+    Generate transform files with 1 or 2 transforms + fixed transforms.
 
-# cycle from the permutations
-all_combinations_cycle = itertools.cycle(all_combinations)
+    Args:
+        transform_no: Number of transforms
+        file_num: Number of files to generate
+        output_dir: Output directory
+    """
+    os.makedirs(output_dir, exist_ok=True)
 
-generate_num = 200
-output_dir = 'transform_files'
+    if transform_no == 1:
+        all_combinations = variable_transforms
+    elif transform_no == 2:
+        all_combinations = list(itertools.permutations(variable_transforms, 2))
+    else:
+        raise ValueError("transform_no must be 1 or 2")
 
-# generate files by cycling through the permutations
+    # Create infinite cycle
+    all_combinations_cycle = itertools.cycle(all_combinations)
 
-for i in range(generate_num):
-    t1, t2 = next(all_combinations_cycle)
-    generate_transform_file(t1, t2, output_dir)
+
+    # Clear all files in the directory
+    if os.path.exists(output_dir):
+        for filename in os.listdir(output_dir):
+            file_path = os.path.join(output_dir, filename)
+            try:
+                os.unlink(file_path)
+            except Exception as e:
+                print(f'Failed to delete {file_path}. Reason: {e}')
+    else:
+        os.makedirs(output_dir, exist_ok=True)
+
+    # Generate files
+    for _ in range(file_num):
+        transforms_list = next(all_combinations_cycle)
+        if transform_no == 1:
+            transforms_list = [transforms_list]
+        generate_transform_file(transforms_list, output_dir)
+
+
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate transform files")
+    parser.add_argument(
+        '-t', '--transform_no', type=int, default=1,
+        help= "Number of transforms per file (1 or 2)"
+    )
+    parser.add_argument(
+        '-n', '--file_num', type=int, default=20,
+        help=f"Number of files to generate"
+    )
+    parser.add_argument(
+        '-o', '--output_dir', type=str, default=OUTPUT_DIR,
+        help=f"Output directory"
+    )
+
+    args = parser.parse_args()
+
+    generate_files(args.transform_no, args.file_num, args.output_dir)
+
+if __name__ == "__main__":
+    main()

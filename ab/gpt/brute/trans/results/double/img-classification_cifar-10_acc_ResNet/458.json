@@ -1,0 +1,9 @@
+{
+  "accuracy": 0.5579,
+  "batch": 64,
+  "duration": 10583930630,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "Pad_RandomHorizontalFlip_2",
+  "uid": "b7c667b94e90b8f6ffde5c3b9269531c"
+}

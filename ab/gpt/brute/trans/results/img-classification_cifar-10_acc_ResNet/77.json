@@ -1,0 +1,9 @@
+{
+  "accuracy": 0.5713,
+  "batch": 64,
+  "duration": 13909375072,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "RandomHorizontalFlip_22",
+  "uid": "5c5552591886c5f54694560eb9c9c1ae"
+}

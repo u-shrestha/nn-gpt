@@ -1,0 +1,9 @@
+{
+  "accuracy": 0.5489,
+  "batch": 64,
+  "duration": 9570463466,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "CenterCrop_49",
+  "uid": "704e8f9901e11303e326ffd6a585073e"
+}
