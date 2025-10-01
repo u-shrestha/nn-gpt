@@ -33,7 +33,11 @@ def extract_str(s: str, start: str, end: str):
         s = s[:s.rindex(end)]
         spl = s.split(start)
         if len(spl) > 1:
-            return spl[-1].strip()
+            s = spl[-1]
+            spl = s.split(end)
+            if len(spl) > 1:
+                s = spl[0]
+            return s.strip()
     except:
         pass
     return None
