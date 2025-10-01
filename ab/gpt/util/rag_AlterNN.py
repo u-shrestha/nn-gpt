@@ -7,15 +7,20 @@
 •  Retry feedback loop: gate traceback is fed back to the LLM; retries use
    sampling so the model can self-correct.
 •  Hard 2 000 000 parameter budget to avoid OOMs at training time.
+•  Smart prompt selection: automatically chooses specialized prompts based on
+   block type (padding, attention, transformer, loss, complex architectures).
 """
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import random
 import shutil
+import sys
 import textwrap
+import tokenize
 from pathlib import Path
 from typing import List
 
@@ -56,6 +61,199 @@ else:
 
 # Refresh list of available block files from the blocks directory
 available_blocks = [f.stem for f in blocks_dir.glob("*.py") if f.is_file()]
+
+# ────────────────────────────────────────────────────────────────
+# Block type detection and prompt selection
+# ────────────────────────────────────────────────────────────────
+def _detect_block_type(block_code: str) -> str:
+    """
+    Intelligently analyze the block code structure and functionality to determine the appropriate prompt key.
+    """
+    block_lower = block_code.lower()
+    
+    # Parse the code to understand its structure
+    try:
+        tree = ast.parse(block_code)
+    except SyntaxError:
+        # If parsing fails, fall back to keyword matching
+        return _fallback_detection(block_lower)
+    
+    # Analyze class definitions and their methods
+    classes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
+    
+    for cls in classes:
+        class_name = cls.name.lower()
+        
+        # Check for specific high-priority patterns first
+        
+        # 1. Padding blocks - look for padding-related methods and inheritance
+        if any(keyword in class_name for keyword in ['pad', 'padding']):
+            return "synthesize_padding_blocks"
+        
+        # 2. Loss blocks - look for loss-related patterns
+        if any(keyword in class_name for keyword in ['loss', 'criterion', 'cost']):
+            return "synthesize_loss_blocks"
+        
+        # 3. Attention blocks - look for attention mechanisms
+        if any(keyword in class_name for keyword in ['attention', 'attn', 'selfattn', 'crossattn']):
+            return "synthesize_attention_blocks"
+        
+        # 4. Transformer blocks - look for transformer components
+        if any(keyword in class_name for keyword in ['transformer', 'vit', 'bert', 'encoder', 'decoder']):
+            return "synthesize_transformer_blocks"
+        
+        # 5. Complex architectures - look for complete models
+        if any(keyword in class_name for keyword in ['net', 'model', 'backbone', 'head', 'classifier']):
+            return "synthesize_complex_architectures"
+    
+    # Analyze method signatures and operations
+    methods = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
+    
+    for method in methods:
+        method_name = method.name.lower()
+        
+        # Check for attention-related operations
+        if any(keyword in method_name for keyword in ['attention', 'attn', 'qkv', 'multihead']):
+            return "synthesize_attention_blocks"
+        
+        # Check for loss-related operations
+        if any(keyword in method_name for keyword in ['loss', 'forward_loss', 'compute_loss']):
+            return "synthesize_loss_blocks"
+        
+        # Check for padding operations
+        if any(keyword in method_name for keyword in ['pad', 'padding', 'pad_sequence']):
+            return "synthesize_padding_blocks"
+    
+    # Analyze imports to understand functionality
+    imports = [node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
+    
+    for imp in imports:
+        if isinstance(imp, ast.ImportFrom) and imp.module:
+            module_name = imp.module.lower()
+            
+            # Check for attention-related imports
+            if any(keyword in module_name for keyword in ['attention', 'transformer', 'vit']):
+                return "synthesize_attention_blocks"
+            
+            # Check for loss-related imports
+            if any(keyword in module_name for keyword in ['loss', 'criterion']):
+                return "synthesize_loss_blocks"
+    
+    # Analyze string literals and comments for hints
+    strings = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Str):
+            strings.append(node.s)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            strings.append(node.value)
+    
+    for string in strings:
+        string_lower = string.lower()
+        
+        # Check for attention-related descriptions
+        if any(keyword in string_lower for keyword in ['attention', 'self-attention', 'multi-head', 'cross-attention', 'qkv', 'scaled dot product']):
+            return "synthesize_attention_blocks"
+        
+        # Check for loss-related descriptions
+        if any(keyword in string_lower for keyword in ['loss', 'criterion', 'loss function', 'cross entropy', 'focal loss']):
+            return "synthesize_loss_blocks"
+        
+        # Check for padding-related descriptions
+        if any(keyword in string_lower for keyword in ['padding', 'pad', 'boundary', 'circular', 'reflection']):
+            return "synthesize_padding_blocks"
+        
+        # Check for normalization descriptions
+        if any(keyword in string_lower for keyword in ['normalization', 'batch norm', 'layer norm', 'group norm']):
+            return "synthesize_classification_rag"
+        
+        # Check for convolution descriptions
+        if any(keyword in string_lower for keyword in ['convolution', 'conv', 'depthwise', 'separable']):
+            return "synthesize_classification_rag"
+    
+    # Analyze variable names and assignments for additional hints
+    assignments = [node for node in ast.walk(tree) if isinstance(node, ast.Assign)]
+    for assign in assignments:
+        for target in assign.targets:
+            if isinstance(target, ast.Name):
+                var_name = target.id.lower()
+                if any(keyword in var_name for keyword in ['attention', 'attn', 'qkv']):
+                    return "synthesize_attention_blocks"
+                if any(keyword in var_name for keyword in ['loss', 'criterion']):
+                    return "synthesize_loss_blocks"
+                if any(keyword in var_name for keyword in ['pad', 'padding']):
+                    return "synthesize_padding_blocks"
+    
+    # Fallback to keyword-based detection
+    return _fallback_detection(block_lower)
+
+
+def _fallback_detection(block_lower: str) -> str:
+    """
+    Fallback detection using keyword matching when AST parsing fails or doesn't provide clear signals.
+    """
+    # High-priority patterns that are very specific
+    if any(keyword in block_lower for keyword in ['_circularpadnd', '_constantpadnd', '_reflectionpadnd', '_replicationpadnd']):
+        return "synthesize_padding_blocks"
+    
+    if any(keyword in block_lower for keyword in ['xca', 'xcablock', 'windowattention', 'swinselfattention']):
+        return "synthesize_attention_blocks"
+    
+    if any(keyword in block_lower for keyword in ['vit', 'transformer', 'bert']):
+        return "synthesize_transformer_blocks"
+    
+    if any(keyword in block_lower for keyword in ['siouloss', 'tverskyloss', 'varifocalloss', 'wingloss']):
+        return "synthesize_loss_blocks"
+    
+    if any(keyword in block_lower for keyword in ['xception', 'vgg', 'resnet', 'densenet']):
+        return "synthesize_complex_architectures"
+    
+    # Medium-priority patterns
+    if any(keyword in block_lower for keyword in ['attention', 'attn']):
+        return "synthesize_attention_blocks"
+    
+    if any(keyword in block_lower for keyword in ['loss', 'criterion']):
+        return "synthesize_loss_blocks"
+    
+    if any(keyword in block_lower for keyword in ['pad', 'padding']):
+        return "synthesize_padding_blocks"
+    
+    if any(keyword in block_lower for keyword in ['transformer', 'encoder', 'decoder']):
+        return "synthesize_transformer_blocks"
+    
+    if any(keyword in block_lower for keyword in ['net', 'model', 'backbone']):
+        return "synthesize_complex_architectures"
+    
+    # Default to general RAG prompt
+    return "synthesize_classification_rag"
+
+
+def _get_prompt_for_block(template: dict, block_code: str) -> List[str]:
+    """
+    Get the appropriate prompt based on the block type.
+    """
+    block_type = _detect_block_type(block_code)
+    
+    # Try to get the specific prompt for this block type
+    if block_type in template:
+        prompt = template[block_type].get("prompt")
+        if prompt:
+            print(f"[PROMPT] Using {block_type} for this block")
+            return prompt
+    
+    # Fallback to the general RAG prompt
+    prompt = template.get("synthesize_classification_rag", {}).get("prompt")
+    if prompt:
+        print(f"[PROMPT] Using synthesize_classification_rag (fallback)")
+        return prompt
+    
+    # Last resort: look for any prompt in the template
+    for key, value in template.items():
+        if isinstance(value, dict) and "prompt" in value:
+            print(f"[PROMPT] Using {key} (last resort)")
+            return value["prompt"]
+    
+    raise KeyError("No suitable prompt found in template")
+
 
 # ────────────────────────────────────────────────────────────────
 # Helper utilities
@@ -140,15 +338,6 @@ def alter(epochs: int, test_conf: str, llm_name: str) -> None:
     with open(conf_test_dir / test_conf) as f:
         template = json.load(f)
 
-    prompt_tpl: List[str] | None = template.get("prompt")
-    if prompt_tpl is None:
-        for v in template.values():
-            if isinstance(v, dict) and "prompt" in v:
-                prompt_tpl = v["prompt"]
-                break
-    if prompt_tpl is None:
-        raise KeyError("no 'prompt' key in template")
-
     print("Loading DeepSeek-Coder-7B-Instruct …")
     tok = AutoTokenizer.from_pretrained(llm_name, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
@@ -182,6 +371,8 @@ def alter(epochs: int, test_conf: str, llm_name: str) -> None:
 
             block = normalize_top_indent(textwrap.dedent(block).lstrip("\n"))
 
+            # Get the appropriate prompt for this block type
+            prompt_tpl = _get_prompt_for_block(template, block)
             user_prompt = _escape_braces("\n".join(prompt_tpl)).format(block=block)
             if len(tok.tokenize(user_prompt)) + 50 > CONTEXT_WINDOW_LIMIT:
                 print("[WARN] prompt near context window")
