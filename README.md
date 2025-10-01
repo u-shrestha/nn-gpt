@@ -49,7 +49,6 @@ If there are installation problems, install the dependencies from the 'requireme
 Remove an old version and install LEMUR Dataset from GitHub to get the most recent code and statistics updates:
 ```bash
 rm -rf db
-pip uninstall nn-dataset -y
 pip install git+https://github.com/ABrain-One/nn-dataset --upgrade --force --extra-index-url https://download.pytorch.org/whl/cu126
 ```
 Installing the stable version:

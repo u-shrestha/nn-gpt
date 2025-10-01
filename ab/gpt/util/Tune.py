@@ -1,29 +1,27 @@
 import os
 import shutil
-import traceback
 from os import makedirs
 from os.path import isfile
 
 import ab.nn.api as lemur
 import deepspeed
-import pandas as pd
 from ab.nn.util.Util import release_memory, create_file
-from peft import (LoraConfig, PeftModel)
+from peft import (PeftModel)
 from tqdm import tqdm
-from transformers import TrainingArguments
 
+import ab.gpt.NNEval as NNEval
 from ab.gpt.util.Chatbot import ChatBot
 from ab.gpt.util.Const import *
 from ab.gpt.util.LLM import LLM
 from ab.gpt.util.LLMUtil import quantization_config_4bit
 from ab.gpt.util.LoRA import LoRA
-from ab.gpt.util.NNEval import NNEval
-from ab.gpt.util.Util import nn_accepted, verify_nn_code, exists, copy_to_lemur
+from ab.gpt.util.Util import exists
 from ab.gpt.util.prompt.NNGenPrompt import NNGenPrompt
 
 # from datasets import load_from_disk
 
 ds_conf = conf_dir / 'DeepSpeed.json'
+
 
 def apply_sliding_window(example, max_length, stride, tokenizer):
     input_ids = example['input_ids']
@@ -56,8 +54,8 @@ def flatten_chunks(data):
     }
 
 
-def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf,
-         training_args, peft_config, max_prompts=None, save_llm_output=True, max_new_tokens=16 * 1024, nn_regenerate_after_exception=False):
+def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf, training_args, peft_config,
+         max_prompts=None, save_llm_output=True, max_new_tokens=16 * 1024, nn_name_prefix=None):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
     with open(conf_llm_dir / llm_conf) as f:
@@ -123,7 +121,7 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
         if epoch < skip_epoch:
             print(f'Skipped nn generation at epoch {epoch}')
         else:
-            nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exception, prompt_dict, test_nn, max_new_tokens, always_save_full_output=save_llm_output)
+            nn_gen(out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix)
         # fine tune model for 1 epoch / Using training_args and save copy
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')
         # data_processor = NNGenPrompt(model_loader.get_max_length(), tokenizer, train_config_path)
@@ -145,7 +143,7 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
         model = lora_tuner.train(dataset, tokenizer, out_path / base_model_name)
 
 
-def nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exception, prompt_dict, test_nn, max_new_tokens, always_save_full_output=False):
+def nn_gen(out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix):
     # Move inside the loop to create new prompt with newly created models.
     print('Preparing prompts for generation, this might take a while...')
     prompts = []
@@ -172,13 +170,9 @@ def nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exceptio
     for idx, prompt in tqdm(enumerate(prompts)):
         model_dir = models_dir / f'B{idx}'
         prompt, origdf = prompt
-        code, hp, full_out = chat_bot.chat(
-            prompt,
-            engineer_prompt=False,
-            max_new_tokens=max_new_tokens  ## Reduce memory usage
-        )
-        if always_save_full_output: create_file(model_dir, new_out_file, full_out)
-        print(f'1 gen hyperparams: {hp}')
+        code, hp, full_out = chat_bot.chat(prompt, engineer_prompt=False, max_new_tokens=max_new_tokens)
+        if save_llm_output: create_file(model_dir, new_out_file, full_out)
+        print(f'Generated params: {hp}')
         try:
             hp = json.loads(hp.replace("'", '"'))
         except Exception as e:
@@ -202,60 +196,8 @@ def nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exceptio
     release_memory()
     # evaluate produced CV models
     if exists(models_dir):
-        for cv_model in os.listdir(models_dir):
-            cv_model = str(os.fsdecode(cv_model))
-            gen_nn_dir = models_dir / cv_model
-            code_file = gen_nn_dir / new_nn_file
-            if exists(gen_nn_dir / code_file) and verify_nn_code(gen_nn_dir, code_file):
-                for tries in range(2):
-                    try:
-                        df = None
-                        df_file = gen_nn_dir / 'dataframe.df'
-                        if isfile(df_file):  # The code has additional information provided
-                            df = pd.read_pickle(df_file)
-                            # prm = df['prm']
-                            # prm['epoch'] = df['epoch']
-                            with open(gen_nn_dir / hp_file) as f:
-                                hp = json.load(f)
-                            hp['epoch'] = nn_epoch
-                            print(f'Determining {cv_model} with prm{hp}')
-                            print(f'Model Path:{gen_nn_dir}')
-                            evaluator = NNEval(gen_nn_dir, task=df['task'], dataset=df['dataset'], metric=df['metric'], prm=hp, save_to_db=True,
-                                               prefix=df['nn'].split('-')[0], save_path=gen_nn_dir)
-                        else:
-                            evaluator = NNEval(gen_nn_dir)
-                        eval_results = evaluator.evaluate(code_file)
-                        eval_info = {str(evaluator.get_args()): eval_results}
-                        name, new_accuracy, new_accuracy_to_time, code_quality = eval_results
-
-                        with open(gen_nn_dir / 'eval_info.json', 'w+') as f:
-                            json.dump(eval_info, f)
-                        if nn_accepted(gen_nn_dir):
-                            copy_to_lemur(df, gen_nn_dir, name)
-                            break
-                    except Exception as error:
-                        print('failed to determine accuracy for', cv_model)
-                        create_file(gen_nn_dir, f'error_{tries}.txt', str(traceback.format_exc()))  # Track traceback to have rich information on the exception.
-                        with open(code_file, 'r') as f:
-                            code_txt = f.read()
-                        release_memory()
-                        if not nn_regenerate_after_exception:
-                            break
-                        try:
-                            new_code, new_hp, full_out = chat_bot.chat(
-                                'The error "' + str(error) +
-                                '" was occurred in the following code. fix this problem. '
-                                "Provide only the code. Don't provide any explanation. Remove any text from this reply. + \n " +
-                                code_txt,
-                                engineer_prompt=False,
-                                max_new_tokens=max_new_tokens)
-                            print(f'2 gen hyperparams: {new_hp}')
-                            create_file(gen_nn_dir, hp_file, new_hp)
-                            create_file(gen_nn_dir, new_nn_file, new_code)
-                            create_file(gen_nn_dir, new_out_file, full_out)
-                        except:
-                            pass
-                        release_memory()
+        NNEval.main(nn_name_prefix, nn_train_epochs)
+        release_memory()
     print('[DEBUG] Release_memory.')
     release_memory()
     print('Clear LEMUR query cache.')

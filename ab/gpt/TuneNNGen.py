@@ -4,6 +4,7 @@ from typing import Literal
 from peft import LoraConfig
 from transformers import TrainingArguments
 
+from ab.gpt.NNEval import NN_TRAIN_EPOCHS
 from ab.gpt.util.Const import nngpt_dir, new_out_file
 from ab.gpt.util.Tune import tune, ds_conf
 
@@ -35,24 +36,26 @@ LLM_TUNE_CONF = 'NN_gen.json'
 NN_GEN_CONF = 'NN_gen.json'
 NN_GEN_CONF_ID = 'improve_classification_only'
 LLM_CONF = 'ds_coder_7b_olympic.json'
-MAX_PROMPTS = 40 * 1024
+MAX_PROMPTS = 36 * 1024
 MAX_NEW_TOKENS = 16 * 1024
 SAVE_LLM_OUTPUT = True
 USE_DEEPSPEED = False
-
+NN_NAME_PREFIX = None
 
 def main(layers_to_transform=LAYERS_TO_TRANSFORM, r=R, lora_alpha=LORA_ALPHA, lora_dropout=LORA_DROPOUT, target_modules=TARGET_MODULES,
          task_type=TASK_TYPE, bias=BIAS, learning_rate=LEARNING_RATE, llm_tune_conf=LLM_TUNE_CONF, nn_gen_conf=NN_GEN_CONF, nn_gen_conf_id=NN_GEN_CONF_ID,
          llm_conf=LLM_CONF, test_nn=TEST_NN, peft=PEFT, skip_epoches=SKIP_EPOCHES, per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
          gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS, warmup_steps=WARMUP_STEPS, logging_steps=LOGGING_STEPS, optimizer=OPTIMIZER,
-         max_prompts=MAX_PROMPTS, save_llm_output=SAVE_LLM_OUTPUT, max_new_tokens=MAX_NEW_TOKENS, use_deepspeed=USE_DEEPSPEED):
+         max_prompts=MAX_PROMPTS, save_llm_output=SAVE_LLM_OUTPUT, max_new_tokens=MAX_NEW_TOKENS, use_deepspeed=USE_DEEPSPEED, nn_name_prefix=NN_NAME_PREFIX,
+         nn_train_epochs=NN_TRAIN_EPOCHS):
     print(f'''All hyperparameters: 
 layers_to_transform={layers_to_transform}, r={r}, lora_alpha={lora_alpha}, lora_dropout={lora_dropout}, 
 target_modules={target_modules}, task_type={task_type}, bias={bias}, 
 learning_rate={learning_rate}, llm_tune_conf={llm_tune_conf}, nn_gen_conf={nn_gen_conf}, nn_gen_conf_id={nn_gen_conf_id},
-llm_conf={llm_conf}, test_nn={test_nn}, peft={peft}, skip_epoches={skip_epoches}, per_device_train_batch_size={per_device_train_batch_size},
-gradient_accumulation_steps={gradient_accumulation_steps}, warmup_steps={warmup_steps}, logging_steps={logging_steps}, optimizer={optimizer},
-max_prompts={max_prompts}, save_llm_output={save_llm_output}, max_new_tokens={max_new_tokens}, use_deepspeed={use_deepspeed} ''')
+llm_conf={llm_conf}, test_nn={test_nn}, nn_train_epochs={nn_train_epochs}, peft={peft}, skip_epoches={skip_epoches}, 
+per_device_train_batch_size={per_device_train_batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}, warmup_steps={warmup_steps}, 
+logging_steps={logging_steps}, optimizer={optimizer}, max_prompts={max_prompts}, save_llm_output={save_llm_output}, max_new_tokens={max_new_tokens}, 
+use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix} ''')
 
     training_args = TrainingArguments(
         report_to=None,
@@ -76,8 +79,8 @@ max_prompts={max_prompts}, save_llm_output={save_llm_output}, max_new_tokens={ma
         bias=bias,
         task_type=task_type)
 
-    tune(test_nn, 1, skip_epoches, peft, llm_tune_conf, nn_gen_conf, nn_gen_conf_id, llm_conf, training_args, peft_config,
-         max_prompts=max_prompts, save_llm_output=save_llm_output, max_new_tokens=max_new_tokens)
+    tune(test_nn, nn_train_epochs, skip_epoches, peft, llm_tune_conf, nn_gen_conf, nn_gen_conf_id, llm_conf, training_args, peft_config,
+         max_prompts=max_prompts, save_llm_output=save_llm_output, max_new_tokens=max_new_tokens, nn_name_prefix=nn_name_prefix)
 
 
 if __name__ == '__main__':
@@ -111,6 +114,8 @@ if __name__ == '__main__':
                         help=f"Config of LLM (default: {LLM_CONF}).")
     parser.add_argument('-n', '--test_nn', type=int, default=TEST_NN,
                         help=f"Count of neural networks generated or modified by the LLM before and between fine-tuning epochs to monitor training progress (default: {TEST_NN}).")
+    parser.add_argument('--nn_train_epochs', type=int, default=NN_TRAIN_EPOCHS,
+                        help=f"Number of training epochs for the generated neural network (default: {NN_TRAIN_EPOCHS}).")
     parser.add_argument('-m', '--max_prompts', type=int, default=MAX_PROMPTS,
                         help=f"Max prompts for LLM fine-tuning; excess is truncated (default: {MAX_PROMPTS}).")
     parser.add_argument('--max_new_tokens', type=int, default=MAX_NEW_TOKENS,
@@ -132,6 +137,8 @@ if __name__ == '__main__':
     parser.add_argument('-k', '--skip_epoches', type=int, default=SKIP_EPOCHES,
                         help='Number of epoches to skip the neural network generation.')
     parser.add_argument('--peft', type=str, default=None, help='Path to saved LoRA layers.')
+    parser.add_argument('--nn_name_prefix', type=str, default=NN_NAME_PREFIX,
+        help=f"Default neural network name prefix (default: {NN_NAME_PREFIX}).")
 
     args = parser.parse_args()
     main(layers_to_transform=range(args.start_from_layer, args.end_at_layer),
@@ -157,4 +164,6 @@ if __name__ == '__main__':
          max_prompts=args.max_prompts,
          max_new_tokens=args.max_new_tokens,
          use_deepspeed=args.use_deepspeed,
-         save_llm_output=args.save_llm_output)
+         save_llm_output=args.save_llm_output,
+         nn_name_prefix=args.nn_name_prefix,
+         nn_train_epochs=args.nn_train_epochs)
