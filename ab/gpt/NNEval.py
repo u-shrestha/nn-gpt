@@ -137,7 +137,7 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, save_to
                     "cli_args": {'task': task, 'dataset': dataset, "metric": metric, "lr": lr, "batch": batch,
                                  'dropout': dropout, 'momentum': momentum, 'transform': transform}
                 }
-                with open(model_dir_path / 'eval_info_altered.json', 'w+') as f:
+                with open(model_dir_path / 'eval_info.json', 'w+') as f:
                     json.dump(eval_info_data, f, indent=4, default=str)
 
                 nn_name = uuid4(read_py_file_as_string(code_file_path))
