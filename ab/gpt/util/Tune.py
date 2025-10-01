@@ -57,8 +57,7 @@ def flatten_chunks(data):
 
 
 def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf,
-         training_args, peft_config, nn_regenerate_after_exception=False, n_training_prompt_limit=None, always_save_full_output=True,
-         max_new_tokens=16 * 1024):
+         training_args, peft_config, max_prompts=None, save_llm_output=True, max_new_tokens=16 * 1024, nn_regenerate_after_exception=False):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
     with open(conf_llm_dir / llm_conf) as f:
@@ -124,12 +123,12 @@ def tune(test_nn, nn_epoch, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, co
         if epoch < skip_epoch:
             print(f'Skipped nn generation at epoch {epoch}')
         else:
-            nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exception, prompt_dict, test_nn, max_new_tokens, always_save_full_output=always_save_full_output)
+            nn_gen(out_path, chat_bot, conf_keys, nn_epoch, nn_regenerate_after_exception, prompt_dict, test_nn, max_new_tokens, always_save_full_output=save_llm_output)
         # fine tune model for 1 epoch / Using training_args and save copy
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')
         # data_processor = NNGenPrompt(model_loader.get_max_length(), tokenizer, train_config_path)
         data_processor = NNGenPrompt(context_length if context_length else model_loader.get_max_length(), tokenizer, train_config_path)
-        dataset = data_processor.get_dataset(only_best_accuracy, n_training_prompts=n_training_prompt_limit)
+        dataset = data_processor.get_dataset(only_best_accuracy, max_prompts=max_prompts)
         # dataset = load_from_disk(nngpt_dir / 'dataset')
 
         # if context_length:

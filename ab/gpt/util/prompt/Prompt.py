@@ -29,8 +29,8 @@ class Prompt:
         """
         pass
 
-    def get_dataset(self, only_best_accuracy=False, seed=None, n_training_prompts=None):
-        dataset = Dataset.from_pandas(self.get_raw_dataset(only_best_accuracy, n_training_prompts))
+    def get_dataset(self, only_best_accuracy=False, seed=None, max_prompts=None):
+        dataset = Dataset.from_pandas(self.get_raw_dataset(only_best_accuracy, max_prompts))
         print("Preprocessing dataset...")
 
         # Apply preprocessing to each batch of the dataset
