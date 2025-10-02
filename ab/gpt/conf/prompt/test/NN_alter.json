@@ -1,45 +1,50 @@
 {
-    "improvement_classification_codeonly": {
-        "comment": [
-            "para: where you fill in content, value: where data come from (colum key in api.data() DataFrame).",
-            "task(only in addon_list): which task the additional content come from.",
-            "comment: explain the usage of this file"
+    "improvement_with_supporting_models": {
+        "input_list": [
+            {
+                "para": "nn_code",
+                "value": "nn_code"
+            },
+            {
+                "para": "accuracy",
+                "value": "accuracy"
+            }
         ],
-        "input_list": [{"para": "nn_code","value": "nn_code"}],
-        "addon_list": [],
-        "task": "img-classification",
-        "addon_task": null,
-        "prompt": [
-            "Define 2 `nn.Conv2d()`s a neighboring pair, when there are only non-Conv2d layers between these 2 `nn.Conv2d()`s.",
-            "Your task is to randomly pick and modify 1 or 2 neighboring pair of `nn.Conv2d()` according to requirements below and return ONLY the full result.",
-            "1.For 2 `nn.Conv2d()` of each picked neighboring pair, change the out-channel of the former `nn.Conv2d()` and the in-channel of the following `nn.Conv2d()` to a same new integer.",
-            "2.Directly modify the numbers in the code and ***STRICTLY DO NOT INTRODUCE NEW METHODS OR PARAMETERS***.",
-            "3.Do not pick the first neighboring pair, pick the layers randomly.",
-            "4.You should answer not only the class you modified but with ***FULL CODES INCLUDING EVERYTHING (Other classes, etc.) NOT CHANGED***.",
-            "5.***If you can not find any neighboring pair of `nn.Conv2d()` to modify, randomly pick 2 digits in the code and change them into a new values.***",
-            "6.Never change anything else in the code except changes required according to the requirements above.",
-            "Now, below is the code for you to change according to the requirement:",
-            "```\n{nn_code}\n```"
-        ]
-    },
-    "improvement_classification_chgNumber": {
-        "comment": [
-            "para: where you fill in content, value: where data come from (colum key in api.data() DataFrame).",
-            "task(only in addon_list): which task the additional content come from.",
-            "comment: explain the usage of this file"
+        "addon_list": [
+            {
+                "para": "addon_nn_code",
+                "value": "nn_code"
+            },
+            {
+                "para": "addon_accuracy",
+                "value": "accuracy"
+            }
         ],
-        "input_list": [{"para": "nn_code","value": "nn_code"}],
-        "addon_list": [],
         "task": "img-classification",
-        "addon_task": null,
+        "addon_task": "img-classification",
+        "no_repeat": [
+            "nn"
+        ],
+        "keep_same": [],
         "prompt": [
-            "Your task is to randomly pick 2 or 4 integer numbers in the code and change them into new values, with:",
-            "1.***STRICTLY DO NOT INTRODUCE NEW METHODS OR PARAMETERS***.",
-            "2.Make sure you have made the modification, and the code shoule be executable after your modification",
-            "3.Pick the numbers randomly.",
-            "4.You should answer not only the class you modified but with ***FULL CODES INCLUDING EVERYTHING (Other classes, etc.) NOT CHANGED***.",
-            "Below is the code for you to change according to the requirements above:",
-            "```\n{nn_code}\n```"
+            "CREATE an IMPROVED neural network by combining the best elements from these models:",
+            "",
+            "MAIN MODEL (current accuracy: {accuracy}):",
+            "```python",
+            "{nn_code}",
+            "```",
+            "",
+            "{supporting_models_prompt}",
+            "",
+            "IMPROVEMENT RULES - FOLLOW EXACTLY:",
+            "1. Class name: 'Net' (unchanged)",
+            "2. Methods: __init__, forward, train_setup(device), learn(data,target,device) - keep signatures",
+            "3. Include: supported_hyperparameters() → ['lr', 'momentum']",
+            "4. Only standard PyTorch (no torchvision)",
+            "5. Works with 32x32 RGB images → 10 classes",
+            "",
+            "IMPROVE by combining best features from all models above.",
+            "Provide COMPLETE improved model code:"
         ]
     }
 }
