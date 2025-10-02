@@ -1,12 +1,9 @@
-import argparse
-import json
-import os
-import traceback
+import argparse, json, sys, os, traceback
 from pathlib import Path
 import pandas as pd
 from ab.nn.util.Util import release_memory, uuid4, read_py_file_as_string
 
-from ab.gpt.util.Const import epoch_dir, synth_dir, new_nn_file, nngpt_dir
+from ab.gpt.util.Const import epoch_dir, new_nn_file, nngpt_dir
 from ab.gpt.util.NNEval import NNEval
 from ab.gpt.util.Util import verify_nn_code, copy_to_lemur
 
@@ -35,133 +32,138 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, save_to
          task=TASK, dataset=DATASET, metric=METRIC, lr=LR, batch=BATCH, dropout=DROPOUT, momentum=MOMENTUM, transform=TRANSFORM):
     base_nngpt_path = nngpt_dir  # out/nngpt
     if not nn_alter_epochs:
-        nn_alter_epochs = len(os.listdir(epoch_dir()))
-
-    for i in range(nn_alter_epochs):
-        # Path to the output of one NNAlter.py epoch (e.g., out/nngpt/llm/epoch/A0)
-        current_alter_epoch_path = epoch_dir(i)
-
-        # If a custom synth_dir is given, use it; otherwise build from epoch_dir
-        if args.synth_dir:
-            models_base_dir = Path(args.synth_dir)
+        if epoch_dir().is_dir():
+            nn_alter_epochs = len(os.listdir(epoch_dir()))
         else:
-            models_base_dir = current_alter_epoch_path / "synth_nn"
+            print()
+            print(f"Directory {epoch_dir()} doesn't exist", file=sys.stderr)
 
-        if not models_base_dir.exists():
-            print(f"Directory {models_base_dir} for NNAlter epoch {i} not found. Skipping.")
-            continue
+    if nn_alter_epochs:
+        for i in range(nn_alter_epochs):
+            # Path to the output of one NNAlter.py epoch (e.g., out/nngpt/llm/epoch/A0)
+            current_alter_epoch_path = epoch_dir(i)
 
-        print(f"\n--- Scanning NNAlter Epoch Directory: {current_alter_epoch_path} ---")
-        print(f"--- Synthesized Models Directory: {models_base_dir} ---")
-
-        for model_folder_name in os.listdir(models_base_dir):
-            model_dir_path = models_base_dir / model_folder_name
-            if not model_dir_path.is_dir():
-                continue
-
-            code_file_path = model_dir_path / new_nn_file
-            df_file_path = model_dir_path / 'dataframe.df'  # Original model's metadata
-
-            if not code_file_path.exists():
-                print(f"Code file {new_nn_file} not found in {model_dir_path}. Skipping.")
-                continue
-
-            print(f"\n--- Evaluating Model: {model_dir_path.relative_to(base_nngpt_path)} ---")
-
-            if not verify_nn_code(model_dir_path, code_file_path):
-                print(f"Code verification failed for {code_file_path}. Skipping evaluation.")
-                with open(model_dir_path / 'eval_verification_failed.txt', 'w') as f:
-                    f.write("Initial code verification failed.")
-                continue
-
-            # Initialize task, dataset, metric, and prm from command-line arguments (or their defaults)
-            task = task
-            dataset = dataset
-            metric = metric
-            # This prm structure is consistent with LEMUR dataset's expectations for model training
-            prm = {
-                'lr': lr,
-                'batch': batch,
-                'dropout': dropout,
-                'momentum': momentum,
-                'transform': transform,  # Default transform from CLI
-                # 'epoch' will be set explicitly later
-            }
-            prefix_for_db = "FractalNet"  # Default prefix
-            origdf = None
-            orig_pref = None
-            if df_file_path.exists():
-                try:
-                    origdf = pd.read_pickle(df_file_path)
-                    # Override with values from dataframe.df if they exist
-                    task = origdf.get('task', task)
-                    dataset = origdf.get('dataset', dataset)
-                    metric = origdf.get('metric', metric)
-                    orig_pref = origdf['nn'].split('-')[0]
-
-                    original_prm_from_df = origdf.get('prm')
-                    if isinstance(original_prm_from_df, dict):
-                        # Update prm with values from df, df values take precedence.
-                        # This will update lr, batch, dropout, momentum, transform if they exist in original_prm_from_df,
-                        # and also add any other model-specific hyperparameters from the original model.
-                        prm.update(original_prm_from_df)
-
-                    prefix_for_db = origdf.get('nn', prefix_for_db).split('-')[0]
-                    print(f"  Loaded metadata from dataframe.df: task={task}, dataset={dataset}, metric={metric}")
-                except Exception as e:
-                    print(f"  Error loading dataframe.df from {df_file_path}: {e}. Using command-line/default parameters for task, dataset, metric, and prm structure.")
+            # If a custom synth_dir is given, use it; otherwise build from epoch_dir
+            if args.synth_dir:
+                models_base_dir = Path(args.synth_dir)
             else:
-                print(f"  No dataframe.df found. Using command-line/default evaluation parameters.")
+                models_base_dir = current_alter_epoch_path / "synth_nn"
 
-            # Crucial: set training epochs for this evaluation from nn_train_epochs
-            # This overrides any 'epoch' value that might have come from original_prm_from_df
-            prm['epoch'] = nn_train_epochs
-            print(f"  Final parameters for NNEval: {prm}")
-            print(f"  Task: {task}, Dataset: {dataset}, Metric: {metric}, Prefix: {prefix_for_db}")
+            if not models_base_dir.exists():
+                print(f"Directory {models_base_dir} for NNAlter epoch {i} not found. Skipping.")
+                continue
 
-            try:
-                evaluator = NNEval(
-                    model_source_package=str(model_dir_path),
-                    task=task,
-                    dataset=dataset,
-                    metric=metric,
-                    prm=prm,  # Pass the constructed prm
-                    save_to_db=save_to_db,
-                    prefix=prefix_for_db,
-                    save_path=model_dir_path
-                )
-                evaluator.epoch_limit_minutes = args.epoch_limit_minutes
+            print(f"\n--- Scanning NNAlter Epoch Directory: {current_alter_epoch_path} ---")
+            print(f"--- Synthesized Models Directory: {models_base_dir} ---")
 
+            for model_folder_name in os.listdir(models_base_dir):
+                model_dir_path = models_base_dir / model_folder_name
+                if not model_dir_path.is_dir():
+                    continue
 
-                eval_results = evaluator.evaluate(code_file_path)
-                
-                print(f"  Evaluation results for {model_folder_name}: {eval_results}")
+                code_file_path = model_dir_path / new_nn_file
+                df_file_path = model_dir_path / 'dataframe.df'  # Original model's metadata
 
-                eval_info_data = {
-                    "eval_args": evaluator.get_args(),  # This will show the prm used by NNEval
-                    "eval_results": eval_results,
-                    "cli_args": {'task': task, 'dataset': dataset, "metric": metric, "lr": lr, "batch": batch,
-                                 'dropout': dropout, 'momentum': momentum, 'transform': transform}
+                if not code_file_path.exists():
+                    print(f"Code file {new_nn_file} not found in {model_dir_path}. Skipping.")
+                    continue
+
+                print(f"\n--- Evaluating Model: {model_dir_path.relative_to(base_nngpt_path)} ---")
+
+                if not verify_nn_code(model_dir_path, code_file_path):
+                    print(f"Code verification failed for {code_file_path}. Skipping evaluation.")
+                    with open(model_dir_path / 'eval_verification_failed.txt', 'w') as f:
+                        f.write("Initial code verification failed.")
+                    continue
+
+                # Initialize task, dataset, metric, and prm from command-line arguments (or their defaults)
+                task = task
+                dataset = dataset
+                metric = metric
+                # This prm structure is consistent with LEMUR dataset's expectations for model training
+                prm = {
+                    'lr': lr,
+                    'batch': batch,
+                    'dropout': dropout,
+                    'momentum': momentum,
+                    'transform': transform,  # Default transform from CLI
+                    # 'epoch' will be set explicitly later
                 }
-                with open(model_dir_path / 'eval_info.json', 'w+') as f:
-                    json.dump(eval_info_data, f, indent=4, default=str)
+                prefix_for_db = "FractalNet"  # Default prefix
+                origdf = None
+                orig_pref = None
+                if df_file_path.exists():
+                    try:
+                        origdf = pd.read_pickle(df_file_path)
+                        # Override with values from dataframe.df if they exist
+                        task = origdf.get('task', task)
+                        dataset = origdf.get('dataset', dataset)
+                        metric = origdf.get('metric', metric)
+                        orig_pref = origdf['nn'].split('-')[0]
 
-                nn_name = uuid4(read_py_file_as_string(code_file_path))
+                        original_prm_from_df = origdf.get('prm')
+                        if isinstance(original_prm_from_df, dict):
+                            # Update prm with values from df, df values take precedence.
+                            # This will update lr, batch, dropout, momentum, transform if they exist in original_prm_from_df,
+                            # and also add any other model-specific hyperparameters from the original model.
+                            prm.update(original_prm_from_df)
 
-                pref = nn_name_prefix or orig_pref
-                if pref:
-                    nn_name = pref + '-' + nn_name
-                copy_to_lemur(origdf, model_dir_path, nn_name)
+                        prefix_for_db = origdf.get('nn', prefix_for_db).split('-')[0]
+                        print(f"  Loaded metadata from dataframe.df: task={task}, dataset={dataset}, metric={metric}")
+                    except Exception as e:
+                        print(f"  Error loading dataframe.df from {df_file_path}: {e}. Using command-line/default parameters for task, dataset, metric, and prm structure.")
+                else:
+                    print(f"  No dataframe.df found. Using command-line/default evaluation parameters.")
 
-            except Exception as e:
-                error_msg = f"Error evaluating model {model_folder_name}: {e}"
-                print(f"  {error_msg}")
-                detailed_error = traceback.format_exc()
-                print(detailed_error)
-                with open(model_dir_path / 'eval_error.txt', 'w+') as f:
-                    f.write(f"{error_msg}\n\n{detailed_error}")
-            finally:
-                release_memory()
+                # Crucial: set training epochs for this evaluation from nn_train_epochs
+                # This overrides any 'epoch' value that might have come from original_prm_from_df
+                prm['epoch'] = nn_train_epochs
+                print(f"  Final parameters for NNEval: {prm}")
+                print(f"  Task: {task}, Dataset: {dataset}, Metric: {metric}, Prefix: {prefix_for_db}")
+
+                try:
+                    evaluator = NNEval(
+                        model_source_package=str(model_dir_path),
+                        task=task,
+                        dataset=dataset,
+                        metric=metric,
+                        prm=prm,  # Pass the constructed prm
+                        save_to_db=save_to_db,
+                        prefix=prefix_for_db,
+                        save_path=model_dir_path
+                    )
+                    evaluator.epoch_limit_minutes = args.epoch_limit_minutes
+
+
+                    eval_results = evaluator.evaluate(code_file_path)
+
+                    print(f"  Evaluation results for {model_folder_name}: {eval_results}")
+
+                    eval_info_data = {
+                        "eval_args": evaluator.get_args(),  # This will show the prm used by NNEval
+                        "eval_results": eval_results,
+                        "cli_args": {'task': task, 'dataset': dataset, "metric": metric, "lr": lr, "batch": batch,
+                                     'dropout': dropout, 'momentum': momentum, 'transform': transform}
+                    }
+                    with open(model_dir_path / 'eval_info.json', 'w+') as f:
+                        json.dump(eval_info_data, f, indent=4, default=str)
+
+                    nn_name = uuid4(read_py_file_as_string(code_file_path))
+
+                    pref = nn_name_prefix or orig_pref
+                    if pref:
+                        nn_name = pref + '-' + nn_name
+                    copy_to_lemur(origdf, model_dir_path, nn_name)
+
+                except Exception as e:
+                    error_msg = f"Error evaluating model {model_folder_name}: {e}"
+                    print(f"  {error_msg}")
+                    detailed_error = traceback.format_exc()
+                    print(detailed_error)
+                    with open(model_dir_path / 'eval_error.txt', 'w+') as f:
+                        f.write(f"{error_msg}\n\n{detailed_error}")
+                finally:
+                    release_memory()
 
 
 if __name__ == "__main__":
