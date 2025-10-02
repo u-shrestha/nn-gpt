@@ -2,7 +2,7 @@ import argparse
 import json
 import os
 import traceback
-
+from pathlib import Path
 import pandas as pd
 from ab.nn.util.Util import release_memory, uuid4, read_py_file_as_string
 
@@ -39,10 +39,13 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, save_to
 
     for i in range(nn_alter_epochs):
         # Path to the output of one NNAlter.py epoch (e.g., out/nngpt/llm/epoch/A0)
-        current_alter_epoch_path = epoch_dir(i)  # This already uses nngpt_dir as base
+        current_alter_epoch_path = epoch_dir(i)
 
-        # Path to the synthesized models for that NNAlter epoch (e.g., .../A0/synth_nn)
-        models_base_dir = synth_dir(current_alter_epoch_path)
+        # If a custom synth_dir is given, use it; otherwise build from epoch_dir
+        if args.synth_dir:
+            models_base_dir = Path(args.synth_dir)
+        else:
+            models_base_dir = current_alter_epoch_path / "synth_nn"
 
         if not models_base_dir.exists():
             print(f"Directory {models_base_dir} for NNAlter epoch {i} not found. Skipping.")
@@ -84,7 +87,7 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, save_to
                 'transform': transform,  # Default transform from CLI
                 # 'epoch' will be set explicitly later
             }
-            prefix_for_db = "AlteredNN"  # Default prefix
+            prefix_for_db = "FractalNet"  # Default prefix
             origdf = None
             orig_pref = None
             if df_file_path.exists():
@@ -127,8 +130,11 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, save_to
                     prefix=prefix_for_db,
                     save_path=model_dir_path
                 )
-                eval_results = evaluator.evaluate(code_file_path)
+                evaluator.epoch_limit_minutes = args.epoch_limit_minutes
 
+
+                eval_results = evaluator.evaluate(code_file_path)
+                
                 print(f"  Evaluation results for {model_folder_name}: {eval_results}")
 
                 eval_info_data = {
@@ -214,6 +220,16 @@ if __name__ == "__main__":
     parser.add_argument(
         '--nn_name_prefix', type=str, default=NN_NAME_PREFIX,
         help=f"Default neural network name prefix (default: {NN_NAME_PREFIX})."
+    )
+    # Custom synth_dir
+    parser.add_argument(
+    '--synth_dir', '--synth_nn', dest='synth_dir', type=str, default=None,
+    help="Custom directory containing generated models (you can use --synth_dir or --synth_nn)"
+    )
+
+    parser.add_argument(
+    '--epoch_limit_minutes', type=int, default=30,
+    help="Max minutes allowed per epoch (default: 30)."
     )
 
     args = parser.parse_args()
