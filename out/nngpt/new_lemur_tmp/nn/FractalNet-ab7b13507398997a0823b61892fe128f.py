@@ -10,20 +10,11 @@ import torch.utils.checkpoint as cp
 # -------------------------------------------------
 # Handle PyTorch version differences for AMP
 # -------------------------------------------------
-if torch.__version__.startswith("1."):
-    # PyTorch 1.x
-    from torch.cuda.amp import autocast, GradScaler
-    def autocast_ctx(enabled=True):
-        return autocast(enabled=enabled)
-    def make_scaler(enabled=True):
-        return GradScaler(enabled=enabled)
-else:
-    # PyTorch 2.0+
-    from torch.amp import autocast, GradScaler
-    def autocast_ctx(enabled=True):
-        return autocast("cuda", enabled=enabled)
-    def make_scaler(enabled=True):
-        return GradScaler("cuda", enabled=enabled)
+from torch.amp import autocast, GradScaler
+def autocast_ctx(enabled=True):
+    return autocast("cuda", enabled=enabled)
+def make_scaler(enabled=True):
+    return GradScaler("cuda", enabled=enabled)
 
 def supported_hyperparameters():
     return { 'lr', 'dropout', 'momentum' }
@@ -110,7 +101,7 @@ class Net(nn.Module):
         num_columns = 4
         element_list = ['Conv2d', 'BatchNorm2d', 'ReLU', 'Dropout2d']
 
-        dropout_prob = float(prm.get('dropout', 0.2))
+        dropout_prob = float(prm['dropout'])
         self.fractal_fn(
             N=int(N),
             num_columns=int(num_columns),
@@ -212,8 +203,8 @@ class Net(nn.Module):
         self.criterion = nn.CrossEntropyLoss().to(self.device)
         self.optimizer = torch.optim.SGD(
             self.parameters(),
-            lr=prm.get('lr', 0.01),
-            momentum=prm.get('momentum', 0.9)
+            lr=prm['lr'],
+            momentum=prm['momentum']
         )
         self._scaler = make_scaler(enabled=self.use_amp)
 
