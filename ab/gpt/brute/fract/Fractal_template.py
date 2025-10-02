@@ -210,39 +210,33 @@ class Net(nn.Module):
     def learn(self, train_data):
         self.train()
         scaler = self._scaler
+        train_iter = iter(train_data)
+        try:
+            for batch_idx, (inputs, labels) in enumerate(train_iter):
+                    inputs = inputs.to(self.device).float()
+                    labels = labels.to(self.device)
+                    self.optimizer.zero_grad(set_to_none=True)
 
-        for batch_idx, (inputs, labels) in enumerate(train_data):
-            try:
-                inputs = inputs.to(self.device).float()
-                labels = labels.to(self.device)
-                self.optimizer.zero_grad(set_to_none=True)
+                    with autocast_ctx(enabled=self.use_amp):
+                        outputs = self(inputs)
+                        loss = self.criterion(outputs, labels)
 
-                with autocast_ctx(enabled=self.use_amp):
-                    outputs = self(inputs)
-                    loss = self.criterion(outputs, labels)
+                    if not torch.isfinite(loss):
+                        print(f"[WARN] Skipping batch {batch_idx} due to non-finite loss: {loss.item()}")
+                        continue
 
-                if not torch.isfinite(loss):
-                    print(f"[WARN] Skipping batch {batch_idx} due to non-finite loss: {loss.item()}")
-                    continue
-
-                if self.use_amp:
-                    scaler.scale(loss).backward()
-                    scaler.unscale_(self.optimizer)
-                    nn.utils.clip_grad_norm_(self.parameters(), 3.0)
-                    scaler.step(self.optimizer)
-                    scaler.update()
-                else:
-                    loss.backward()
-                    nn.utils.clip_grad_norm_(self.parameters(), 3.0)
-                    self.optimizer.step()
-
-            except RuntimeError as e:
-                err = str(e).lower()
-                if "out of memory" in err:
-                    print(f"[OOM] Skipping batch {batch_idx} due to CUDA OOM")
-                    traceback.print_exc()
-                    torch.cuda.empty_cache()
-                    gc.collect()
-                    continue
-                else:
-                    raise
+                    if self.use_amp:
+                        scaler.scale(loss).backward()
+                        scaler.unscale_(self.optimizer)
+                        nn.utils.clip_grad_norm_(self.parameters(), 3.0)
+                        scaler.step(self.optimizer)
+                        scaler.update()
+                    else:
+                        loss.backward()
+                        nn.utils.clip_grad_norm_(self.parameters(), 3.0)
+                        self.optimizer.step()
+        finally:
+            if hasattr(train_iter, 'shutdown'):
+                train_iter.shutdown()
+            del train_iter
+            gc.collect()
