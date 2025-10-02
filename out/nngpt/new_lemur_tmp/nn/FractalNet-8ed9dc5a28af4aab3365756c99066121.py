@@ -26,14 +26,7 @@ else:
         return GradScaler("cuda", enabled=enabled)
 
 def supported_hyperparameters():
-    return {
-        "lr": "lr",
-        "batch": "batch",
-        "dropout": "dropout",
-        "momentum": "momentum",
-        "transform": "transform",
-        "epoch": "epoch"
-    }
+    return { 'lr', 'dropout', 'momentum' }
 
 
 # -------------------------------------------------
