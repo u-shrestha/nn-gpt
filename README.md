@@ -25,20 +25,6 @@ For Windows:
 
 It is assumed that CUDA 12.6 is installed; otherwise, consider replacing 'cu126' with the appropriate version. Most LLM usage scenarios require GPUs with at least 24 GB of memory.
 
-### Prerequisites for mpi4py package:
-* On Debian/Ubuntu systems, run:
-  
-         sudo apt install libmpich-dev    # for MPICH
-  
-         sudo apt install libopenmpi-dev  # for Open MPI
-
-* On Fedora/RHEL systems, run:
-  
-         sudo dnf install mpich-devel     # for MPICH
-  
-         sudo dnf install openmpi-devel   # for Open MPI
-  
-
 ## Installation of NNGPT with pip
 
 ```bash
@@ -63,7 +49,6 @@ If there are installation problems, install the dependencies from the 'requireme
 Remove an old version and install LEMUR Dataset from GitHub to get the most recent code and statistics updates:
 ```bash
 rm -rf db
-pip uninstall nn-dataset -y
 pip install git+https://github.com/ABrain-One/nn-dataset --upgrade --force --extra-index-url https://download.pytorch.org/whl/cu126
 ```
 Installing the stable version:
