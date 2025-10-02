@@ -121,7 +121,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         if epoch < skip_epoch:
             print(f'Skipped nn generation at epoch {epoch}')
         else:
-            nn_gen(out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix)
+            nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix)
         # fine tune model for 1 epoch / Using training_args and save copy
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')
         # data_processor = NNGenPrompt(model_loader.get_max_length(), tokenizer, train_config_path)
@@ -143,7 +143,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         model = lora_tuner.train(dataset, tokenizer, out_path / base_model_name)
 
 
-def nn_gen(out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix):
+def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix):
     # Move inside the loop to create new prompt with newly created models.
     print('Preparing prompts for generation, this might take a while...')
     prompts = []
@@ -196,7 +196,7 @@ def nn_gen(out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn,
     release_memory()
     # evaluate produced CV models
     if exists(models_dir):
-        NNEval.main(nn_name_prefix, nn_train_epochs)
+        NNEval.main(nn_name_prefix, nn_train_epochs, epoch)
         release_memory()
     print('[DEBUG] Release_memory.')
     release_memory()
