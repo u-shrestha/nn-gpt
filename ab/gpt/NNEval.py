@@ -2,7 +2,7 @@ import argparse
 import json
 import os
 import traceback
-
+from pathlib import Path
 import pandas as pd
 from ab.nn.util.Util import release_memory, uuid4, read_py_file_as_string
 
@@ -21,11 +21,11 @@ DEFAULT_METRIC = 'acc'
 # Default hyperparameters. 'epoch' will be overridden.
 # TODO: DETECT EPOCH AUTOMATICALLY
 DEFAULT_LR = 0.01
-DEFAULT_BATCH_SIZE = 64
+DEFAULT_BATCH_SIZE = 16
 DEFAULT_DROPOUT = 0.2
 DEFAULT_MOMENTUM = 0.9
-DEFAULT_TRANSFORM = 'norm_256_flip'  # A common default, used by NNEval if prm is None
-DEFAULT_NN_NAME_PREFIX = None
+DEFAULT_TRANSFORM = 'norm_flip'  # A common default, used by NNEval if prm is None
+DEFAULT_NN_NAME_PREFIX = "FractalNet"
 
 def evaluate_altered_models(args: argparse.Namespace):
     """
@@ -42,15 +42,21 @@ def evaluate_altered_models(args: argparse.Namespace):
     print(f"Save to DB: {args.save_to_db}")
 
     base_nngpt_path = nngpt_dir  # out/nngpt
-    if not args.nn_alter_epochs:
-        args.nn_alter_epochs = len(os.listdir(epoch_dir()))
+    
+    if args.nn_alter_epochs is not None:
+        num_epochs = args.nn_alter_epochs
+    else:
+        num_epochs = len(os.listdir(epoch_dir()))
 
-    for i in range(args.nn_alter_epochs):
+    for i in range(num_epochs):
         # Path to the output of one NNAlter.py epoch (e.g., out/nngpt/llm/epoch/A0)
-        current_alter_epoch_path = epoch_dir(i)  # This already uses nngpt_dir as base
+        current_alter_epoch_path = epoch_dir(i)
 
-        # Path to the synthesized models for that NNAlter epoch (e.g., .../A0/synth_nn)
-        models_base_dir = synth_dir(current_alter_epoch_path)
+        # If a custom synth_dir is given, use it; otherwise build from epoch_dir
+        if args.synth_dir:
+            models_base_dir = Path(args.synth_dir)
+        else:
+            models_base_dir = current_alter_epoch_path / "synth_nn"
 
         if not models_base_dir.exists():
             print(f"Directory {models_base_dir} for NNAlter epoch {i} not found. Skipping.")
@@ -92,7 +98,7 @@ def evaluate_altered_models(args: argparse.Namespace):
                 'transform': args.transform,  # Default transform from CLI
                 # 'epoch' will be set explicitly later
             }
-            prefix_for_db = "AlteredNN"  # Default prefix
+            prefix_for_db = "FractalNet"  # Default prefix
             origdf = None
             if df_file_path.exists():
                 try:
@@ -133,8 +139,11 @@ def evaluate_altered_models(args: argparse.Namespace):
                     prefix=prefix_for_db,
                     save_path=model_dir_path
                 )
-                eval_results = evaluator.evaluate(code_file_path)
+                evaluator.epoch_limit_minutes = args.epoch_limit_minutes
 
+
+                eval_results = evaluator.evaluate(code_file_path)
+                
                 print(f"  Evaluation results for {model_folder_name}: {eval_results}")
 
                 eval_info_data = {
@@ -218,6 +227,16 @@ def main():
     parser.add_argument(
         '--nn_name_prefix', type=str, default=DEFAULT_NN_NAME_PREFIX,
         help=f"Default neural network name prefix (default: {DEFAULT_NN_NAME_PREFIX})."
+    )
+    # Custom synth_dir
+    parser.add_argument(
+    '--synth_dir', '--synth_nn', dest='synth_dir', type=str, default=None,
+    help="Custom directory containing generated models (you can use --synth_dir or --synth_nn)"
+    )
+
+    parser.add_argument(
+    '--epoch_limit_minutes', type=int, default=30,
+    help="Max minutes allowed per epoch (default: 30)."
     )
 
     args = parser.parse_args()
