@@ -159,7 +159,7 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
                     print(f"  {error_msg}")
                     detailed_error = traceback.format_exc()
                     print(detailed_error)
-                    with open(model_dir_path / 'eval_error.txt', 'w+') as f:
+                    with open(model_dir_path / 'error.txt', 'w+') as f:
                         f.write(f"{error_msg}\n\n{detailed_error}")
                 finally:
                     release_memory()
