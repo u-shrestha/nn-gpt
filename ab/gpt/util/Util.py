@@ -44,11 +44,13 @@ def extract_str(s: str, start: str, end: str):
 
 
 def extract_code(txt):
-    return improve_code(next(filter(None, map(lambda l: extract_str(txt, *l), (('<nn>', '</nn>'), ('```python', '```'), ('```', '```')))), ''))
+    return improve_code(next(filter(None, map(lambda l: extract_str(txt, *l),
+                                              (('<nn>', '</nn>'), ('```python', '```'), ('```', '```')))), ''))
 
 
 def extract_hyperparam(txt):
-    return improve_code(next(filter(None, map(lambda l: extract_str(txt.replace('< hp >','<hp>').replace('<.hp>','<hp>'), *l), (('<hp>', '</hp>'),))), ''))
+    return improve_code(next(filter(None, map(lambda l: extract_str(txt.replace('< hp >', '<hp>').replace('<.hp>', '<hp>'), *l),
+                                              (('<hp>', '</hp>'), ('```json', '```')))), ''))
 
 
 def copy_to_lemur(df, gen_nn_dir, name):
