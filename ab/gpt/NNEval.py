@@ -8,7 +8,6 @@ from ab.gpt.util.NNEval import NNEval
 from ab.gpt.util.Util import verify_nn_code, copy_to_lemur
 
 # --- Default Evaluation Parameters ---
-# TODO: CARRY ALL THIS STUFF TO CONST.PY
 # These will be used as defaults for argparse arguments
 NN_TRAIN_EPOCHS = 1  # How many epochs to train the altered NN for evaluation
 TASK = 'img-classification'
@@ -16,15 +15,14 @@ DATASET = 'cifar-10'
 METRIC = 'acc'
 
 # Default hyperparameters. 'epoch' will be overridden.
-# TODO: DETECT EPOCH AUTOMATICALLY
 LR = 0.01
 BATCH = 64
 DROPOUT = 0.2
 MOMENTUM = 0.9
 TRANSFORM = 'norm_256_flip'  # A common default, used by NNEval if prm is None
 
-NN_NAME_PREFIX = None
 SAVE_TO_DB = True
+NN_NAME_PREFIX = None
 NN_ALTER_EPOCHS = None
 ONLY_EPOCH = None
 EPOCH_LIMIT_MINUTES = None
