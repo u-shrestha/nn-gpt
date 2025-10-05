@@ -64,7 +64,7 @@ and export/generate:
 python -m ab.stat.export
 ```
 
-### Docker
+### 🐳 Docker
 All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be seamlessly executed within the AI Linux Docker container.
 
 Installing the latest version of the project from GitHub
