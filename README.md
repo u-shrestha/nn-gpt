@@ -64,7 +64,18 @@ and export/generate:
 python -m ab.stat.export
 ```
 
-### Docker
+## Use
+
+- **`ab.gpt.NNAlter*.py`** – Generates modified neural network models.  
+  Use the `-e` argument to set the number of epochs for the initial CV model generation.
+
+- **`ab.gpt.NNEval.py`** – Evaluates the models generated in the previous step.
+
+- **`ab.gpt.TuneNNGen*.py`** – Performs fine-tuning and evaluation of an LLM. For evaluation purposes, the LLM generates neural network models, which are then trained to assess improvements in the LLM’s performance on this task. The -s flag allows skipping model generation for the specified number of epochs.
+
+<a href='https://huggingface.co/ABrain'><strong>Pretrained LLM weights</strong></a>
+
+### 🐳 Docker
 All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be seamlessly executed within the AI Linux Docker container.
 
 Installing the latest version of the project from GitHub
@@ -78,17 +89,6 @@ docker run --rm -u $(id -u):ab --shm-size=16G -v $(pwd)/nn-gpt:/a/mm abrainone/a
 ```
 
 If recently added dependencies are missing in the <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a>, you can create a container from the Docker image ```abrainone/ai-linux:llm```, install the missing packages (preferably using ```pip install <package name>```), and then create a new image from the container using ```docker commit <container name> <new image name>```. You can use this new image locally or push it to the registry for deployment on the computer cluster.
-
-## Use
-
-- **`ab.gpt.NNAlter*.py`** – Generates modified neural network models.  
-  Use the `-e` argument to set the number of epochs for the initial CV model generation.
-
-- **`ab.gpt.NNEval.py`** – Evaluates the models generated in the previous step.
-
-- **`ab.gpt.TuneNNGen*.py`** – Performs fine-tuning and evaluation of an LLM. For evaluation purposes, the LLM generates neural network models, which are then trained to assess improvements in the LLM’s performance on this task. The -s flag allows skipping model generation for the specified number of epochs.
-
-<a href='https://huggingface.co/ABrain'><strong>Pretrained LLM weights</strong></a>
 
 ## Citation
 
