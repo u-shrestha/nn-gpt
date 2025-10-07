@@ -3,8 +3,8 @@ from pathlib import Path
 import pandas as pd
 from ab.nn.util.Util import release_memory, uuid4, read_py_file_as_string
 
-from ab.gpt.util.Const import epoch_dir, new_nn_file, nngpt_dir, synth_dir
-from ab.gpt.util.NNEval import NNEval
+from ab.gpt.util.Const import epoch_dir, new_nn_file, nngpt_dir, synth_dir, hp_file
+from ab.gpt.util.Eval import Eval
 from ab.gpt.util.Util import verify_nn_code, copy_to_lemur
 
 # --- Default Evaluation Parameters ---
@@ -58,8 +58,8 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
             print(f"\n--- Scanning NNAlter Epoch Directory: {current_alter_epoch_path} ---")
             print(f"--- Synthesized Models Directory: {models_base_dir} ---")
 
-            for model_folder_name in os.listdir(models_base_dir):
-                model_dir_path = models_base_dir / model_folder_name
+            for model_id in os.listdir(models_base_dir):
+                model_dir_path = models_base_dir / model_id
                 if not model_dir_path.is_dir():
                     continue
 
@@ -83,14 +83,25 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
                 dataset = dataset
                 metric = metric
                 # This prm structure is consistent with LEMUR dataset's expectations for model training
-                prm = {
-                    'lr': lr,
-                    'batch': batch,
-                    'dropout': dropout,
-                    'momentum': momentum,
-                    'transform': transform,  # Default transform from CLI
-                    # 'epoch' will be set explicitly later
-                }
+                prm = None
+                hp_path = model_dir_path / hp_file
+                if hp_path.exists():
+                    try:
+                        with open(hp_path) as f:
+                            prm = json.load(f)
+                        print(f'Training model {model_id} with LLM recommended prm {prm}')
+                    except Exception as e:
+                        print(f"Error loading LLM recommended training params from {hp_path}: {e}.")
+                if not prm:
+                    prm = {
+                        'lr': lr,
+                        'batch': batch,
+                        'dropout': dropout,
+                        'momentum': momentum,
+                        'transform': transform,  # Default transform from CLI
+                        # 'epoch' will be set explicitly later
+                    }
+                    print(f'Training model {model_id} with command-line/default training params {prm}')
                 prefix_for_db = nn_name_prefix  # Default prefix
                 origdf = None
                 orig_pref = None
@@ -120,11 +131,11 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
                 # Crucial: set training epochs for this evaluation from nn_train_epochs
                 # This overrides any 'epoch' value that might have come from original_prm_from_df
                 prm['epoch'] = nn_train_epochs
-                print(f"  Final parameters for NNEval: {prm}")
+                print(f"  Final parameters for Eval: {prm}")
                 print(f"  Task: {task}, Dataset: {dataset}, Metric: {metric}, Prefix: {prefix_for_db}")
 
                 try:
-                    evaluator = NNEval(
+                    evaluator = Eval(
                         model_source_package=str(model_dir_path),
                         task=task,
                         dataset=dataset,
@@ -137,9 +148,9 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
                     if epoch_limit_minutes:
                         evaluator.epoch_limit_minutes = epoch_limit_minutes
                     eval_results = evaluator.evaluate(code_file_path)
-                    print(f"  Evaluation results for {model_folder_name}: {eval_results}")
+                    print(f"  Evaluation results for {model_id}: {eval_results}")
                     eval_info_data = {
-                        "eval_args": evaluator.get_args(),  # This will show the prm used by NNEval
+                        "eval_args": evaluator.get_args(),  # This will show the prm used by Eval
                         "eval_results": eval_results,
                         "cli_args": {'task': task, 'dataset': dataset, "metric": metric, "lr": lr, "batch": batch,
                                      'dropout': dropout, 'momentum': momentum, 'transform': transform}
@@ -155,7 +166,7 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
                     copy_to_lemur(origdf, model_dir_path, nn_name)
 
                 except Exception as e:
-                    error_msg = f"Error evaluating model {model_folder_name}: {e}"
+                    error_msg = f"Error evaluating model {model_id}: {e}"
                     print(f"  {error_msg}")
                     detailed_error = traceback.format_exc()
                     print(detailed_error)

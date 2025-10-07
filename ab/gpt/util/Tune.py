@@ -193,13 +193,13 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
             create_file(model_dir, f"original_{origdf['nn']}.py", origdf['nn_code'])
             # Store DataFrame information, mainly for passing parameters to evaluator.
             origdf.to_pickle(df_file)
+    print('[DEBUG] Release memory.')
     release_memory()
     # evaluate produced CV models
     if exists(models_dir):
         NNEval.main(nn_name_prefix, nn_train_epochs, epoch)
+        print('[DEBUG] Release_memory.')
         release_memory()
-    print('[DEBUG] Release_memory.')
-    release_memory()
     print('Clear LEMUR query cache.')
     lemur.data.cache_clear()
     print('The cache has been cleared.')
