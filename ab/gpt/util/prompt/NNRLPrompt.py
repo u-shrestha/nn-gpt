@@ -5,8 +5,8 @@ from overrides import override
 from pandas import DataFrame
 from transformers import PreTrainedTokenizerBase
 
+from ab.gpt.util.Const import conf_dir
 from ab.gpt.util.prompt.Prompt import Prompt
-from tqdm import tqdm
 
 
 def shuffle_data(df: DataFrame):
@@ -49,7 +49,7 @@ class NNRLPrompt(Prompt):
             addon_data = lemur.data(only_best_accuracy=only_best_accuracy, task=prompt_dict[key]['addon_task'], max_rows=n_training_prompts)
             print('Addon-Data acquisition complete')
 
-            for _, row in tqdm(data.iterrows()):
+            for _, row in data.iterrows():
                 para_dict = dict()
                 for it in prompt_dict[key]['input_list']:
                     para_dict[it['para']] = row[it['value']]
@@ -79,16 +79,16 @@ class NNRLPrompt(Prompt):
                 # Having the same name prefix before '-'
                 # output = '\n'.join(prompt_dict[key]['output'])
                 # response = output.format(**para_dict)
-                # text = self.tokenizer.apply_chat_template(
-                #     [
-                #         {'role': 'user', 'content': inst},
-                #         {'role': 'assistant', 'content': response}
-                #     ], tokenize=False
-                # )
                 response = para_dict  # Use the whole dictionary as response
+                text = self.tokenizer.apply_chat_template(
+                    [
+                        {'role': 'user', 'content': inst},
+                        {'role': 'assistant', 'content': json.dumps(para_dict, ensure_ascii=False, indent=2)}
+                    ], tokenize=False
+                )
                 # print(f"Prompt: {inst}")
                 # print(f"Output: {response}")
-                dataframe.loc[len(dataframe)] = [inst, "", response, "", ""]
+                dataframe.loc[len(dataframe)] = [inst, "", response, "", text]
             break  # Only one prompt is supported for now
 
         return dataframe
