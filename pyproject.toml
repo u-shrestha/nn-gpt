@@ -14,9 +14,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent"
 ]
-authors = [
-    { name = 'ABrain One and contributors', email = 'AI@ABrain.one' }
-]
+authors = [{ name = 'ABrain One and contributors', email = 'AI@ABrain.one' }]
 
 [project.urls]
 Homepage = 'https://ABrain.one'
@@ -42,4 +40,4 @@ include-package-data = true
 [project.optional-dependencies]
 flash = ['flash_attn']
 stat = ['nn-stat']
-rag = ['nn-rag']
+rag = ['nn-rag>=2.0.0']

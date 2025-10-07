@@ -54,8 +54,7 @@ class NNEval:
         ids_list = nn_dataset.data()["nn_id"].unique().tolist()
         new_checksum = uuid4(code)
         if new_checksum not in ids_list:
-            res = api.check_nn(code, self.task, self.dataset, self.metric, self.prm, self.save_to_db, self.prefix, self.save_path)
-            return res
+            return api.check_nn(code, self.task, self.dataset, self.metric, self.prm, self.save_to_db, self.prefix, self.save_path)
         else:
             raise Exception(f'NN already exists (checksum: {new_checksum}). Skipping API call.')
 

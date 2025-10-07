@@ -3,9 +3,9 @@
 <sub><a href='https://pypi.python.org/pypi/nn-gpt'><img src='https://img.shields.io/pypi/v/nn-gpt.svg'/></a> <a href="https://pepy.tech/project/nn-gpt"><img alt="GitHub release" src="https://static.pepy.tech/badge/nn-gpt"></a><br/>
 short alias  <a href='https://pypi.python.org/pypi/lmurg'>lmurg</a> 
 </sub> 
-<br/><br/>
-<img src='https://abrain.one/img/lemur-nn-gen-whit.jpg' width='25%'/>
-<h3>Overview 📖</h3>
+<br/>
+<img src='https://abrain.one/img/nngpt-logo-tr.png' width='25%'/>
+<h3>📖 Overview</h3>
 
 This Python-based <a href='https://github.com/ABrain-One/nn-gpt'>NNGPT</a> project leverages large language models (LLMs) to automate the creation of neural network architectures, streamlining the design process for machine learning practitioners. It leverages various neural networks from the <a href="https://github.com/ABrain-One/nn-dataset">LEMUR Dataset</a> to fine-tune LLMs and provide insights into potential architectures during the creation of new neural network models.
 
@@ -24,20 +24,6 @@ For Windows:
    ```
 
 It is assumed that CUDA 12.6 is installed; otherwise, consider replacing 'cu126' with the appropriate version. Most LLM usage scenarios require GPUs with at least 24 GB of memory.
-
-### Prerequisites for mpi4py package:
-* On Debian/Ubuntu systems, run:
-  
-         sudo apt install libmpich-dev    # for MPICH
-  
-         sudo apt install libopenmpi-dev  # for Open MPI
-
-* On Fedora/RHEL systems, run:
-  
-         sudo dnf install mpich-devel     # for MPICH
-  
-         sudo dnf install openmpi-devel   # for Open MPI
-  
 
 ## Installation of NNGPT with pip
 
@@ -63,7 +49,6 @@ If there are installation problems, install the dependencies from the 'requireme
 Remove an old version and install LEMUR Dataset from GitHub to get the most recent code and statistics updates:
 ```bash
 rm -rf db
-pip uninstall nn-dataset -y
 pip install git+https://github.com/ABrain-One/nn-dataset --upgrade --force --extra-index-url https://download.pytorch.org/whl/cu126
 ```
 Installing the stable version:
@@ -79,21 +64,6 @@ and export/generate:
 python -m ab.stat.export
 ```
 
-### Docker
-All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be seamlessly executed within the AI Linux Docker container.
-
-Installing the latest version of the project from GitHub
-```bash
-docker run --rm -u $(id -u):ab -v $(pwd):/a/mm abrainone/ai-linux bash -c "[ -d nn-gpt ] && git -C nn-gpt pull || git -c advice.detachedHead=false clone --depth 1 https://github.com/ABrain-One/nn-gpt"
-```
-
-Running script
-```bash
-docker run --rm -u $(id -u):ab --shm-size=16G -v $(pwd)/nn-gpt:/a/mm abrainone/ai-linux bash -c "python -m ab.gpt.TuneNNGen_8B"
-```
-
-If recently added dependencies are missing in the <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a>, you can create a container from the Docker image ```abrainone/ai-linux```, install the missing packages (preferably using ```pip install <package name>```), and then create a new image from the container using ```docker commit <container name> <new image name>```. You can use this new image locally or push it to the registry for deployment on the computer cluster.
-
 ## Use
 
 - **`ab.gpt.NNAlter*.py`** – Generates modified neural network models.  
@@ -104,6 +74,21 @@ If recently added dependencies are missing in the <a href='https://hub.docker.co
 - **`ab.gpt.TuneNNGen*.py`** – Performs fine-tuning and evaluation of an LLM. For evaluation purposes, the LLM generates neural network models, which are then trained to assess improvements in the LLM’s performance on this task. The -s flag allows skipping model generation for the specified number of epochs.
 
 <a href='https://huggingface.co/ABrain'><strong>Pretrained LLM weights</strong></a>
+
+### 🐳 Docker
+All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be seamlessly executed within the AI Linux Docker container.
+
+Installing the latest version of the project from GitHub
+```bash
+docker run --rm -u $(id -u):ab -v $(pwd):/a/mm abrainone/ai-linux:llm bash -c "[ -d nn-gpt ] && git -C nn-gpt pull || git -c advice.detachedHead=false clone --depth 1 https://github.com/ABrain-One/nn-gpt"
+```
+
+Running script
+```bash
+docker run --rm -u $(id -u):ab --shm-size=16G -v $(pwd)/nn-gpt:/a/mm abrainone/ai-linux:llm bash -c "python -m ab.gpt.TuneNNGen_8B"
+```
+
+If recently added dependencies are missing in the <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a>, you can create a container from the Docker image ```abrainone/ai-linux:llm```, install the missing packages (preferably using ```pip install <package name>```), and then create a new image from the container using ```docker commit <container name> <new image name>```. You can use this new image locally or push it to the registry for deployment on the computer cluster.
 
 ## Citation
 

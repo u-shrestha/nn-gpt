@@ -28,7 +28,7 @@ class ChatBot:
         if self.__keep_memory:
             self.__messages = []
 
-    def chat(self, prompt: str, max_len=None, max_words=None, engineer_prompt=True) -> tuple[str, str, str]:
+    def chat(self, prompt: str, max_len=None, max_new_tokens=None, engineer_prompt=True) -> tuple[str, str, str]:
         self.model.eval()
         if engineer_prompt:
             prompt += extra_instructions
@@ -41,7 +41,7 @@ class ChatBot:
 
         out = self.__pipeline(
             in_next,
-            max_new_tokens=max_words,
+            max_new_tokens=max_new_tokens,
             do_sample=True,  # Allow Random answer
             max_len=max_len
         )[0]["generated_text"][-1]['content']

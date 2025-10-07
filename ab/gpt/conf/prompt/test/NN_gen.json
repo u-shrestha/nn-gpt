@@ -70,7 +70,7 @@
     "no_repeat": [],
     "keep_same": [],
     "prompt": [
-      "Return the training hyperparameters (as a JSON object between XML tags <hp> and </hp>) and corresponding neural network model (as a Python code between XML tags <nn> and </nn>) that achieves a maximum value for the metric '{addon_metric}' at epoch {addon_epoch} on the '{addon_dataset}' dataset for the task '{addon_task}'.",
+      "Provide the training hyperparameters (as a JSON object between XML tags <hp> and </hp>) and corresponding neural network model (as a Python code between XML tags <nn> and </nn>) that achieves a maximum value for the metric '{addon_metric}' at epoch {addon_epoch} on the '{addon_dataset}' dataset for the task '{addon_task}'.",
       "1. Training hyperparameters (JSON object between XML tags <hp> and </hp>):",
       "  Obligatory keys \"batch\", \"transform\", and all keys from the 'supported_hyperparameters' function in model code. Do not use any other keys like \"hp*\".",
       "  If unsure, use: \"batch\": 64, \"transform\": \"norm_128_flip\".",
@@ -82,7 +82,8 @@
       "<transform>{transform_code}</transform>",
       "<metric>{metric_code}</metric>",
       "<nn>{nn_code}</nn>",
-      "Ensure the neural network code follows the LEMUR NN Dataset conventions."
+      "Ensure the neural network code follows the LEMUR NN Dataset conventions.",
+      "Provide a single final JSON object with the hyperparameters and a single complete Python neural network model code, without any truncations or missing parts."
     ]
   },
   "improve_segmentation_only": {
