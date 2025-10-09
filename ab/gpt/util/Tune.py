@@ -172,16 +172,15 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
         prompt, origdf = prompt
         code, hp, full_out = chat_bot.chat(prompt, engineer_prompt=False, max_new_tokens=max_new_tokens)
         if save_llm_output: create_file(model_dir, new_out_file, full_out)
-        print(f'Generated params: {hp}')
+        makedirs(model_dir, exist_ok=True)
         try:
+            print(f'Generated params: {hp}')
             hp = json.loads(hp.replace("'", '"'))
+            with open(model_dir / hp_file, 'w+') as f:
+                json.dump(hp, f)
         except Exception as e:
             print(e)
             continue
-        makedirs(model_dir, exist_ok=True)
-        # create_file(model_dir, hp_file, hp.replace("'",'"'))
-        with open(model_dir / hp_file, 'w+') as f:
-            json.dump(hp, f)
         create_file(model_dir, new_nn_file, code)
         create_file(model_dir, new_out_file, full_out)
         df_file = model_dir / 'dataframe.df'
