@@ -141,6 +141,8 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         print('Dataset length:', len(dataset))
         model.train()
         model = lora_tuner.train(dataset, tokenizer, out_path / base_model_name)
+        del dataset
+        release_memory()
 
 
 def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix):
