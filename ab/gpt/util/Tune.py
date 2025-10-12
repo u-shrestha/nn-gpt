@@ -55,7 +55,7 @@ def flatten_chunks(data):
 
 
 def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf, training_args, peft_config,
-         max_prompts=None, save_llm_output=True, max_new_tokens=16 * 1024, nn_name_prefix=None):
+         max_prompts=None, save_llm_output=True, max_new_tokens=16 * 1024, nn_name_prefix=None, temperature=1.0, top_k=50, top_p=0.9):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
     with open(conf_llm_dir / llm_conf) as f:
@@ -112,7 +112,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
     print('Using Max Length:', model_loader.get_max_length())
 
     # loop train and eval cycles
-    chat_bot = ChatBot(model, tokenizer)  # Only initialize ONCE
+    chat_bot = ChatBot(model, tokenizer, temperature=temperature, top_k=top_k, top_p=top_p)  # Only initialize ONCE
 
     shutil.rmtree(epoch_dir(), ignore_errors=True)
     for epoch in range(llm_tune_epochs):
@@ -172,7 +172,7 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
     for idx, prompt in tqdm(enumerate(prompts)):
         model_dir = models_dir / f'B{idx}'
         prompt, origdf = prompt
-        code, hp, full_out = chat_bot.chat(prompt, engineer_prompt=False, max_new_tokens=max_new_tokens)
+        code, hp, tr, full_out = chat_bot.chat(prompt, engineer_prompt=False, max_new_tokens=max_new_tokens)
         if save_llm_output: create_file(model_dir, new_out_file, full_out)
         makedirs(model_dir, exist_ok=True)
         try:
@@ -180,6 +180,12 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
             hp = json.loads(hp.replace("'", '"'))
             with open(model_dir / hp_file, 'w+') as f:
                 json.dump(hp, f)
+        except Exception as e:
+            print(e)
+            continue
+        try:
+            print(f'Generated transformer:\n\n{tr}\n----\n')
+            create_file(model_dir, transformer_file, tr)
         except Exception as e:
             print(e)
             continue

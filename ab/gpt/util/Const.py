@@ -3,6 +3,7 @@ import json
 
 new_nn_file = 'new_nn.py'
 hp_file = 'hp.txt'
+transformer_file = 'tr.py'
 new_out_file = 'full_output.txt'
 gpt = 'gpt'
 

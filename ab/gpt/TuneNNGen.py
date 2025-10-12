@@ -36,18 +36,21 @@ LLM_TUNE_CONF = 'NN_gen.json'
 NN_GEN_CONF = 'NN_gen.json'
 NN_GEN_CONF_ID = 'improve_classification_only'
 LLM_CONF = 'ds_coder_7b_olympic.json'
-MAX_PROMPTS = 36 * 1024
+MAX_PROMPTS = 2 * 1024 # temporarily decreased until a quick SQL request of data for LLM fine-tuning is provided
 MAX_NEW_TOKENS = 16 * 1024
 SAVE_LLM_OUTPUT = True
 USE_DEEPSPEED = False
 NN_NAME_PREFIX = None
+TEMPERATURE = 0.8
+TOP_K = 70
+TOP_P = 0.9
 
 def main(tune_layers=TUNE_LAYERS, r=R, lora_alpha=LORA_ALPHA, lora_dropout=LORA_DROPOUT, target_modules=TARGET_MODULES,
          task_type=TASK_TYPE, bias=BIAS, learning_rate=LEARNING_RATE, llm_tune_conf=LLM_TUNE_CONF, nn_gen_conf=NN_GEN_CONF, nn_gen_conf_id=NN_GEN_CONF_ID,
          llm_conf=LLM_CONF, test_nn=TEST_NN, peft=PEFT, skip_epoches=SKIP_EPOCHES, per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
          gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS, warmup_steps=WARMUP_STEPS, logging_steps=LOGGING_STEPS, optimizer=OPTIMIZER,
          max_prompts=MAX_PROMPTS, save_llm_output=SAVE_LLM_OUTPUT, max_new_tokens=MAX_NEW_TOKENS, use_deepspeed=USE_DEEPSPEED, nn_name_prefix=NN_NAME_PREFIX,
-         nn_train_epochs=NN_TRAIN_EPOCHS):
+         nn_train_epochs=NN_TRAIN_EPOCHS, temperature=TEMPERATURE, top_k=TOP_K, top_p=TOP_P):
     print(f'''All hyperparameters: 
 tune_layers={tune_layers}, r={r}, lora_alpha={lora_alpha}, lora_dropout={lora_dropout}, 
 target_modules={target_modules}, task_type={task_type}, bias={bias}, 
@@ -55,7 +58,7 @@ learning_rate={learning_rate}, llm_tune_conf={llm_tune_conf}, nn_gen_conf={nn_ge
 llm_conf={llm_conf}, test_nn={test_nn}, nn_train_epochs={nn_train_epochs}, peft={peft}, skip_epoches={skip_epoches}, 
 per_device_train_batch_size={per_device_train_batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}, warmup_steps={warmup_steps}, 
 logging_steps={logging_steps}, optimizer={optimizer}, max_prompts={max_prompts}, save_llm_output={save_llm_output}, max_new_tokens={max_new_tokens}, 
-use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix} ''')
+use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={temperature}, top_k={top_k}, top_p={top_p} ''')
 
     training_args = TrainingArguments(
         report_to=None,
@@ -80,7 +83,8 @@ use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix} ''')
         task_type=task_type)
 
     tune(test_nn, nn_train_epochs, skip_epoches, peft, llm_tune_conf, nn_gen_conf, nn_gen_conf_id, llm_conf, training_args, peft_config,
-         max_prompts=max_prompts, save_llm_output=save_llm_output, max_new_tokens=max_new_tokens, nn_name_prefix=nn_name_prefix)
+         max_prompts=max_prompts, save_llm_output=save_llm_output, max_new_tokens=max_new_tokens, nn_name_prefix=nn_name_prefix, 
+         temperature=temperature, top_k=top_k, top_p=top_p)
 
 
 if __name__ == '__main__':
@@ -138,7 +142,13 @@ if __name__ == '__main__':
                         help='Number of epoches to skip the neural network generation.')
     parser.add_argument('--peft', type=str, default=None, help='Path to saved LoRA layers.')
     parser.add_argument('--nn_name_prefix', type=str, default=NN_NAME_PREFIX,
-        help=f"Default neural network name prefix (default: {NN_NAME_PREFIX}).")
+        help=f"Neural network name prefix (default: {NN_NAME_PREFIX}).")
+    parser.add_argument('--temperature', type=float, default=TEMPERATURE,
+        help=f"LLM temperature controls randomness in output generation (default: {TEMPERATURE}).")
+    parser.add_argument('--top_k', type=str, default=TOP_K,
+        help=f"LLM top_k limits token selection in output generation (default: {TOP_K}).")
+    parser.add_argument('--top_p', type=str, default=TOP_P,
+        help=f"LLM top_p controls token diversity in output generation (default: {TOP_P}).")
 
     args = parser.parse_args()
     main(tune_layers=range(args.start_layer, args.end_layer),
@@ -166,4 +176,8 @@ if __name__ == '__main__':
          use_deepspeed=args.use_deepspeed,
          save_llm_output=args.save_llm_output,
          nn_name_prefix=args.nn_name_prefix,
-         nn_train_epochs=args.nn_train_epochs)
+         nn_train_epochs=args.nn_train_epochs,
+         temperature=args.temperature,
+         top_k=args.top_k,
+         top_p=args.top_p,
+         )

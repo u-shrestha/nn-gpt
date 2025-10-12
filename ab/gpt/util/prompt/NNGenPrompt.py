@@ -41,7 +41,8 @@ class NNGenPrompt(Prompt):
             prompt = '\n'.join(prompt_dict[key]['prompt'])
             # Get nn-dataset codes
             print('Preparing Data...', flush=True)
-            data = lemur.data(only_best_accuracy=only_best_accuracy, task=prompt_dict[key]['task'])
+            data = lemur.data(only_best_accuracy=only_best_accuracy, task=prompt_dict[key]['task']#, sql='''  '''
+            )
             data = shuffle_data(data)
             print('Data acquisition complete', flush=True)
             with_addons = prompt_dict[key]['addon_list']
