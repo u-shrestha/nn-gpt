@@ -31,6 +31,7 @@ def alter(epochs, test_conf, llm_name, gguf_file=None):
         # --- Core elements ---
         element_list = [
             'nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias)',
+            'nn.MaxPool2d(kernel_size=3, stride=2)'
             'nn.BatchNorm2d(out_channels)',
             'nn.ReLU(inplace=True)',
             'nn.Dropout2d(p=dropout_prob) if dropout_prob > 0 else nn.Identity()',
@@ -38,10 +39,10 @@ def alter(epochs, test_conf, llm_name, gguf_file=None):
 
          # --- Generate all (perm, N, num_columns) combos ---
         all_combinations = []
-        for r in range(2, 4 + 1):  # lengths 2..4
+        for r in range(2, 5 + 1):  # lengths 2..5
             for seq in itertools.product(element_list, repeat=r):
-                for N in range(1, 6):              # 1..10
-                    for num_columns in range(1, 8):  # 1..15
+                for N in range(1, 6):              # 1..6
+                    for num_columns in range(1, 8):  # 1..8
                         all_combinations.append((seq, N, num_columns))
 
         # --- Generate variants ---
@@ -57,7 +58,7 @@ def alter(epochs, test_conf, llm_name, gguf_file=None):
 
             # Build variant’s layer sequence
             element_code = ",\n        ".join(perm)
-            element_list_str = "['Conv2d', 'BatchNorm2d', 'ReLU', 'Dropout2d']"
+            element_list_str = "['Conv2d', 'MaxPool2d', 'BatchNorm2d', 'ReLU', 'Dropout2d']"
 
                 # Fill template placeholders
             nn_code = (
