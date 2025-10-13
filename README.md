@@ -20,7 +20,7 @@ For Windows:
    ```bash
    python3 -m venv .venv
    .venv\Scripts\activate
-   python -m pip install --upgrade pip
+   python -m pip install -- pip
    ```
 
 It is assumed that CUDA 12.6 is installed; otherwise, consider replacing 'cu126' with the appropriate version. Most LLM usage scenarios require GPUs with at least 24 GB of memory.
@@ -49,7 +49,7 @@ If there are installation problems, install the dependencies from the 'requireme
 Remove an old version and install LEMUR Dataset from GitHub to get the most recent code and statistics updates:
 ```bash
 rm -rf db
-pip install git+https://github.com/ABrain-One/nn-dataset --upgrade --force --extra-index-url https://download.pytorch.org/whl/cu126
+pip install --no-cache-dir git+https://github.com/ABrain-One/nn-dataset --upgrade --force --extra-index-url https://download.pytorch.org/whl/cu126
 ```
 Installing the stable version:
 ```bash
