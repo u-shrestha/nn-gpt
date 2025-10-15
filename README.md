@@ -46,7 +46,7 @@ pip install -r req-no-isolation.txt --no-build-isolation --extra-index-url https
 If there are installation problems, install the dependencies from the 'requirements.txt' file one by one.
 
 ## Update of NN Dataset
-Remove an old version and install LEMUR Dataset from GitHub to get the most recent code and statistics updates:
+To get the latest code and statistics, install the most recent version of the LEMUR Dataset from GitHub:
 ```bash
 rm -rf db
 pip install --no-cache-dir git+https://github.com/ABrain-One/nn-dataset --upgrade --force --extra-index-url https://download.pytorch.org/whl/cu126
