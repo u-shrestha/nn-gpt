@@ -2,6 +2,7 @@ import json
 
 import ab.nn as lemur
 from overrides import override
+import pandas as pd
 from pandas import DataFrame
 from transformers import PreTrainedTokenizerBase
 
@@ -11,9 +12,6 @@ from tqdm import tqdm
 
 def shuffle_data(df: DataFrame):
     return df.sample(frac=1).reset_index(drop=True)
-
-
-models_with_the_same_prefix = False
 
 
 class NNGenPrompt(Prompt):
@@ -31,50 +29,65 @@ class NNGenPrompt(Prompt):
         :return:
             pandas.Dataframe object with columns described in nn_api.data()
         """
-        dataframe = DataFrame(columns=['instruction', 'context', 'response', 'category', 'text'])
+        prompt_lists = []
 
         with open(self.prompts_path) as prompt_file:
             prompt_dict = json.load(prompt_file)
-        assert isinstance(prompt_dict, dict)
+            assert isinstance(prompt_dict, dict)
 
         for key in prompt_dict.keys():
+            dataframe = DataFrame(columns=['instruction', 'context', 'response', 'category', 'text'])
+            prompt_lists.append(dataframe)
             prompt = '\n'.join(prompt_dict[key]['prompt'])
             # Get nn-dataset codes
-            print('Preparing Data...')
-            data = lemur.data(only_best_accuracy=only_best_accuracy, task=prompt_dict[key]['task'], max_rows=n_training_prompts)
+            print('Preparing Data...', flush=True)
+            data = lemur.data(only_best_accuracy=only_best_accuracy, task=prompt_dict[key]['task']#, sql='''  '''
+            )
             data = shuffle_data(data)
-            print('Data acquisition complete')
+            print('Data acquisition complete', flush=True)
+            with_addons = prompt_dict[key]['addon_list']
 
-            # Get addon nn-dataset codes
-            addon_data = lemur.data(only_best_accuracy=only_best_accuracy, task=prompt_dict[key]['addon_task'], max_rows=n_training_prompts)
-            print('Addon-Data acquisition complete')
-
-            for _, row in tqdm(data.iterrows()):
+            for _, row in tqdm(data.iterrows(), total=n_training_prompts or len(data)):
+                if n_training_prompts and len(dataframe) >= n_training_prompts:
+                    break
                 para_dict = dict()
                 for it in prompt_dict[key]['input_list']:
                     para_dict[it['para']] = row[it['value']]
-                if models_with_the_same_prefix and addon_data is not None:
+
+                if with_addons:
+                    param_names = prompt_dict[key]['keep_same']
+                    params = {k: row[k] for k in param_names}
+                    addon_task = prompt_dict[key]['addon_task']
+                    if addon_task:
+                        params['task'] = addon_task
+                    addon_data = lemur.data(only_best_accuracy=only_best_accuracy, **params)
+
+                    filter_q = f"nn!='{row['nn']}'"
+                    if 'same_pref' in prompt_dict[key] and prompt_dict[key]['same_pref'] == True:
+                        filter_q += f"&nn.str.split('-',n=1).str[0]=='{row['nn'].split('-')[0]}'"  # Default addon filter in this case should be models with same prefix
+
+                    if 'improve' in prompt_dict[key] and prompt_dict[key]['improve'] == True:
+                        filter_q += f"&accuracy>{row['accuracy']}"  # model result with higher accuracy
+
                     ## Apply non-repeat filter if exists:
-                    filter = f"nn.str.split('-',n=1).str[0]=='{row['nn'].split('-')[0]}'&nn!='{row['nn']}'"  # Default addon filter in this case should be models with same prefix
                     if 'no_repeat' in prompt_dict[key]:  # Compact test_prompt.json, items in prm is not supported
                         for filter_it in prompt_dict[key]['no_repeat']:
                             if isinstance(row[filter_it], str):
-                                filter += f"&{filter_it}!='{row[filter_it]}'"
+                                filter_q += f"&{filter_it}!='{row[filter_it]}'"
                             else:
-                                filter += f"&{filter_it}!={row[filter_it]}"
-                    if 'keep_same' in prompt_dict[key]:
-                        for filter_it in prompt_dict[key]['keep_same']:
-                            if isinstance(row[filter_it], str):
-                                filter += f"&{filter_it}=='{row[filter_it]}'"
-                            else:
-                                filter += f"&{filter_it}=={row[filter_it]}"
-                    addon_data = addon_data.query(filter)
-                if len(addon_data) > 0:
-                    addon_row = addon_data.sample(n=1).iloc[0]
-                else:
-                    continue  # The case no result matches requirement
-                for it in prompt_dict[key]['addon_list']:
-                    para_dict[it['para']] = addon_row[it['value']]
+                                filter_q += f"&{filter_it}!={row[filter_it]}"
+                    filtered_addon_data = addon_data.query(filter_q)
+                    del addon_data
+
+                    if len(filtered_addon_data) > 0:
+                        shuffled = shuffle_data(filtered_addon_data)
+                        addon_row = shuffled.sample(n=1).iloc[0]
+                        del filtered_addon_data, shuffled
+                    else:
+                        continue  # The case no result matches requirement
+                    for it in prompt_dict[key]['addon_list']:
+                        para_dict[it['para']] = addon_row[it['value']]
+
                 inst = prompt.format(**para_dict)
                 # Having the same name prefix before '-'
                 output = '\n'.join(prompt_dict[key]['output'])
@@ -85,8 +98,12 @@ class NNGenPrompt(Prompt):
                         {'role': 'assistant', 'content': response}
                     ], tokenize=False
                 )
+
                 # print(f"Prompt: {inst}")
                 # print(f"Output: {response}")
+
                 dataframe.loc[len(dataframe)] = [inst, "", response, "", text]
 
-        return dataframe
+        print('Prompts successfully generated', flush=True)
+        del data
+        return pd.concat(prompt_lists, ignore_index=True)

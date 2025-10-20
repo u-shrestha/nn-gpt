@@ -33,18 +33,30 @@ def extract_str(s: str, start: str, end: str):
         s = s[:s.rindex(end)]
         spl = s.split(start)
         if len(spl) > 1:
-            return spl[-1].strip()
+            s = spl[-1]
+            spl = s.split(end)
+            if len(spl) > 1:
+                s = spl[0]
+            return s.strip()
     except:
         pass
     return None
 
 
 def extract_code(txt):
-    return improve_code(next(filter(None, map(lambda l: extract_str(txt, *l), (('<nn>', '</nn>'), ('```python', '```'), ('```', '```')))), ''))
+    return improve_code(next(filter(None, map(lambda l: extract_str(txt, *l),
+                                              (('<nn>', '</nn>'), ('```python', '```'), ('```', '```')))), ''))
 
 
 def extract_hyperparam(txt):
-    return improve_code(next(filter(None, map(lambda l: extract_str(txt.replace('< hp >','<hp>').replace('<.hp>','<hp>'), *l), (('<hp>', '</hp>'),))), ''))
+    return improve_code(next(filter(None, map(lambda l: extract_str(txt.replace('< hp >', '<hp>').replace('<.hp>', '<hp>').replace('</ hp >', '</hp>'), *l),
+                                              (('<hp>', '</hp>'), ('```json', '```')))), ''))
+
+
+def extract_transform(txt):
+    return improve_code(next(filter(None, map(lambda l: extract_str(txt.replace('< tr >', '<tr>').replace('<.tr>', '<tr>').replace('</ tr >', '</tr>'),
+                                                                    *l),
+                                              (('<tr>', '</tr>'),))), ''))
 
 
 def copy_to_lemur(df, gen_nn_dir, name):
