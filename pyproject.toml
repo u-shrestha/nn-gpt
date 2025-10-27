@@ -6,19 +6,6 @@ build-backend = 'setuptools.build_meta'
 name = 'nn-gpt'
 dynamic = ['version', 'dependencies']
 description = 'LLM-Based Neural Network Generator'
-long-description = """
-NNGPT is a Python package that facilitates the automatic generation of neural network code using large language models. It allows users to define neural network architectures through natural language prompts, which are then converted into executable Python code. This tool aims to streamline the process of neural network design, making it more accessible and efficient.
-
-Key features include:
-- Natural language interface for defining neural network architectures.
-- Automatic generation of Python code for neural networks.
-- Support for various neural network layers and configurations.
-- Integration with existing Python machine learning frameworks.
-
-This project is designed to assist researchers and developers in quickly prototyping neural network models by leveraging the capabilities of large language models for code generation.
-"""
-long-description-content-type = 'text/markdown'
-
 readme = { file = 'README.md', content-type = 'text/markdown' }
 license = { file = "LICENSE" }
 requires-python = '>=3.10'
