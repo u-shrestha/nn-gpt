@@ -46,4 +46,4 @@ include-package-data = true
 [project.optional-dependencies]
 flash = ['flash_attn']
 stat = ['nn-stat']
-rag = ['nn-rag>=2.0.0']
+rag = ['nn-rag>=2.1.1']
