@@ -104,7 +104,7 @@ The original version of this project was created at the Computer Vision Laborato
 
 @article{ABrain.NNGPT,
   title        = {NNGPT: Rethinking AutoML with Large Language Models},
-  author       = {Kochnev, Roman and Khalid, Waleed and Uzun, Tolgay Atinc and Zhang, Xi and Dhameliya, Yashkumar Sanjaybhai and Qin, Furui and Ignatov, Dmitry and Timofte, Radu},
+  author       = {Kochnev, Roman and Khalid, Waleed and Uzun, Tolgay Atinc and Zhang, Xi and Dhameliya, Yashkumar Sanjaybhai and Qin, Furui and Vysyaraju, Chandini and Duvvuri, Raghuvir and Goyal, Avi and Ignatov, Dmitry and Timofte, Radu},
   journal={arXiv preprint},
   year         = {2025}
 }
