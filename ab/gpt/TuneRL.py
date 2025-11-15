@@ -16,7 +16,7 @@ import ab.nn.api as api
 import json
 import os
 
-from simple_logger import SimpleCodeLogger
+from ab.gpt.util.simple_logger import SimpleCodeLogger
 
 code_logger = SimpleCodeLogger("rl_output")
 
