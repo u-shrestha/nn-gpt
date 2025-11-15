@@ -21,22 +21,25 @@ TASK_TYPE = "CAUSAL_LM"
 BiasType = Literal["none", "all", "lora_only"]
 BIAS: BiasType = "none"
 
-LEARNING_RATE = 2e-4
+LEARNING_RATE = 1e-5
 
 PEFT = None
 SKIP_EPOCHES = -1
 
+NUM_TRAIN_EPOCHS = 35
+LR_SCHEDULER = 'cosine'
 PER_DEVICE_TRAIN_BATCH_SIZE = 1
 GRADIENT_ACCUMULATION_STEPS = 4
-WARMUP_STEPS = 2
+WARMUP_STEPS = 512
 TEST_NN = 10
-LOGGING_STEPS = 1
-OPTIMIZER = 'paged_adamw_8bit'
+LOGGING_STEPS = 128
+MAX_GRAD_NORM = 1.0
+OPTIMIZER = 'paged_adamw_8bit'  # 'adamw_torch'
 LLM_TUNE_CONF = 'NN_gen.json'
 NN_GEN_CONF = 'NN_gen.json'
 NN_GEN_CONF_ID = 'improve_classification_only'
 LLM_CONF = 'ds_coder_7b_olympic.json'
-MAX_PROMPTS = 4 * 1024 # temporarily decreased until a quick SQL request of data for LLM fine-tuning is provided
+MAX_PROMPTS = 4 * 1024
 MAX_NEW_TOKENS = 16 * 1024
 SAVE_LLM_OUTPUT = True
 USE_DEEPSPEED = False
@@ -44,23 +47,37 @@ NN_NAME_PREFIX = None
 TEMPERATURE = 0.8
 TOP_K = 70
 TOP_P = 0.9
+TEST_METRIC = None  # 'bleu'
 
-def main(tune_layers=TUNE_LAYERS, r=R, lora_alpha=LORA_ALPHA, lora_dropout=LORA_DROPOUT, target_modules=TARGET_MODULES,
+
+def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_norm=MAX_GRAD_NORM, test_metric=TEST_METRIC,
+         tune_layers=TUNE_LAYERS, r=R, lora_alpha=LORA_ALPHA, lora_dropout=LORA_DROPOUT, target_modules=TARGET_MODULES,
          task_type=TASK_TYPE, bias=BIAS, learning_rate=LEARNING_RATE, llm_tune_conf=LLM_TUNE_CONF, nn_gen_conf=NN_GEN_CONF, nn_gen_conf_id=NN_GEN_CONF_ID,
          llm_conf=LLM_CONF, test_nn=TEST_NN, peft=PEFT, skip_epoches=SKIP_EPOCHES, per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
          gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS, warmup_steps=WARMUP_STEPS, logging_steps=LOGGING_STEPS, optimizer=OPTIMIZER,
          max_prompts=MAX_PROMPTS, save_llm_output=SAVE_LLM_OUTPUT, max_new_tokens=MAX_NEW_TOKENS, use_deepspeed=USE_DEEPSPEED, nn_name_prefix=NN_NAME_PREFIX,
          nn_train_epochs=NN_TRAIN_EPOCHS, temperature=TEMPERATURE, top_k=TOP_K, top_p=TOP_P):
     print(f'''All hyperparameters: 
-tune_layers={tune_layers}, r={r}, lora_alpha={lora_alpha}, lora_dropout={lora_dropout}, 
-target_modules={target_modules}, task_type={task_type}, bias={bias}, 
+num_train_epochs={num_train_epochs}, lr_scheduler={lr_scheduler}, max_grad_norm={max_grad_norm}, tune_layers={tune_layers}, test_metric={test_metric}, 
+r={r}, lora_alpha={lora_alpha}, lora_dropout={lora_dropout}, target_modules={target_modules}, task_type={task_type}, bias={bias}, 
 learning_rate={learning_rate}, llm_tune_conf={llm_tune_conf}, nn_gen_conf={nn_gen_conf}, nn_gen_conf_id={nn_gen_conf_id},
 llm_conf={llm_conf}, test_nn={test_nn}, nn_train_epochs={nn_train_epochs}, peft={peft}, skip_epoches={skip_epoches}, 
 per_device_train_batch_size={per_device_train_batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}, warmup_steps={warmup_steps}, 
 logging_steps={logging_steps}, optimizer={optimizer}, max_prompts={max_prompts}, save_llm_output={save_llm_output}, max_new_tokens={max_new_tokens}, 
 use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={temperature}, top_k={top_k}, top_p={top_p} ''')
+    test_prm = {
+        'metric_for_best_model': test_metric,
+        'greater_is_better': True,
+
+        'eval_strategy': "epoch",
+        'save_strategy': 'epoch',
+        'save_total_limit': 3,
+        'load_best_model_at_end': True} if test_metric else {}
 
     training_args = TrainingArguments(
+        num_train_epochs=num_train_epochs,
+        lr_scheduler_type=lr_scheduler,
+        max_grad_norm=max_grad_norm,
         report_to=None,
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -71,7 +88,8 @@ use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={tem
         output_dir=nngpt_dir / 'outputs',
         optim=optimizer,
         deepspeed=ds_conf if use_deepspeed else None,
-        gradient_checkpointing=True)
+        gradient_checkpointing=True,
+        **test_prm)
 
     peft_config = LoraConfig(
         r=r,
@@ -83,13 +101,19 @@ use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={tem
         task_type=task_type)
 
     tune(test_nn, nn_train_epochs, skip_epoches, peft, llm_tune_conf, nn_gen_conf, nn_gen_conf_id, llm_conf, training_args, peft_config,
-         max_prompts=max_prompts, save_llm_output=save_llm_output, max_new_tokens=max_new_tokens, nn_name_prefix=nn_name_prefix, 
-         temperature=temperature, top_k=top_k, top_p=top_p)
+         max_prompts=max_prompts, save_llm_output=save_llm_output, max_new_tokens=max_new_tokens, nn_name_prefix=nn_name_prefix,
+         temperature=temperature, top_k=top_k, top_p=top_p, test_metric=test_metric)
 
 
 if __name__ == '__main__':
     TARGET_MODULES_STR = ','.join(TARGET_MODULES)
     parser = argparse.ArgumentParser(description="Evaluate Neural Networks generated by NNAlter.py.")
+    parser.add_argument('-ne', '--num_train_epochs', type=int, default=NUM_TRAIN_EPOCHS,
+                        help=f"Number of LLM fine-tuning epochs (default: {NUM_TRAIN_EPOCHS}).")
+    parser.add_argument('-ls', '--lr_scheduler', type=str, default=LR_SCHEDULER,
+                        help=f"Name of learning rate scheduler for LLM fine-tuning (default: {LR_SCHEDULER}).")
+    parser.add_argument('-g', '--max_grad_norm', type=float, default=MAX_GRAD_NORM,
+                        help=f"Upper limit on the  backpropagation gradients for LLM fine-tuning (default: {MAX_GRAD_NORM}).")
     parser.add_argument('-s', '--start_layer', type=int, default=START_LAYER,
                         help=f"Index of the first fine-tuned layer in the LLM (default: {START_LAYER}).")
     parser.add_argument('-e', '--end_layer', type=int, default=END_LAYER,
@@ -142,16 +166,21 @@ if __name__ == '__main__':
                         help='Number of epoches to skip the neural network generation.')
     parser.add_argument('--peft', type=str, default=None, help='Path to saved LoRA layers.')
     parser.add_argument('--nn_name_prefix', type=str, default=NN_NAME_PREFIX,
-        help=f"Neural network name prefix (default: {NN_NAME_PREFIX}).")
+                        help=f"Neural network name prefix (default: {NN_NAME_PREFIX}).")
     parser.add_argument('--temperature', type=float, default=TEMPERATURE,
-        help=f"LLM temperature controls randomness in output generation (default: {TEMPERATURE}).")
+                        help=f"LLM temperature controls randomness in output generation (default: {TEMPERATURE}).")
     parser.add_argument('--top_k', type=str, default=TOP_K,
-        help=f"LLM top_k limits token selection in output generation (default: {TOP_K}).")
+                        help=f"LLM top_k limits token selection in output generation (default: {TOP_K}).")
     parser.add_argument('--top_p', type=str, default=TOP_P,
-        help=f"LLM top_p controls token diversity in output generation (default: {TOP_P}).")
+                        help=f"LLM top_p controls token diversity in output generation (default: {TOP_P}).")
+    parser.add_argument('--test_metric', type=str, default=TEST_METRIC,
+                        help=f"Test metric for LLM fine-tuning implemented in transformers package (default: {TEST_METRIC}).")
 
     args = parser.parse_args()
-    main(tune_layers=range(args.start_layer, args.end_layer),
+    main(num_train_epochs=args.num_train_epochs,
+         lr_scheduler=args.lr_scheduler,
+         max_grad_norm=args.max_grad_norm,
+         tune_layers=range(args.start_layer, args.end_layer),
          r=args.r,
          lora_alpha=args.lora_alpha,
          lora_dropout=args.lora_dropout,
