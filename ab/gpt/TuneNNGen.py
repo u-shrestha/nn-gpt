@@ -72,7 +72,7 @@ use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={tem
         'eval_strategy': "epoch",
         'save_strategy': 'epoch',
         'save_total_limit': 3,
-        'load_best_model_at_end': True} if test_metric else {}
+        'load_best_model_at_end': False} if test_metric else {}
 
     training_args = TrainingArguments(
         num_train_epochs=num_train_epochs,
