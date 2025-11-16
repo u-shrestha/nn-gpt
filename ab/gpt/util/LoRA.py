@@ -99,10 +99,8 @@ class LoRA:
     def train(self, dataset: Dataset, tokenizer, output_dir: str):
         self.peft_model.config.use_cache = False
         # Split The dataset
-        dataset = dataset.train_test_split(test_size=0.1)
-
-        train_dataset = dataset['train']
-        eval_dataset = dataset['test']
+        dataset = dataset.train_test_split(test_size=0.1) if self.test_metric else dataset
+        train_dataset, eval_dataset = [dataset['train'], dataset['test']] if self.test_metric else [dataset, None]
 
         # build the trainer
         print("Parameter configuration of the model")
@@ -114,7 +112,7 @@ class LoRA:
             eval_dataset=eval_dataset,
             args=self.training_args,
             data_collator=DataCollatorForLanguageModeling(self.tokenizer, pad_to_multiple_of=8, return_tensors="pt", mlm=False),
-            compute_metrics= Metrics(tokenizer).init_compute_metrics(self.test_metric)
+            compute_metrics=Metrics(tokenizer).init_compute_metrics(self.test_metric)
         )
 
         # verifying the datatypes before training
