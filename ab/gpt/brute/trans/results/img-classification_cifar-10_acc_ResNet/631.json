@@ -1,9 +1,0 @@
-{
-  "accuracy": 0.5792,
-  "batch": 64,
-  "duration": 11066601082,
-  "lr": 0.01,
-  "momentum": 0.9,
-  "transform": "RandomAutocontrast_30",
-  "uid": "25ba04decf74b57b257833039c889521"
-}

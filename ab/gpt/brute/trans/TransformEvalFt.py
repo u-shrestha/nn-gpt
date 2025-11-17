@@ -1,12 +1,13 @@
 import os
 import json
+import shutil
 import ab.nn.api as api
-
+from pathlib import Path  
+from ab.gpt.util.Const import nngpt_dir, epoch_dir, synth_dir, transformer_file, trans_dir
 
 
 # Configuration
-OUTPUT_DIR = "ab/gpt/brute/trans/result"
-TRANSFORM_DIR = "ab/gpt/brute/trans/out"
+
 TASK = "img-classification"
 DATASET = "cifar-10"
 METRIC = "acc"
@@ -18,6 +19,8 @@ DEFAULT_BATCH_SIZE = 64
 DEFAULT_DROPOUT = 0.2
 DEFAULT_MOMENTUM = 0.9
 
+OUTPUT_DIR = trans_dir/'result-gen'
+TRANSFORM_DIR = trans_dir/'out-gen'
 
 
 def get_best_model_from_db():
@@ -40,7 +43,7 @@ def get_best_model_from_db():
 
 
 
-def run_evaluations():
+def run_evaluations(epoch_num=None):
     """Run evaluations with all generated transforms"""
     
     best_model = get_best_model_from_db()
@@ -49,30 +52,57 @@ def run_evaluations():
     model_code = best_model['nn_code']
     model_name = best_model['nn'] 
     
+    # Iterate through all subdirs in the path from the image
+
+    base_search_dir = synth_dir(epoch_dir(epoch_num)) 
+   
     
-    # Iterate through all files in transform directory
-    if not os.path.exists(TRANSFORM_DIR):
-        raise ValueError(f"Transform directory {TRANSFORM_DIR} does not exist")
+    if not base_search_dir.exists():
+        raise ValueError(f"Base search directory {base_search_dir} does not exist")
+
+    # Find all subdirectories 
+    transform_dirs_to_run = []
+    for entry in os.scandir(base_search_dir):
+        if entry.is_dir():
+            # Check if tr.py exists inside
+            tr_file_path = Path(entry.path) / transformer_file 
+            if tr_file_path.exists():
+                # Add the B* directory path
+                transform_dirs_to_run.append(Path(entry.path)) 
     
-    transform_files = [f for f in os.listdir(TRANSFORM_DIR) if f.endswith('.py')]
+    if not transform_dirs_to_run:
+        raise ValueError(f"No directories containing {transformer_file} found in {base_search_dir}")
     
-    if not transform_files:
-        raise ValueError(f"No .py files found in {TRANSFORM_DIR}")
-    
-    print(f"Found {len(transform_files)} transform files to evaluate")
+    print(f"Found {len(transform_dirs_to_run)} transform directories to evaluate")
     
     counter = 1
-    for transform_file in transform_files:
-        # Extract transform name
-        transform_name = os.path.splitext(transform_file)[0]
-        print(f"\n[{counter}/{len(transform_files)}] Evaluating transform: {transform_name}")
+    # Loop through the found B directories
+    for b_dir_path in transform_dirs_to_run:
+        
+        # Use the directory name
+        eval_name = b_dir_path.name 
+        
+        # The transform parameter for the API
+        transform_param_name = Path(transformer_file).stem 
+        
+        current_transform_dir = b_dir_path
+
+        original_transform_file = b_dir_path / transformer_file
+        
+        # Copy transformer file
+        new_transform_file = TRANSFORM_DIR / f"A{epoch_num}{eval_name}.py" 
+        
+        shutil.copy(original_transform_file, new_transform_file)
+        
+        
+        print(f"\n[{counter}/{len(transform_dirs_to_run)}] Evaluating transform: {eval_name} (from {current_transform_dir})")
         
         base_prm = {
             'lr': DEFAULT_LR,
             'batch': DEFAULT_BATCH_SIZE,
             'dropout': DEFAULT_DROPOUT ,
             'momentum': DEFAULT_MOMENTUM,
-            'transform': 'norm_299_flip',
+            'transform': 'tr',
             'epoch': 1
         }
         
@@ -85,17 +115,17 @@ def run_evaluations():
                 metric=METRIC,
                 prm=base_prm,
                 save_to_db=False,
-                prefix=f"{model_name}_eval_{transform_name}",
-                save_path=OUTPUT_DIR
-                
+                prefix=f"{model_name}_eval_{eval_name}", # Use B* name
+                save_path=OUTPUT_DIR,
+                transform_dir=current_transform_dir # Pass the .../B0 directory
             )
             
             
             if result:
-                # Unpack results
-                result_model_name, accuracy, time_metric, _ = result
+                result_model_name, accuracy, time_metric, acc_time_ratio = result
                 
-                # Create result in specified format
+                print(f"  Result: Acc={accuracy}, Time={time_metric}, Acc/Time={acc_time_ratio}")
+
                 result_data = {
                     "accuracy": float(accuracy),
                     "time metric": time_metric,
@@ -103,35 +133,39 @@ def run_evaluations():
                     "duration": base_prm['duration'],
                     "lr": base_prm['lr'],
                     "momentum": base_prm['momentum'],
-                    "transform": transform_name,
+                    "transform": f"A{epoch_num}{eval_name}", 
+                    "prm": json.dumps(base_prm),
                     "uid": base_prm['uid']
                 }
                 
-                # Save to individual JSON file
-                result_file_path = os.path.join(OUTPUT_DIR, f"{transform_name}.json")
+                result_file_path = OUTPUT_DIR / f"A{epoch_num}{eval_name}.json" 
                 with open(result_file_path, 'w') as f:
                     json.dump(result_data, f, indent=2)
                 
                 print(f"  Accuracy: {accuracy:.4f} - Saved to {result_file_path}")
                 counter += 1
+                
 
         except Exception as e:
-            print(f"  Error evaluating {transform_name}: {str(e)}")
-            # Save error info in same format
+            print(f"  Error evaluating {eval_name}: {str(e)}")
             error_data = {
                 "accuracy": 0.0,
-                "batch": base_prm['batch'],
                 "duration": 0,
+                "time metric": 0.0,
+                "batch": base_prm['batch'],
                 "lr": base_prm['lr'],
                 "momentum": base_prm['momentum'],
-                "transform": transform_name,
+                "transform": eval_name,
+                "prm": json.dumps(base_prm),
                 "uid": "",
                 "error": str(e)
             }
-            result_file_path = os.path.join(OUTPUT_DIR, f"{transform_name}.json")
+    
+            result_file_path = os.path.join(OUTPUT_DIR, f"A{epoch_num}{eval_name}.json") 
             with open(result_file_path, 'w') as f:
                 json.dump(error_data, f, indent=2)
             counter += 1
+
 
     print(f"\nEvaluation completed. Results saved to {OUTPUT_DIR}")
     return OUTPUT_DIR

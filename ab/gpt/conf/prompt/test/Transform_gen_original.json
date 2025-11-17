@@ -1,0 +1,29 @@
+{
+  "improve_classification_only": {
+    "task": "img-classification",
+    "addon_task": null,
+    "input_list": [
+      {"para": "accuracy", "value": "accuracy"},
+      {"para": "transform_code", "value": "transform_code"}
+    ],
+    "addon_list": [
+      {"para": "addon_accuracy", "value": "accuracy"},
+      {"para": "addon_transform_code", "value": "transform_code"}
+    ],
+    "no_repeat": [],
+    "keep_same": [],
+    "prompt": [
+      "You are an expert image transformation generator.",
+      "Your task is to generate new image transformation code that will be evaluated on 'cifar-10' (task: 'img-classification') using fixed hyperparameters (1 epoch, 64 batch, 0.01 lr, 0.9 momentum).",
+      "Use common patterns and ideas from the following two reference transforms:",
+      "Reference 1 (Accuracy: {accuracy}):",
+      "<tr>{transform_code}</tr>",
+      "Reference 2 (Accuracy: {addon_accuracy}):",
+      "<tr>{addon_transform_code}</tr>",
+      "Respond with a new, high-performance transform.",
+      "Constraints:",
+      "- The Python function name MUST be 'transform'.",
+      "- Output only the <tr> XML tag containing the complete Python transform code, including all necessary imports."
+    ]
+  }
+}

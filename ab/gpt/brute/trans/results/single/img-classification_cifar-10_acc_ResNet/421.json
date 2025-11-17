@@ -1,9 +1,0 @@
-{
-  "accuracy": 0.3769,
-  "batch": 64,
-  "duration": 19303082232,
-  "lr": 0.01,
-  "momentum": 0.9,
-  "transform": "ColorJitter_5",
-  "uid": "afbf846fddf62dd28352018300e4285f"
-}

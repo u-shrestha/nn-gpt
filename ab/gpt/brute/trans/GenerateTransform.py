@@ -65,8 +65,6 @@ variable_transforms = [
     {
     'name': 'Grayscale',
     'params': lambda: {'num_output_channels': 3}  # Always output 3 channels
-    #'params': lambda: {'num_output_channels': random.choice([1, 3])}
-
     },
     {
     'name': 'RandomGrayscale',  
@@ -81,15 +79,6 @@ variable_transforms = [
             'p': round(random.uniform(0.1, 0.9), 2)
         }
     },
-    #{
-    #    'name': 'RandomErasing',
-    #    'params': lambda: {
-    #        'p': round(random.uniform(0.1, 0.9), 2),
-    #        'scale': (round(random.uniform(0.02, 0.2), 2), round(random.uniform(0.02, 0.2), 2)),
-    #        'ratio': (round(random.uniform(0.3, 3.3), 2), round(random.uniform(0.3, 3.3), 2)),
-    #        'value': random.choice(["'random'", "[0, 0, 0]"])  
-    #    }
-    #},
     {
         'name': 'GaussianBlur',
         'params': lambda: {
@@ -134,16 +123,16 @@ variable_transforms = [
 
 
 # Default settings
-OUTPUT_DIR = "ab/gpt/brute/trans/transform_files"
+OUTPUT_DIR = "ab/gpt/brute/trans/out"
 MAX_FILENAME_LENGTH = 250
 
 filename_counter = {}
 
 def generate_transform_file(transforms_list, directory):
     """
-    Generate a transform file with 1 or 2 transforms + fixed transforms.
+    Generate a transform file with 1, 2 or 3 transforms + fixed transforms.
     """
-    # Build base filename from transform names
+    # Build base filename from transform names (include all transforms in name)
     name_parts = [t['name'][:20] for t in transforms_list]
     base_name = '_'.join(name_parts)
     base_name = re.sub(r'[^a-zA-Z0-9_]', '', base_name)
@@ -156,12 +145,14 @@ def generate_transform_file(transforms_list, directory):
 
     # Generate transform code lines
     transform_lines = []
-    for vt in transforms_list:
+    
+    for i, vt in enumerate(transforms_list):
         name = vt['name']
         params = vt['params']()
         param_str = ', '.join([f"{k}={v}" for k, v in params.items()])
         transform_lines.append(f"transforms.{name}({param_str})")
-
+        
+        
     # Fixed transforms
     fixed_transforms = [
         'transforms.Resize((64,64))',
@@ -193,7 +184,7 @@ def transform(norm):
 
 def generate_files(transform_no, file_num, output_dir):
     """
-    Generate transform files with 1 or 2 transforms + fixed transforms.
+    Generate transform files with 1, 2 or 3 transforms + fixed transforms.
 
     Args:
         transform_no: Number of transforms
@@ -206,14 +197,15 @@ def generate_files(transform_no, file_num, output_dir):
         all_combinations = variable_transforms
     elif transform_no == 2:
         all_combinations = list(itertools.permutations(variable_transforms, 2))
+    elif transform_no == 3:
+        all_combinations = list(itertools.permutations(variable_transforms, 3))
     else:
-        raise ValueError("transform_no must be 1 or 2")
+        raise ValueError("transform_no must be 1, 2, or 3")
 
     # Create infinite cycle
     all_combinations_cycle = itertools.cycle(all_combinations)
 
-
-    # Clear all files in the directory
+     # Clear all files in the directory
     if os.path.exists(output_dir):
         for filename in os.listdir(output_dir):
             file_path = os.path.join(output_dir, filename)
@@ -224,6 +216,7 @@ def generate_files(transform_no, file_num, output_dir):
     else:
         os.makedirs(output_dir, exist_ok=True)
 
+
     # Generate files
     for _ in range(file_num):
         transforms_list = next(all_combinations_cycle)
@@ -232,16 +225,14 @@ def generate_files(transform_no, file_num, output_dir):
         generate_transform_file(transforms_list, output_dir)
 
 
-
-
 def main():
     parser = argparse.ArgumentParser(description="Generate transform files")
     parser.add_argument(
-        '-t', '--transform_no', type=int, default=1,
-        help= "Number of transforms per file (1 or 2)"
+        '-t', '--transform_no', type=int, default=3,
+        help= "Number of transforms per file (1, 2, or 3)"
     )
     parser.add_argument(
-        '-n', '--file_num', type=int, default=20,
+        '-n', '--file_num', type=int, default=2000,
         help=f"Number of files to generate"
     )
     parser.add_argument(

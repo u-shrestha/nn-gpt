@@ -1,0 +1,51 @@
+{
+  "improve_classification_only": {
+    "type": "change_parameters",
+    "is_generation": false,
+    "task": null,
+    "addon_task": null,
+    "input_list": [
+      {"para": "accuracy", "value": "accuracy"},
+      {"para": "transform_code", "value": "transform_code"},
+      {"para": "transform_name", "value": "transform"},
+      {"para": "batch", "value": "batch"},
+      {"para": "lr", "value": "lr"},
+      {"para": "momentum", "value": "momentum"},
+      {"para": "prm", "value": "prm"}
+    ],
+    "addon_list": [
+      {"para": "addon_accuracy", "value": "accuracy"},
+      {"para": "addon_transform_code", "value": "transform_code"},
+      {"para": "addon_transform_name", "value": "transform"},
+      {"para": "addon_batch", "value": "batch"},
+      {"para": "addon_lr", "value": "lr"},
+      {"para": "addon_momentum", "value": "momentum"},
+      {"para": "addon_prm", "value": "prm"}
+    ],
+    "no_repeat": ["transform_code"],
+    "keep_same": ["epoch", "metric", "dataset", "task"],
+    "improve": true,
+    "same_pref": true,
+    "prompt": [
+      "You are an image transformation generator.",
+      "Your task is to generate a LEMUR Dataset improved image transformation that increases the 'accuracy' metric value to at least {addon_accuracy} at training epoch 1 on the 'cifar-10' dataset for an 'img-classification' task.",
+      "Use the following reference image transformation, which achieved an accuracy of {accuracy} with batch {batch}, lr {lr}, and momentum {momentum} under identical evaluation conditions (dataset and task), as the baseline for transformation design inspiration. Improve upon it through principled data augmentation and preprocessing techniques.",
+      "Respond with:",
+      "1. A <hp> XML tag containing the training hyperparameters in valid JSON format.",
+      "2. A <tr> XML tag containing the corresponding data transform code, ready to be used on the LEMUR dataset.",
+      "3. Use any appropriate transformers available in 'torchvision' package, or your custom implementations.",
+      "Constraints:",
+      "- Make any changes to function that lead to improved performance.",
+      "-Do not change the function name 'transform",
+      "- Output only the XML tags <hp> and <tr> with their corresponding contents — no additional explanation or text.",
+      "Baseline code:",
+      "<hp>{prm}</hp>",
+      "<tr>{transform_code}</tr>"
+    ],
+    "output": [
+    
+      "<tr>{addon_transform_code}</tr>"
+    ]
+  }
+  
+}

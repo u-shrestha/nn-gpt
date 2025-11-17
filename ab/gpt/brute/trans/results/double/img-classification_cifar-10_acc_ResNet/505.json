@@ -1,9 +1,0 @@
-{
-  "accuracy": 0.5608,
-  "batch": 64,
-  "duration": 16708240418,
-  "lr": 0.01,
-  "momentum": 0.9,
-  "transform": "RandomPerspective_RandomAutocontrast_2",
-  "uid": "520ac860bab746bc72c231edffe08f09"
-}

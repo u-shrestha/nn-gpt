@@ -1,9 +1,0 @@
-{
-  "accuracy": 0.5364,
-  "batch": 64,
-  "duration": 10208276951,
-  "lr": 0.01,
-  "momentum": 0.9,
-  "transform": "RandomSolarize_CenterCrop",
-  "uid": "eb032942059b78af8d6f275fb4cdb595"
-}

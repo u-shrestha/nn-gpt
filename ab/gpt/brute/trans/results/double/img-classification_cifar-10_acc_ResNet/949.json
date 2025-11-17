@@ -1,9 +1,0 @@
-{
-  "accuracy": 0.5148,
-  "batch": 64,
-  "duration": 22713131287,
-  "lr": 0.01,
-  "momentum": 0.9,
-  "transform": "CenterCrop_GaussianBlur_3",
-  "uid": "367f8fe847be59b22cf01f803df1c175"
-}

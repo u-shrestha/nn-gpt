@@ -1,9 +1,0 @@
-{
-  "accuracy": 0.4946,
-  "batch": 64,
-  "duration": 19934723344,
-  "lr": 0.01,
-  "momentum": 0.9,
-  "transform": "RandomInvert_RandomPerspective",
-  "uid": "2464e05010298e0053dd041d5940c8ed"
-}
