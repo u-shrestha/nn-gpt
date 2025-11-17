@@ -110,7 +110,7 @@ def compute_reward(prompts, completions, **kwargs):
             code_logger.log_to_file(f"Reward calculation failed: {e}")
             score = 0.0
             code_logger.log_generation(prompt, completion, score, None)
-            
+
         rewards.append(score)
     return rewards
 # """Below is a partial PyTorch neural network with masked layers:
@@ -169,28 +169,28 @@ def load_rl_dataset(tokenizer):
     """
     data = api.data(only_best_accuracy=True, task='img-classification', dataset='cifar-10')
     print(f"Loaded {len(data)} high-quality NN examples from API")
-    
+
     prompts = []
-    
+
     for idx, row in data.iterrows():
         nn_code = row.get('nn_code', '')
         if not nn_code:
             continue
-            
+
         masked_code, extracted_layers = mask_layer_definitions(nn_code)
-        
+
         user_prompt = PROMPT_TEMPLATE.format(masked_code=masked_code)
-        
+
         messages = [
             {"role": "user", "content": user_prompt}
         ]
-        
+
         prompt_str = tokenizer.apply_chat_template(
-            messages, 
-            add_generation_prompt=True,   
-            tokenize=False                
+            messages,
+            add_generation_prompt=True,
+            tokenize=False
         )
-        
+
         prompts.append({
             "prompt": prompt_str,
             "original_code": nn_code,
@@ -199,11 +199,11 @@ def load_rl_dataset(tokenizer):
             "dataset": row.get('dataset', ''),
             "metric": row.get('metric', {}),
         })
-    
+
     from datasets import Dataset
     rl_dataset = Dataset.from_list(prompts)
     rl_dataset = rl_dataset.shuffle(seed=42)
-    
+
     print(f"Created RL dataset with {len(rl_dataset)} examples")
     return rl_dataset
 
@@ -217,10 +217,10 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    
+
     # Load RL dataset
     rl_dataset = load_rl_dataset(tokenizer).select(range(500))
-    
+
     # Load model
     model = AutoModelForCausalLM.from_pretrained(
             base_model,
@@ -228,7 +228,7 @@ def main():
             torch_dtype=torch.float16,
             device_map="auto",
         )
-    
+
     # Check whether to load saved model
     if LOAD_EXISTING_MODEL and os.path.exists(SAVED_MODEL_PATH):
         print(f"Loading existing model from {SAVED_MODEL_PATH}...")
@@ -236,7 +236,7 @@ def main():
         print("Existing model loaded successfully!")
     
     peft_config = LoraConfig(
-        r=8, 
+        r=8,
         lora_alpha=16,
         target_modules=["q_proj","k_proj","v_proj","o_proj"],
         lora_dropout=0.05, 
@@ -272,7 +272,7 @@ def main():
             "do_sample": True,
             "top_p": 0.95,              
             "top_k": 50,               
-            "temperature": 0.7,        
+            "temperature": 0.7,
             "repetition_penalty": 1.1,  
             "eos_token_id": tokenizer.eos_token_id,
             "pad_token_id": tokenizer.pad_token_id,
@@ -293,7 +293,7 @@ def main():
     # print("RL training completed!")
     # # Save logs and successful codes to rl_output directory
     # code_logger.save_log()
-    # # code_logger.export_success_codes()  
+    # # code_logger.export_success_codes()
     
     # print(f"Saving model to {SAVED_MODEL_PATH}...")
     # model.save_pretrained(SAVED_MODEL_PATH)
