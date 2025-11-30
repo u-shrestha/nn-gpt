@@ -106,7 +106,7 @@ The original version of this project was created at the Computer Vision Laborato
 	title={Optuna vs Code Llama: Are LLMs a New Paradigm for Hyperparameter Tuning?},
 	author={Kochnev, Roman and Goodarzi, Arash Torabi and Bentyn, Zofia Antonina and Ignatov, Dmitry and Timofte, Radu},
 	booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision Workshops (ICCVW)},
-   pages = {5664--5674}
+	pages = {5664--5674},
 	year={2025}
 }
 ```
