@@ -141,6 +141,11 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
                 # Crucial: set training epochs for this evaluation from nn_train_epochs
                 # This overrides any 'epoch' value that might have come from original_prm_from_df
                 prm['epoch'] = nn_train_epochs
+                
+                # Ensure transform is never None (must be a valid string for ab.nn.transform module)
+                if prm.get('transform') is None or not isinstance(prm.get('transform'), str):
+                    prm['transform'] = transform if transform else TRANSFORM
+                
                 print(f"  Final parameters for Eval: {prm}")
                 print(f"  Task: {task}, Dataset: {dataset}, Metric: {metric}, Prefix: {prefix_for_db}")
 
