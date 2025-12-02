@@ -343,14 +343,14 @@ def main(
         train_data_dir: Folder with NN_Rag_gen_train.jsonl for novelty check
         save_failures: Save failure code blocks (default: True)
         force_valid_structure: Use prefix_code to enforce NNEval structure (default: True)
-        prompt_template: Prompt template config file in conf/prompt/ (default: unique_rag_test_rules.json)
+        prompt_template: Prompt template config file in conf/prompt/test/ (default: unique_rag_test_rules.json)
     """
     # Set device if not provided
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Load prompt template from config
-    prompt_config_path = conf_prompt_dir / prompt_template
+    prompt_config_path = conf_test_dir / prompt_template
     prompt_tmpl = load_prompt_template(prompt_config_path)
     print(f"[INFO] Loaded prompt template from: {prompt_config_path}")
 
