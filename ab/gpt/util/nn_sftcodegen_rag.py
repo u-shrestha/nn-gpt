@@ -350,7 +350,7 @@ def main(
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Load prompt template from config
-    prompt_config_path = conf_prompt_dir / prompt_template
+    prompt_config_path = conf_test_dir / prompt_template
     prompt_tmpl = load_prompt_template(prompt_config_path)
     print(f"[INFO] Loaded prompt template from: {prompt_config_path}")
 

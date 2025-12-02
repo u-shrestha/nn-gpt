@@ -11,7 +11,7 @@ def main() -> None:
     parser.add_argument("-n", "--max_items", type=int, default=300, 
                         help="Max items from NN_Rag_gen_test.jsonl (default: 300)")
     parser.add_argument("-p", "--prompt_template", type=str, default="unique_rag_test_rules.json",
-                        help="Prompt template in conf/prompt/ (default: unique_rag_test_rules.json)")
+                        help="Prompt template in conf/prompt/test/ (default: unique_rag_test_rules.json)")
     parser.add_argument("--temperature", type=float, default=0.20, 
                         help="Generation temperature (default: 0.20)")
     parser.add_argument("--no_rejection_sampling", action="store_true",
