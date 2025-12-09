@@ -35,6 +35,8 @@ from ab.gpt.iterative_pipeline.gpu_memory_manager import (
     ensure_gpu_memory, clear_gpu_cache, get_gpu_memory_info, check_gpu_memory,
     kill_gpu_processes
 )
+from ab.dup.preprocessing import curate_from_lemur
+from ab.chatprep.prompt_builder import ChatPrepConfig
 
 # Setup logging - will be configured after output_dir is known
 logger = logging.getLogger(__name__)
@@ -190,9 +192,6 @@ class IterativeFinetuner:
         logger.info(f"Target: {curation_chat_data}")
         
         try:
-            from ab.dup.preprocessing import curate_from_lemur
-            from ab.chatprep.prompt_builder import ChatPrepConfig
-            
             # Step 1: Curate from LEMUR
             logger.info("Step 1: Curating models from LEMUR...")
             curate_result = curate_from_lemur()
