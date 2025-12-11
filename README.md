@@ -12,13 +12,13 @@ This Python-based <a href='https://github.com/ABrain-One/nn-gpt'>NNGPT</a> proje
 ## Create and Activate a Virtual Environment (recommended)
 For Linux/Mac:
    ```bash
-   python3 -m venv .venv
+   python -m venv .venv
    source .venv/bin/activate
    python -m pip install --upgrade pip
    ```
 For Windows:
    ```bash
-   python3 -m venv .venv
+   python -m venv .venv
    .venv\Scripts\activate
    python -m pip install -- pip
    ```
