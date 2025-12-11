@@ -20,7 +20,7 @@ For Windows:
    ```bash
    python -m venv .venv
    .venv\Scripts\activate
-   python -m pip install -- pip
+   python -m pip install --upgrade pip
    ```
 
 It is assumed that CUDA 12.6 is installed; otherwise, consider replacing 'cu126' with the appropriate version. Most LLM usage scenarios require GPUs with at least 24 GB of memory.
