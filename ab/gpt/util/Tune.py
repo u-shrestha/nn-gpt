@@ -434,20 +434,22 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
     prompts = []
     for key in conf_keys:
         prompt = ''
-        for pr in prompt_dict[key]['prompt']:
+        prompt_dict = prompt_dict[key]
+        for pr in prompt_dict['prompt']:
             prompt += pr + '\n'
         # Get nn-dataset codes
-        data = lemur.data(only_best_accuracy=True, task=prompt_dict[key]['task']).groupby(by='nn').sample(n=1)[:test_nn]
+        data = lemur.data(only_best_accuracy=True, task=prompt_dict['task']).groupby(by='nn').sample(n=1)[:test_nn]
         # Get addon nn-dataset codes
-        addon_data = lemur.data(only_best_accuracy=True, task=prompt_dict[key]['addon_task'])
+        addon_data = lemur.data(only_best_accuracy=True, task=prompt_dict['addon_task'])
         for _, row in data.iterrows():
             para_dict = dict()
-            for it in prompt_dict[key]['input_list']:
+            for it in prompt_dict['input_list']:
                 para_dict[it['para']] = row[it['value']]
             ## Avoid sampling the same nn_code
             addon_row = addon_data.loc[addon_data.nn != row['nn']].sample(n=1).iloc[0]
-            for it in prompt_dict[key]['addon_list']:
-                para_dict[it['para']] = addon_row[it['value']]
+            if prompt_dict.get('addon_list'):
+                for it in prompt_dict['addon_list']:
+                    para_dict[it['para']] = addon_row[it['value']]
             prompts.append((prompt.format(**para_dict), row))
     # produce new CV models
     models_dir = synth_dir(out_path)
