@@ -12,15 +12,15 @@ This Python-based <a href='https://github.com/ABrain-One/nn-gpt'>NNGPT</a> proje
 ## Create and Activate a Virtual Environment (recommended)
 For Linux/Mac:
    ```bash
-   python -m venv .venv
+   python3 -m venv .venv
    source .venv/bin/activate
-   python -m pip install --upgrade pip
+   python3 -m pip install --upgrade pip
    ```
 For Windows:
    ```bash
-   python -m venv .venv
+   python3 -m venv .venv
    .venv\Scripts\activate
-   python -m pip install --upgrade pip
+   python3 -m pip install --upgrade pip
    ```
 
 It is assumed that CUDA 12.6 is installed; otherwise, consider replacing 'cu126' with the appropriate version. Most LLM usage scenarios require GPUs with at least 24 GB of memory.
