@@ -166,7 +166,18 @@ def load_model_and_tokenizer(
     load_in_4bit: bool = True,
     dtype: torch.dtype = torch.bfloat16,
     hf_token: Optional[str] = None,
+    peft_checkpoint: Optional[str] = None,
 ):
+    """
+    Load model and tokenizer, optionally with PEFT adapters.
+    
+    Args:
+        base_model: Base model name or path
+        load_in_4bit: Whether to load in 4-bit quantization
+        dtype: Data type for model
+        hf_token: Hugging Face token
+        peft_checkpoint: Optional path to PEFT checkpoint (if provided, will load adapters)
+    """
     bnb_cfg = BitsAndBytesConfig(
         load_in_4bit=load_in_4bit,
         bnb_4bit_quant_type="nf4",
@@ -182,6 +193,18 @@ def load_model_and_tokenizer(
         torch_dtype=dtype,
         quantization_config=bnb_cfg,
     )
+    
+    # Load PEFT adapters if checkpoint is provided
+    if peft_checkpoint:
+        try:
+            from peft import PeftModel
+            print(f"[INFO] Loading PEFT adapters from: {peft_checkpoint}")
+            mdl = PeftModel.from_pretrained(mdl, peft_checkpoint, is_trainable=False)
+            print(f"[INFO] PEFT adapters loaded successfully")
+        except Exception as e:
+            print(f"[WARN] Failed to load PEFT adapters from {peft_checkpoint}: {e}")
+            print(f"[WARN] Continuing with base model only")
+    
     return mdl, tok
 
 
@@ -363,16 +386,20 @@ def main(
     prompt_tmpl = load_prompt_template(prompt_config_path)
     print(f"[INFO] Loaded prompt template from: {prompt_config_path}")
 
-    # Set up model directory structure compatible with NNEval.py
-    current_epoch_path = epoch_dir(epoch)
-    models_base_dir = synth_dir(current_epoch_path)
-    models_base_dir.mkdir(parents=True, exist_ok=True)
-
-    # Output directory for results/summary
+    # Set up model directory structure
+    # If output_dir is provided (pipeline mode), use it for both models and results
+    # Otherwise use default epoch structure (standalone mode)
     if output_dir:
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # Pipeline mode: save models to output_dir/accepted_code
+        models_base_dir = out_dir / "accepted_code"
+        models_base_dir.mkdir(parents=True, exist_ok=True)
     else:
+        # Standalone mode: use traditional epoch structure
+        current_epoch_path = epoch_dir(epoch)
+        models_base_dir = synth_dir(current_epoch_path)
+        models_base_dir.mkdir(parents=True, exist_ok=True)
         out_dir = current_epoch_path
 
     # Output subdirs
@@ -410,13 +437,20 @@ def main(
         print(f"[INFO] Using explicitly provided base_model: {base_model}")
 
     # Load data
+    # Priority: 1) data_dir/test.jsonl (pipeline mode with cycle data)
+    #           2) data_dir/NN_Rag_gen_test.jsonl (backward compatibility)
+    #           3) conf_test_dir/NN_Rag_gen_test.jsonl (standalone/Sft_Rag.py mode)
     if data_dir:
-        test_path = Path(data_dir) / "NN_Rag_gen_test.jsonl"
+        test_path = Path(data_dir) / "test.jsonl"
+        if not test_path.exists():
+            # Fallback to old naming convention
+            test_path = Path(data_dir) / "NN_Rag_gen_test.jsonl"
     else:
         test_path = conf_test_dir / "NN_Rag_gen_test.jsonl"
 
     if not test_path.exists():
-        print(f"[ERROR] NN_Rag_gen_test.jsonl not found at {test_path}")
+        print(f"[ERROR] Test data not found at {test_path}")
+        print(f"[INFO] Expected: test.jsonl or NN_Rag_gen_test.jsonl in {Path(data_dir) if data_dir else conf_test_dir}")
         sys.exit(1)
 
     rows = load_jsonl(test_path)
@@ -426,12 +460,55 @@ def main(
     num_prompts = min(max_items, len(rows))
     total_targets = num_prompts * samples_per_prompt
 
-    # Load model and tokenizer (base model only, no adapters)
+    # Check if base_model is actually a PEFT checkpoint directory
+    # (In pipeline mode, checkpoint_path is passed as base_model)
+    # (In standalone mode via Sft_Rag.py, base_model is a HuggingFace model name from config)
+    peft_checkpoint = None
+    base_model_name = base_model
+    
+    # Check if the path looks like a PEFT checkpoint (has adapter_config.json)
+    # Note: HuggingFace model names (e.g., "deepseek-ai/deepseek-coder-1.3b") won't exist as paths,
+    # so this check only runs for local file paths (pipeline mode with checkpoints)
+    checkpoint_path = Path(base_model)
+    if checkpoint_path.exists() and (checkpoint_path / "adapter_config.json").exists():
+        # This is a PEFT checkpoint - need to load base model first, then adapters
+        print(f"[INFO] Detected PEFT checkpoint at: {base_model}")
+        
+        # Try to get base model name from adapter config
+        try:
+            adapter_config = json.loads((checkpoint_path / "adapter_config.json").read_text())
+            base_model_name = adapter_config.get("base_model_name_or_path")
+            if not base_model_name:
+                # Fallback: try to get from config.json if it exists
+                config_path = checkpoint_path / "config.json"
+                if config_path.exists():
+                    config = json.loads(config_path.read_text())
+                    base_model_name = config.get("_name_or_path") or config.get("base_model_name_or_path")
+            
+            if base_model_name:
+                print(f"[INFO] Base model from adapter config: {base_model_name}")
+            else:
+                raise ValueError("Could not determine base model name from checkpoint")
+        except Exception as e:
+            print(f"[ERROR] Could not read adapter config: {e}")
+            print(f"[ERROR] Cannot load PEFT checkpoint without base model name")
+            raise ValueError(f"Failed to determine base model from PEFT checkpoint: {e}")
+        
+        peft_checkpoint = str(checkpoint_path)
+        print(f"[INFO] Will load PEFT adapters from: {peft_checkpoint}")
+    elif checkpoint_path.exists():
+        # Path exists but doesn't have adapter_config.json - might be a regular model directory
+        # or a non-PEFT checkpoint. Just use it as-is (will load as base model).
+        print(f"[INFO] Using provided path as base model: {base_model}")
+        print(f"[INFO] (Not a PEFT checkpoint - no adapter_config.json found)")
+    
+    # Load model and tokenizer (with PEFT adapters if checkpoint detected)
     model, tokenizer = load_model_and_tokenizer(
-        base_model,
+        base_model_name,
         load_in_4bit=load_in_4bit,
         dtype=torch.bfloat16,
         hf_token=hf_token,
+        peft_checkpoint=peft_checkpoint,
     )
     model.eval()
     device_obj = torch.device(device)
@@ -458,12 +535,16 @@ def main(
             else:
                 tdir = conf_prompt_dir / "train"  # Default: conf/prompt/train/
 
-            tpath = tdir / "NN_Rag_gen_train.jsonl"
+            # Try train.jsonl first (pipeline mode), then NN_Rag_gen_train.jsonl (standalone mode)
+            tpath = tdir / "train.jsonl"
+            if not tpath.exists():
+                tpath = tdir / "NN_Rag_gen_train.jsonl"
+            
             if tpath.exists():
                 print(f"[NOVELTY] indexing text MinHash on {tpath} (τ={near_dup_threshold}) ...")
                 text_lsh, text_id2mh = build_train_lsh(tpath, threshold=near_dup_threshold)
             else:
-                print(f"[NOVELTY] WARNING: {tpath} not found; text novelty vs train disabled.")
+                print(f"[NOVELTY] WARNING: train.jsonl or NN_Rag_gen_train.jsonl not found in {tdir}; text novelty vs train disabled.")
                 text_lsh = None
 
     # For intra-run novelty among generated models
