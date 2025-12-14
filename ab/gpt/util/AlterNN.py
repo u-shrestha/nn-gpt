@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import torch
 
 import ab.nn.api as nn_dataset
 from ab.nn.util.Util import create_file
@@ -111,9 +112,21 @@ def alter(epochs, test_conf, llm_name, gguf_file=None, n=1, temperature=0.6, top
             model_dir = synth_dir(out_path) / f"B{B_index}"
             code_file = model_dir / new_nn_file
             df_file = model_dir / 'dataframe.df'
-            inputs = tokenizer.apply_chat_template([{'role': 'user', 'content': prompt}, ], add_generation_prompt=True, return_tensors="pt").to(model.device)
+            inputs = tokenizer.apply_chat_template([{'role': 'user', 'content': prompt}, ], add_generation_prompt=True, return_tensors="pt")
+            # Handle both tensor and BatchEncoding return types
+            if hasattr(inputs, 'input_ids'):
+                inputs = inputs.input_ids.to(model.device)
+            else:
+                inputs = inputs.to(model.device)
+            # Skip prompts that are too long to avoid O(n²) attention OOM
+            _MAX_SEQ_LEN = 4096  # Safe max for 24GB GPU with eager attention
+            if inputs.shape[-1] > _MAX_SEQ_LEN:
+                print(f"[INFO] Skipping prompt {idx}: input length {inputs.shape[-1]} > {_MAX_SEQ_LEN}")
+                continue
             # tokenizer.eos_token_id is the id of <｜end▁of▁sentence｜>  token
-            outputs = model.generate(inputs, max_new_tokens=64 * 1024, do_sample=True, temperature=temperature, top_k=top_k, top_p=0.95, num_return_sequences=1,
+            with torch.no_grad():
+                model.eval()
+                outputs = model.generate(inputs, max_new_tokens=8*1024, do_sample=True, temperature=temperature, top_k=top_k, top_p=0.95, num_return_sequences=1,
                                      eos_token_id=tokenizer.eos_token_id)
             out = tokenizer.decode(outputs[0][len(inputs[0]):], skip_special_tokens=True)
             print("Response Available!")

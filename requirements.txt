@@ -1,5 +1,5 @@
 wheel
-torch==2.8.0
+torch==2.9.0
 nn-dataset>=2.1.2
 bitsandbytes>=0.45.0
 peft>=0.14.0
@@ -9,4 +9,6 @@ sentence-transformers>=3.3.1
 faiss-cpu
 overrides>=7.7.0
 datasketch # to check code novelty
-matplotlib
+triton==3.5.0
+kernels
+transformers @ git+https://github.com/huggingface/transformers.git@main
