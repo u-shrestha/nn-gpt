@@ -6,3 +6,6 @@ db/ab.nn.db-journal
 out/
 data/
 .vscode/settings.json
+curation_output/
+iterative_pipeline.log
+.gitignore
