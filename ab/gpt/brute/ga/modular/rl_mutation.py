@@ -28,6 +28,25 @@ PROMPTS = {
         "You are an expert. Review this code for any potential bugs or shape mismatches "
         "and fix them. Return the corrected code. Keep the class name 'Net'."
     ),
+    "fractal_expand": (
+        "You are an expert. The user wants to deepen this FractalNet. "
+        "Find a FractalBlock and increase its 'n_columns' by 1. "
+        "Ensure you import FractalBlock from modular.fractalnet. "
+        "Keep the class name 'Net'."
+    ),
+    "fractal_prune": (
+        "You are an expert. The user wants to make this FractalNet more efficient. "
+        "Find a FractalBlock and decrease its 'n_columns' by 1 (min 1). "
+        "Ensure you import FractalBlock from modular.fractalnet. "
+        "Keep the class name 'Net'."
+    ),
+    "convert_to_fractal": (
+        "You are an expert. Convert this standard CNN into a FractalNet. "
+        "Replace the main convolutional layers with a 'FractalBlock(n_columns=2, ...)' "
+        "Define 'base_module_fn' to return the original Conv layer. "
+        "Ensure you import FractalBlock from modular.fractalnet. "
+        "Keep the class name 'Net'."
+    ),
     "fractal_expand_depth": (
         "You are an expert. Increase the 'recursion_depth' variable in the Net class "
         "to make the FractalNet deeper. Ensure you update the Chromosome comment to match."

@@ -199,7 +199,12 @@ def _train_steps(
             x = x.to(device)
             y = y.to(device)
             opt.zero_grad(set_to_none=True)
-            logits = model(x)
+            # FRACTAL SPEED HACK: Use shallowest path for training if available
+            if hasattr(model, 'forward_shallowest'):
+                logits = model.forward_shallowest(x)
+            else:
+                logits = model(x)
+                
             loss = criterion(logits, y)
             if torch.isnan(loss) or torch.isinf(loss):
                 return False
@@ -228,7 +233,12 @@ def _quick_validate_acc(
         correct, total, bs = 0, 0, 0
         for x, y in val_loader:
             x = x.to(device); y = y.to(device)
-            logits = model(x)                   
+            # FRACTAL SPEED HACK: Use shallowest path if available
+            if hasattr(model, 'forward_shallowest'):
+                logits = model.forward_shallowest(x)
+            else:
+                logits = model(x)
+                                   
             if logits.dim() != 2:
                 # raise RuntimeError(f"logits must be (N,C), got {tuple(logits.shape)}")
                 return 0.0
