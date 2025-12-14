@@ -27,6 +27,18 @@ PROMPTS = {
     "fix_bugs": (
         "You are an expert. Review this code for any potential bugs or shape mismatches "
         "and fix them. Return the corrected code. Keep the class name 'Net'."
+    ),
+    "fractal_expand_depth": (
+        "You are an expert. Increase the 'recursion_depth' variable in the Net class "
+        "to make the FractalNet deeper. Ensure you update the Chromosome comment to match."
+    ),
+    "fractal_reduce_depth": (
+        "You are an expert. Decrease the 'recursion_depth' variable in the Net class "
+        "to make the network shallower and faster. Ensure you update the Chromosome comment."
+    ),
+    "tune_fractal_hyperparams": (
+        "You are an expert. Adjust 'drop_path_prob' or 'dropout' in the Net class "
+        "to improve regularization. Update the Chromosome comment."
     )
 }
 

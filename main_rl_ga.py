@@ -25,7 +25,7 @@ def main():
     parser.add_argument("--generations", type=int, default=10, help="Number of generations")
     parser.add_argument("--pop_size", type=int, default=4, help="Population size")
     parser.add_argument("--mutation_rate", type=float, default=0.5, help="Mutation rate")
-    parser.add_argument("--seed_file", type=str, default="ab/gpt/brute/ga/modular/alexnet_mut.py", help="Path to seed code")
+    parser.add_argument("--seed_file", type=str, default="ab/gpt/brute/ga/modular/fractal_mut.py", help="Path to seed code")
     parser.add_argument("--model", type=str, default="deepseek-ai/deepseek-coder-6.7b-instruct", help="LLM Model path")
     args = parser.parse_args()
 
