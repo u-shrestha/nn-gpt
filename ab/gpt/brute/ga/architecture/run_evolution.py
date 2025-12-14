@@ -23,7 +23,7 @@ BATCH_SIZE = 128
 NUM_EPOCHS_PER_EVAL = 5
 
 ARCHITECTURE_SAVE_DIR = os.path.join(os.path.dirname(__file__), 'nn')
-STATS_SAVE_DIR = os.path.join(os.path.dirname(__file__), 'stat')
+STATS_SAVE_DIR = os.path.join(os.path.dirname(__file__), 'train')
 CHAMPION_SAVE_PATH = os.path.join(os.path.dirname(__file__), 'ga-champ.py')
 os.makedirs(ARCHITECTURE_SAVE_DIR, exist_ok=True)
 os.makedirs(STATS_SAVE_DIR, exist_ok=True)
