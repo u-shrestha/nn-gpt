@@ -153,13 +153,5 @@ class LLM:
         return self.tokenizer
 
     def get_max_length(self) -> int:
-        if self.context_length:
-            return self.context_length
-        for length_setting in ["n_positions", "max_position_embeddings", "seq_length"]:
-            max_length = getattr(self.model.config, length_setting, None)
-            if max_length:
-                break
-        if not max_length:
-            max_length = 4096
-        return max_length
+        return 4096
 
