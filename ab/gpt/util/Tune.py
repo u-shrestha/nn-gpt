@@ -13,7 +13,14 @@ from tqdm import tqdm
 import ab.gpt.NNEval as NNEval
 from ab.gpt.util.Chatbot import ChatBot
 from ab.gpt.util.Const import *
-from ab.gpt.util.LLM import LLM
+
+# --- START: Choosing LLM by commenting out one line ---
+
+# from ab.gpt.util.LLM import LLM
+from ab.gpt.util.LLM_ONNX import LLM
+
+# END: ----
+
 from ab.gpt.util.LLMUtil import quantization_config_4bit
 from ab.gpt.util.LoRA import LoRA
 from ab.gpt.util.Util import exists
