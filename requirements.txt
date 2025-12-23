@@ -10,3 +10,4 @@ faiss-cpu
 overrides>=7.7.0
 datasketch # to check code novelty
 matplotlib
+optimum[onnxruntime-gpu]
