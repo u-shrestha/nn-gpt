@@ -3,6 +3,7 @@ import os
 import json
 from typing import Literal
 
+import torch
 from peft import LoraConfig
 from transformers import TrainingArguments
 
@@ -51,6 +52,13 @@ TOP_K = 70
 TOP_P = 0.9
 TEST_METRIC = None  # 'bleu' or other metric for evaluation
 
+def _best_dtype_args():
+    """Detect best mixed precision dtype based on hardware support.
+    Returns dict with bf16=True if supported, otherwise fp16=True.
+    This aligns with model loading which uses torch.bfloat16."""
+    bf16_ok = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    return {"bf16": bf16_ok, "fp16": not bf16_ok}
+
 def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_norm=MAX_GRAD_NORM, test_metric=TEST_METRIC,
          tune_layers=TUNE_LAYERS, r=R, lora_alpha=LORA_ALPHA, lora_dropout=LORA_DROPOUT, target_modules=TARGET_MODULES,
          task_type=TASK_TYPE, bias=BIAS, learning_rate=LEARNING_RATE, llm_tune_conf=LLM_TUNE_CONF, nn_gen_conf=NN_GEN_CONF, nn_gen_conf_id=NN_GEN_CONF_ID,
@@ -81,6 +89,11 @@ use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={tem
         'load_best_model_at_end': False
     } if test_metric else {}
     
+    # Detect best mixed precision dtype (aligns with model loading which uses bfloat16)
+    # This fixes the mismatch where model is loaded in bfloat16 but training used fp16,
+    # which caused: NotImplementedError: "_amp_foreach_non_finite_check_and_unscale_cuda" not implemented for 'BFloat16'
+    dtype_flags = _best_dtype_args()
+    
     # Build TrainingArguments kwargs
     # Pipeline mode (when evaluation_strategy is passed): use step-based eval with pipeline overrides
     # Standalone mode: use epoch-based eval with test_metric
@@ -91,7 +104,6 @@ use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={tem
             'per_device_train_batch_size': per_device_train_batch_size,
             'gradient_accumulation_steps': gradient_accumulation_steps,
             'learning_rate': learning_rate,
-            'fp16': True,
             'logging_steps': logging_steps,
             'output_dir': nngpt_dir / 'outputs',
             'optim': optimizer,
@@ -99,6 +111,7 @@ use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={tem
             'gradient_checkpointing': True,
             'max_grad_norm': max_grad_norm,
             'num_train_epochs': num_train_epochs,  # Use parameter from command-line or default
+            **dtype_flags,  # Use bf16 if supported, otherwise fp16
         }
         
         # Add warmup - pipeline may pass warmup_steps (override) or use warmup_ratio
@@ -138,12 +151,12 @@ use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={tem
             'gradient_accumulation_steps': gradient_accumulation_steps,
             'warmup_ratio': warmup_ratio,
             'learning_rate': learning_rate,
-            'fp16': True,
             'logging_steps': logging_steps,
             'output_dir': nngpt_dir / 'outputs',
             'optim': optimizer,
             'deepspeed': ds_conf if use_deepspeed else None,
             'gradient_checkpointing': True,
+            **dtype_flags,  # Use bf16 if supported, otherwise fp16
             **test_prm  # Add test metric configuration if provided
         }
     
