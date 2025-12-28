@@ -85,23 +85,27 @@ class RLLLMMutation(MutationStrategy):
         return f"fit_{bucket}"
 
     def mutate(self, chromosome, search_space):
+        print(f"[DEBUG] RLLLM Mutation called. Rate: {self.mutation_rate}")
+        # 1. Check mutation rate
         if random.random() > self.mutation_rate:
+            print("[DEBUG] Mutation skipped (rng)")
+            return chromosome
+        
+        # chromosome is expected to be a dict here
+        code = chromosome.get('code')
+        if not code:
+            print("[DEBUG] No code in chromosome!")
             return chromosome
 
-        code = chromosome.get('code')
-        if not code: return chromosome
-
-        # 1. RL Agent chooses Action (Prompt)
-        # We need a state. We assume chromosome has 'fitness' if it was evaluated, 
-        # but pure chromosome dict usually doesn't have it. 
-        # We might need to track it externally or pass Individual object.
-        # For now, we use a simple globalish state tracking or random if unknown.
-        # Ideally, 'chromosome' passed here is just the dict.
+        # 2. Select Action (Prompt) via RL Agent
+        # State representation: simplistic (just using last reward or constant)
+        # For now, state = "generic"
         current_state = "unknown" # Todo: get better state
-        
         action_key = self.agent.choose_action(current_state)
         prompt_template = PROMPTS[action_key]
         
+        # 3. Construct Prompt
+        # We wrap the code to provide context
         full_prompt = (
             f"{prompt_template}\n\n"
             f"```python\n{code}\n```\n\n"
@@ -110,7 +114,8 @@ class RLLLMMutation(MutationStrategy):
 
         try:
             print(f"[RL-GA] Action: {action_key}")
-            new_code = self.llm_loader.generate(full_prompt)
+            # Ensure generate interface matches new loader
+            new_code = self.llm_loader.generate(full_prompt, max_new_tokens=2048)
             
             # Cleanup code
             if "```python" in new_code:
@@ -144,7 +149,7 @@ class RLLLMMutation(MutationStrategy):
                 
                 print(f"[RL-GA] Reward: {reward:.4f}, Acc: {new_fitness:.4f}")
                 
-                return {'code': new_code}
+                return {'code': new_code, 'cached_fitness': new_fitness}
                 
             else:
                 print("[RL-GA] Invalid code generated.")

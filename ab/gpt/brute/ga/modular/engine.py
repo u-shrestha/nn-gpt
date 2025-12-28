@@ -42,7 +42,7 @@ class GeneticAlgorithmEngine:
 
         if loaded_individuals:
             self.population.individuals = loaded_individuals
-        else:
+        elif not self.population.individuals:
             self.population.initialize(self.search_space)
 
         best_ever_individual = None

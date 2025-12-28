@@ -1,6 +1,6 @@
 import random
-import json
 import os
+import json
 import math
 
 class RLAgent:

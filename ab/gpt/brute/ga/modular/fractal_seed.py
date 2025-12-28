@@ -1,11 +1,4 @@
-import os
 
-# Definition of the Initial Fractal Seed
-# Corrected for:
-# 1. Input Shape Indexing (in_shape[0] vs [1])
-# 2. Channel consistency in recursive blocks
-# 3. Return value in learn()
-fractal_seed_code = """
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -145,15 +138,3 @@ class Net(nn.Module):
             
         # Return average loss so API knows we are alive
         return total_loss / count if count > 0 else 0.0
-"""
-
-output_path = 'ab/gpt/brute/ga/modular/fractal_seed.py'
-
-def generate_seed():
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, 'w') as f:
-        f.write(fractal_seed_code)
-    print(f"Generated ROBUST Fractal Seed at: {output_path}")
-
-if __name__ == "__main__":
-    generate_seed()
