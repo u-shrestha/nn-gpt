@@ -15,7 +15,7 @@ if project_root not in sys.path:
 from .engine import GeneticAlgorithmEngine
 from .selection import TournamentSelection
 from .crossover import SinglePointCrossover
-from .rl_mutation import LLMMutationStrategy 
+from .rl_mutation import RLLLMMutation 
 from .rl_rewards import evaluate_fitness
 
 # --- Load Seed ---
@@ -28,32 +28,22 @@ except FileNotFoundError:
     exit(1)
 
 # --- Custom Crossover Strategy (CRITICAL FIX) ---
-class CodePreservingCrossover(SinglePointCrossover):
-    """
-    Standard crossover mixes hyperparameters, but destroys 'code' if not handled.
-    This custom class ensures the child inherits code from one of the parents.
-    """
-    def crossover(self, parent1, parent2):
-        # 1. Perform standard hyperparameter crossover
-        child1_chrom, child2_chrom = super().crossover(parent1, parent2)
-        
-        # 2. Explicitly copy code from parents
-        # Strategy: Child 1 gets Parent 1's code, Child 2 gets Parent 2's code
-        # (Mutation will change this code later)
-        p1_code = parent1.chromosome.get('code', SEED_CODE)
-        p2_code = parent2.chromosome.get('code', SEED_CODE)
-        
-        child1_chrom['code'] = p1_code
-        child2_chrom['code'] = p2_code
-        
-        return child1_chrom, child2_chrom
+# Custom Crossover removed (Redundant: SinglePointCrossover handles code preservation)
 
-# --- Configuration ---
-POPULATION_SIZE = 4
-GENERATIONS = 5
+# # --- Configuration ---
+# POPULATION_SIZE = 4
+# GENERATIONS = 5
+# ELITISM_COUNT = 1
+# USE_QUANTIZATION = True 
+# MUTATION_RATE = 0.5 
+# MODEL_PATH = "deepseek-ai/deepseek-coder-1.3b-instruct"
+
+# --- Configuration --- according to cluster config
+POPULATION_SIZE = int(os.environ.get("POPULATION_SIZE", 4))
+GENERATIONS = int(os.environ.get("GENERATIONS", 5))
 ELITISM_COUNT = 1
 USE_QUANTIZATION = True 
-MUTATION_RATE = 0.5 
+MUTATION_RATE = float(os.environ.get("MUTATION_RATE", 0.5))
 MODEL_PATH = "deepseek-ai/deepseek-coder-1.3b-instruct"
 
 # Search Space (Hyperparameters only)
@@ -98,13 +88,14 @@ def main():
     # 1. Strategies
     selection = TournamentSelection(tournament_size=3)
     
-    # FIX: Use our Custom Crossover
-    crossover = CodePreservingCrossover() 
+    # FIX: Use Standard Crossover (it preserves code now)
+    crossover = SinglePointCrossover() 
     
     print(f"Using LLM: {MODEL_PATH} (Quantized: {USE_QUANTIZATION})")
-    mutation = LLMMutationStrategy(
+    mutation = RLLLMMutation(
         model_path=MODEL_PATH,
         mutation_rate=MUTATION_RATE,
+        use_quantization=USE_QUANTIZATION # Add quantization arg which RLLLMMutation expects
     )
 
     engine = GeneticAlgorithmEngine(
