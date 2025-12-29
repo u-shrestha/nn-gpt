@@ -44,7 +44,12 @@ class LLMMutation(MutationStrategy):
             if new_code:
                 # Basic validation: ensure it has 'class Net' and 'forward'
                 if "class Net" in new_code and "def forward" in new_code:
-                     return {'code': new_code}
+                     # FIX: Preserve other keys (lr, momentum)
+                     mutated = chromosome.copy()
+                     mutated['code'] = new_code
+                     # Reset fitness since code changed
+                     mutated['cached_fitness'] = None 
+                     return mutated
                 else:
                     print("LLM generated invalid code, discarding.")
             else:

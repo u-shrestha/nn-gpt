@@ -1,25 +1,9 @@
 import os
-import torch
-import random
 import sys
+import random
 
-# Ensure imports work from modular dir AND project root
+# --- Import Path Setup ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))))
-# Adjusting 5 levels up: ab/gpt/brute/ga/modular -> ab/gpt/brute/ga -> ab/gpt/brute -> ab/gpt -> ab -> nn-gpt (root)
-# wait, ab is in nn-gpt.
-# ab/gpt/brute/ga/modular is 5 deep inside nn-gpt?
-# /shared/ssd/home/b-a-singh/Thesis/nn-gpt (ROOT)
-# /shared/ssd/home/b-a-singh/Thesis/nn-gpt/ab (Level 1)
-# /shared/ssd/home/b-a-singh/Thesis/nn-gpt/ab/gpt (Level 2)
-# /shared/ssd/home/b-a-singh/Thesis/nn-gpt/ab/gpt/brute (Level 3)
-# /shared/ssd/home/b-a-singh/Thesis/nn-gpt/ab/gpt/brute/ga (Level 4)
-# /shared/ssd/home/b-a-singh/Thesis/nn-gpt/ab/gpt/brute/ga/modular (Level 5)
-# So dirname(current_dir) -> ga
-# dirname(dirname) -> brute
-# dirname(dirname(dirname)) -> gpt
-# dirname(dirname(dirname(dirname))) -> ab
-# dirname(dirname(dirname(dirname(dirname)))) -> nn-gpt (ROOT)
 project_root = os.path.abspath(os.path.join(current_dir, "../../../../.."))
 
 if current_dir not in sys.path:
@@ -27,14 +11,14 @@ if current_dir not in sys.path:
 if project_root not in sys.path:
     sys.path.append(project_root)
 
+# --- Module Imports ---
 from .engine import GeneticAlgorithmEngine
 from .selection import TournamentSelection
 from .crossover import SinglePointCrossover
-from .rl_mutation import RLLLMMutation
-from .rl_rewards import evaluate_code_and_reward
-from .mutation import MutationStrategy
+from .rl_mutation import LLMMutationStrategy 
+from .rl_rewards import evaluate_fitness
 
-# Load the seed code
+# --- Load Seed ---
 try:
     seed_path = os.path.join(current_dir, "fractal_seed.py")
     with open(seed_path, "r") as f:
@@ -43,60 +27,84 @@ except FileNotFoundError:
     print(f"Error: {seed_path} not found. Run gen_fractal_script.py first.")
     exit(1)
 
+# --- Custom Crossover Strategy (CRITICAL FIX) ---
+class CodePreservingCrossover(SinglePointCrossover):
+    """
+    Standard crossover mixes hyperparameters, but destroys 'code' if not handled.
+    This custom class ensures the child inherits code from one of the parents.
+    """
+    def crossover(self, parent1, parent2):
+        # 1. Perform standard hyperparameter crossover
+        child1_chrom, child2_chrom = super().crossover(parent1, parent2)
+        
+        # 2. Explicitly copy code from parents
+        # Strategy: Child 1 gets Parent 1's code, Child 2 gets Parent 2's code
+        # (Mutation will change this code later)
+        p1_code = parent1.chromosome.get('code', SEED_CODE)
+        p2_code = parent2.chromosome.get('code', SEED_CODE)
+        
+        child1_chrom['code'] = p1_code
+        child2_chrom['code'] = p2_code
+        
+        return child1_chrom, child2_chrom
+
 # --- Configuration ---
 POPULATION_SIZE = 4
 GENERATIONS = 5
 ELITISM_COUNT = 1
-MUTATION_RATE = 0.8
+USE_QUANTIZATION = True 
+MUTATION_RATE = 0.5 
 MODEL_PATH = "deepseek-ai/deepseek-coder-1.3b-instruct"
 
-# Define Search Space
+# Search Space (Hyperparameters only)
 SEARCH_SPACE = {
-    "lr": [0.01, 0.001, 0.0005],
+    "lr": [0.01, 0.005, 0.001],
     "momentum": [0.9, 0.8],
-    "drop_path_prob": [0.1, 0.2, 0.3],
-    "dropout": [0.0, 0.1, 0.2]
+    "drop_path_prob": [0.1, 0.2],
+    "dropout": [0.0, 0.1]
 }
+
+# --- Glue Code ---
+class IndividualWrapper:
+    def __init__(self, chromosome):
+        self.code = chromosome.get('code', '')
+        self.prm = chromosome
 
 def fitness_function(chromosome):
     """
-    Fitness function wrapper.
-    Checks for cached fitness from mutation first.
+    Evaluation with a 'Safety Net'.
+    If the engine wiped the seed, we put it back right here.
     """
-    code = chromosome.get('code')
-    if not code:
-        return 0.0
-    
-    # Check cache (populated by RLLLMMutation)
+    # SAFETY NET: If code is missing (due to random init), inject the Seed!
+    if 'code' not in chromosome or not chromosome['code']:
+        # print(">>> [System] Re-injecting Seed Code into empty individual")
+        chromosome['code'] = SEED_CODE
+
+    # Check cache
     if chromosome.get('cached_fitness') is not None:
         print(f">>> Using Cached Fitness: {chromosome['cached_fitness']:.4f}")
         return chromosome['cached_fitness']
     
-    # Evaluate if not cached (primary evaluation)
-    print(">>> Evaluating Individual (No Cache)...")
-    res = evaluate_code_and_reward(
-        code,
-        log_file=os.path.join(current_dir, "dataset/mutation_log.jsonl"),
-        prompt_used="fitness_eval_no_cache" # Differentiate in logs
-    )
-    return res.get('val_metric', 0.0)
+    wrapper = IndividualWrapper(chromosome)
+    
+    # print(">>> Evaluating Individual...")
+    accuracy = evaluate_fitness(wrapper)
+    
+    return accuracy
 
 def main():
     print("--- Starting Single-Loop FractalNet Evolution ---")
     
-    #Strategies
+    # 1. Strategies
     selection = TournamentSelection(tournament_size=3)
-    crossover = SinglePointCrossover()
     
-    # LLM-Guided Mutation
-    model_path = os.environ.get("LLM_MODEL_PATH", MODEL_PATH)
-    print(f"Using LLM: {model_path}")
+    # FIX: Use our Custom Crossover
+    crossover = CodePreservingCrossover() 
     
-    mutation = RLLLMMutation(
+    print(f"Using LLM: {MODEL_PATH} (Quantized: {USE_QUANTIZATION})")
+    mutation = LLMMutationStrategy(
+        model_path=MODEL_PATH,
         mutation_rate=MUTATION_RATE,
-        model_path=model_path,
-        use_quantization=False,
-        log_file=os.path.join(current_dir, "dataset/mutation_log.jsonl")
     )
 
     engine = GeneticAlgorithmEngine(
@@ -104,26 +112,19 @@ def main():
         search_space=SEARCH_SPACE,
         elitism_count=ELITISM_COUNT,
         selection_strategy=selection,
-        crossover_strategy=crossover,
+        crossover_strategy=crossover, # Pass custom class
         mutation_strategy=mutation
     )
 
-    # Initialize Population with Seed
-    print("Injecting Seed into Population...")
-    for ind in engine.population.individuals:
-        ind.chromosome = {
-            'code': SEED_CODE,
-            'lr': 0.01, 'momentum': 0.9, 'drop_path_prob': 0.1, 'dropout': 0.1
-        }
-        ind.fitness = None
-
-    # Run
+    # 2. Run Evolution
+    # Note: We rely on fitness_function to inject the seed dynamically now,
+    # so we don't need to manually inject before run() if run() wipes it anyway.
     best_ind = engine.run(num_generations=GENERATIONS, fitness_function=fitness_function)
     
     print("--- Evolution Finished ---")
     print(f"Best Fitness: {best_ind.fitness}")
     
-    # Save Best Code
+    # 3. Save Results
     best_code_path = os.path.join(current_dir, "best_fractal_net.py")
     if best_ind.chromosome.get('code'):
         with open(best_code_path, "w") as f:

@@ -28,8 +28,14 @@ def get_cifar10_loader(batch_size=128):
                                    download=True, transform=transform)
     
     # OPTIMIZATION: Use 10% of data
-    subset_indices = torch.arange(0, len(train_dataset), 10) 
+    # subset_indices = torch.arange(0, len(train_dataset), 10) 
+    # train_subset = torch.utils.data.Subset(train_dataset, subset_indices)
+
+# OPTIMIZATION: Use 50% of data (Step=2)
+    # Range(0, len, 2) selects indices: 0, 2, 4, 6... (Half the data)
+    subset_indices = torch.arange(0, len(train_dataset), 2) 
     train_subset = torch.utils.data.Subset(train_dataset, subset_indices)
+
 
     loader = torch.utils.data.DataLoader(train_subset, batch_size=batch_size, 
                                        shuffle=True, num_workers=2)
@@ -108,19 +114,22 @@ def evaluate_fitness(individual, train_conf=None):
         return 0.0
 
 # Compatibility Wrapper for run_evolution.py
-def evaluate_code_and_reward(code, **kwargs):
+def evaluate_code_and_reward(code, prm=None, **kwargs):
     """
     Adapts the old API call to the new evaluate_fitness logic.
     """
+    if prm is None:
+        prm = {'lr': 0.01, 'momentum': 0.9}
+
     # Create simple mock object to hold the code
     class MockIndividual:
-        def __init__(self, c):
+        def __init__(self, c, p):
             self.code = c
-            self.prm = {'lr': 0.01, 'momentum': 0.9} # Default params
-            self.chromosome = {'code': c} 
+            self.prm = p 
+            self.chromosome = {'code': c, **p} # Merge prm into chromosome for consistency 
 
     # Call the new evaluator
-    acc = evaluate_fitness(MockIndividual(code))
+    acc = evaluate_fitness(MockIndividual(code, prm))
     
     # Return structure expected by run_evolution.py
     return {

@@ -133,6 +133,7 @@ class RLLLMMutation(MutationStrategy):
                 print("[RL-GA] Evaluating mutation reward...")
                 res = evaluate_code_and_reward(
                     new_code,
+                    prm=chromosome,  # Pass HPs for correct evaluation
                     log_file=self.log_file,
                     prompt_used=full_prompt, # Log for Fine-tuning
                     val_metric_baseline=0.1 # Should be previous fitness
@@ -149,7 +150,12 @@ class RLLLMMutation(MutationStrategy):
                 
                 print(f"[RL-GA] Reward: {reward:.4f}, Acc: {new_fitness:.4f}")
                 
-                return {'code': new_code, 'cached_fitness': new_fitness}
+                # Preserve other genes (momentum, lr, etc.)
+                mutated_ind = chromosome.copy()
+                mutated_ind['code'] = new_code
+                mutated_ind['cached_fitness'] = new_fitness
+                
+                return mutated_ind
                 
             else:
                 print("[RL-GA] Invalid code generated.")
