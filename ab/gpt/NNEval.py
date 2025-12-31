@@ -1,11 +1,13 @@
 import argparse, json, sys, os, traceback
 from pathlib import Path
 import pandas as pd
+import time
 from ab.nn.util.Util import release_memory, uuid4, read_py_file_as_string
 
 from ab.gpt.util.Const import epoch_dir, new_nn_file, nngpt_dir, synth_dir, hp_file
 from ab.gpt.util.Eval import Eval
 from ab.gpt.util.Util import verify_nn_code, copy_to_lemur
+from ab.gpt.util.CycleResults import generate_cycle_results, collect_cycle_metrics, save_cycle_results
 
 # --- Default Evaluation Parameters ---
 # These will be used as defaults for argparse arguments
@@ -27,11 +29,12 @@ NN_ALTER_EPOCHS = None
 ONLY_EPOCH = None
 EPOCH_LIMIT_MINUTES = None
 CUSTOM_SYNTH_DIR = None
+CYCLE = None  # Cycle number (separate from epoch - cycle is the finetuning iteration)
 
 
 def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_epoch=ONLY_EPOCH, save_to_db=SAVE_TO_DB,
          nn_alter_epochs=NN_ALTER_EPOCHS, task=TASK, dataset=DATASET, metric=METRIC, lr=LR, batch=BATCH, dropout=DROPOUT, momentum=MOMENTUM,
-         transform=TRANSFORM, epoch_limit_minutes=EPOCH_LIMIT_MINUTES, custom_synth_dir=CUSTOM_SYNTH_DIR):
+         transform=TRANSFORM, epoch_limit_minutes=EPOCH_LIMIT_MINUTES, custom_synth_dir=CUSTOM_SYNTH_DIR, cycle=CYCLE):
     base_nngpt_path = nngpt_dir  # out/nngpt
     if nn_alter_epochs is None:
         if epoch_dir().is_dir():
@@ -42,6 +45,12 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
 
     if nn_alter_epochs:
         for i in ([only_epoch] if only_epoch is not None else range(nn_alter_epochs)):
+            # Track cycle number and epoch number separately
+            # Cycle is the finetuning iteration, epoch is within a cycle
+            current_cycle = cycle if cycle is not None else i  # Default to epoch if cycle not specified
+            current_epoch = i
+            cycle_start_time = time.time()
+            
             # Path to the output of one NNAlter.py epoch (e.g., out/nngpt/llm/epoch/A0)
             current_alter_epoch_path = epoch_dir(i)
 
@@ -58,6 +67,7 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
             print(f"\n--- Scanning NNAlter Epoch Directory: {current_alter_epoch_path} ---")
             print(f"--- Synthesized Models Directory: {models_base_dir} ---")
 
+            # Initialize cycle metrics collection (will be populated from eval_info.json files after evaluation)
             for model_id in os.listdir(models_base_dir):
                 model_dir_path = models_base_dir / model_id
                 if not model_dir_path.is_dir():
@@ -131,6 +141,11 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
                 # Crucial: set training epochs for this evaluation from nn_train_epochs
                 # This overrides any 'epoch' value that might have come from original_prm_from_df
                 prm['epoch'] = nn_train_epochs
+                
+                # Ensure transform is never None (must be a valid string for ab.nn.transform module)
+                if prm.get('transform') is None or not isinstance(prm.get('transform'), str):
+                    prm['transform'] = transform if transform else TRANSFORM
+                
                 print(f"  Final parameters for Eval: {prm}")
                 print(f"  Task: {task}, Dataset: {dataset}, Metric: {metric}, Prefix: {prefix_for_db}")
 
@@ -149,6 +164,7 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
                         evaluator.epoch_limit_minutes = epoch_limit_minutes
                     eval_results = evaluator.evaluate(code_file_path)
                     print(f"  Evaluation results for {model_id}: {eval_results}")
+                    
                     eval_info_data = {
                         "eval_args": evaluator.get_args(),  # This will show the prm used by Eval
                         "eval_results": eval_results,
@@ -163,7 +179,7 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
                     pref = nn_name_prefix or orig_pref
                     if pref:
                         nn_name = pref + '-' + nn_name
-                    copy_to_lemur(origdf, model_dir_path, nn_name)
+                    copy_to_lemur(model_dir_path, nn_name, task, dataset, metric)
 
                 except Exception as e:
                     error_msg = f"Error evaluating model {model_id}: {e}"
@@ -174,6 +190,36 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
                         f.write(f"{error_msg}\n\n{detailed_error}")
                 finally:
                     release_memory()
+            
+            # Generate cycle results JSON after all evaluations complete
+            # Read all eval_info.json files that were created during evaluation
+            cycle_end_time = time.time()
+            cycle_time_minutes = (cycle_end_time - cycle_start_time) / 60.0
+            
+            # Collect metrics from all eval_info.json files in the models directory
+            eval_results_list, model_dirs_list, successful_models, failed_models = collect_cycle_metrics(
+                models_base_dir, current_alter_epoch_path
+            )
+            
+            # Generate cycle results JSON from collected metrics
+            # Note: cycle is the finetuning iteration, epoch is within a cycle
+            cycle_results = generate_cycle_results(
+                cycle=current_cycle,
+                models_base_dir=models_base_dir,
+                eval_results_list=eval_results_list,
+                model_dirs_list=model_dirs_list,
+                successful_models=successful_models,
+                failed_models=failed_models,
+                cycle_time_minutes=cycle_time_minutes,
+                current_alter_epoch_path=current_alter_epoch_path
+            )
+            
+            # Save cycle results JSON
+            cycle_results_path = base_nngpt_path / "cycle_results.json"
+            save_cycle_results(cycle_results, cycle_results_path)
+            print(f"\n--- Cycle {current_cycle} (Epoch {current_epoch}) results saved to: {cycle_results_path} ---")
+            print(f"  Found {len(eval_results_list)} successful evaluations from eval_info.json files")
+            print(f"  Found {len(failed_models)} failed models")
 
 
 if __name__ == "__main__":
@@ -214,6 +260,8 @@ if __name__ == "__main__":
                         help="Custom directory containing generated models")
     parser.add_argument('--epoch_limit_minutes', type=int, default=EPOCH_LIMIT_MINUTES,
                         help="Max minutes allowed per epoch (default: specified in NN Dataset).")
+    parser.add_argument('--cycle', type=int, default=CYCLE,
+                        help="Cycle number (finetuning iteration, separate from epoch). If not specified, defaults to epoch number.")
 
     args = parser.parse_args()
     """
@@ -232,4 +280,4 @@ if __name__ == "__main__":
 
     main(args.nn_name_prefix, args.nn_train_epochs, args.only_epoch, args.save_to_db, args.nn_alter_epochs,
          args.task, args.dataset, args.metric, args.lr, args.batch_size, args.dropout, args.momentum, args.epoch_limit_minutes,
-         args.custom_synth_dir)
+         args.custom_synth_dir, args.cycle)
