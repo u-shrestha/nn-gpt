@@ -20,7 +20,7 @@ def debug_seed_execution():
     print("----------------------------------------------------------------")
 
     # 1. Load the seed code
-    path = "ab/gpt/brute/ga/modular/fractal_seed.py"
+    path = os.path.join(os.path.dirname(__file__), "fractal_seed.py")
     if not os.path.exists(path):
         print("Error: Seed file not found.")
         return

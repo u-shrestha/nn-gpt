@@ -4,6 +4,7 @@ from .rl_agent import RLAgent
 from .rl_rewards import evaluate_code_and_reward
 import random
 import time
+import os
 
 # Define a set of prompts (Actions)
 PROMPTS = {
@@ -63,8 +64,14 @@ PROMPTS = {
 
 class RLLLMMutation(MutationStrategy):
     def __init__(self, mutation_rate, model_path, use_quantization=True, 
-                 q_table_path="q_table.json", log_file="dataset/mutation_log.jsonl"):
+                 q_table_path=None, log_file=None):
         super().__init__(mutation_rate)
+        
+        if log_file is None:
+            log_file = os.path.join(os.path.dirname(__file__), "dataset/mutation_log.jsonl")
+        
+        if q_table_path is None:
+             q_table_path = os.path.join(os.path.dirname(__file__), "q_table.json")
         
         self.llm_loader = LocalLLMLoader(model_path, use_quantization)
         

@@ -17,7 +17,7 @@ reward_logger = MutationLogger()
 # LOCAL DATA LOADER
 # -----------------------------------------------------------------------
 def get_cifar10_loader(batch_size=128):
-    data_path = './data_v2' 
+    data_path = os.path.join(os.path.dirname(__file__), "data_v2") 
     
     transform = transforms.Compose([
         transforms.ToTensor(),

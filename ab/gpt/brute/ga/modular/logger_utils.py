@@ -3,7 +3,9 @@ import time
 import os
 
 class MutationLogger:
-    def __init__(self, log_file="dataset/mutation_log.jsonl"):
+    def __init__(self, log_file=None):
+        if log_file is None:
+            log_file = os.path.join(os.path.dirname(__file__), "dataset/mutation_log.jsonl")
         self.log_file = log_file
         os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
 
