@@ -57,7 +57,7 @@ def validate():
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20)
 
     # 4. Train for 20 Epochs
-    EPOCHS = 20
+    EPOCHS = 30
     print(f"Starting Training for {EPOCHS} epochs...")
     
     for epoch in range(EPOCHS):

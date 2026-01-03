@@ -33,11 +33,11 @@ def get_cifar10_loader(batch_size=128):
 
 # OPTIMIZATION: Use 50% of data (Step=2)
     # Range(0, len, 2) selects indices: 0, 2, 4, 6... (Half the data)
-    subset_indices = torch.arange(0, len(train_dataset), 2) 
-    train_subset = torch.utils.data.Subset(train_dataset, subset_indices)
+    # subset_indices = torch.arange(0, len(train_dataset), 2) 
+    # train_subset = torch.utils.data.Subset(train_dataset, subset_indices)
 
 
-    loader = torch.utils.data.DataLoader(train_subset, batch_size=batch_size, 
+    loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, 
                                        shuffle=True, num_workers=2)
     return loader
 

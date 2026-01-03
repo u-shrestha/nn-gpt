@@ -1,6 +1,7 @@
 import os
 import sys
 import random
+import datetime
 
 # --- Import Path Setup ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -32,7 +33,7 @@ except FileNotFoundError:
 
 # # --- Configuration ---
 # POPULATION_SIZE = 4
-# GENERATIONS = 5
+# GENERATIONS = 50
 # ELITISM_COUNT = 1
 # USE_QUANTIZATION = True 
 # MUTATION_RATE = 0.5 
@@ -45,6 +46,7 @@ ELITISM_COUNT = 1
 USE_QUANTIZATION = True 
 MUTATION_RATE = float(os.environ.get("MUTATION_RATE", 0.5))
 MODEL_PATH = "deepseek-ai/deepseek-coder-1.3b-instruct"
+EPOCHS_PER_INDIVIDUAL = 1
 
 # Search Space (Hyperparameters only)
 SEARCH_SPACE = {
@@ -70,7 +72,9 @@ def fitness_function(chromosome):
         # print(">>> [System] Re-injecting Seed Code into empty individual")
         chromosome['code'] = SEED_CODE
 
-    # Check cache
+    chromosome['epochs'] = EPOCHS_PER_INDIVIDUAL
+
+    # Checkcache
     if chromosome.get('cached_fitness') is not None:
         print(f">>> Using Cached Fitness: {chromosome['cached_fitness']:.4f}")
         return chromosome['cached_fitness']
@@ -116,11 +120,38 @@ def main():
     print(f"Best Fitness: {best_ind.fitness}")
     
     # 3. Save Results
-    best_code_path = os.path.join(current_dir, "best_fractal_net.py")
-    if best_ind.chromosome.get('code'):
-        with open(best_code_path, "w") as f:
-            f.write(best_ind.chromosome['code'])
-        print(f"Saved best model to {best_code_path}")
+    # best_code_path = os.path.join(current_dir, "best_fractal_net.py")
+    # if best_ind.chromosome.get('code'):
+    #     with open(best_code_path, "w") as f:
+    #         f.write(best_ind.chromosome['code'])
+    #     print(f"Saved best model to {best_code_path}")
+    # 1. Define Paths
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    history_dir = os.path.join(current_dir, "historicalBestFractal")
+    
+    # Ensure history folder exists
+    os.makedirs(history_dir, exist_ok=True)
+    
+    # Filenames
+    history_filename = f"best_fractal_net_{timestamp}.py"
+    history_path = os.path.join(history_dir, history_filename)
+    
+    latest_path = os.path.join(current_dir, "best_fractal_net.py")
+
+    # 2. Write Files
+    code = best_ind.chromosome.get('code')
+    if code:
+        # Save timestamped version in /history/
+        with open(history_path, "w") as f:
+            f.write(code)
+        print(f"Saved historical model to: {history_path}")
+
+        # Overwrite 'latest' version in /modular/ (for validation scripts)
+        with open(latest_path, "w") as f:
+            f.write(code)
+        print(f"Updated latest model at: {latest_path}")
+    else:
+        print("Error: Best individual has no code to save.")
 
 if __name__ == "__main__":
     main()
