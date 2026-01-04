@@ -203,7 +203,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
     # Pass training_args to LLM for ZeRO-3 detection
     model_loader = LLM(
         base_model_name,
-        quantization_config_4bit,
+        # quantization_config_4bit,
         access_token=access_token,
         use_deepspeed=use_deepspeed,
         context_length=context_length,

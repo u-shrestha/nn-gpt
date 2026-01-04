@@ -16,7 +16,8 @@ from transformers import (
     AutoModelForCausalLM,
     AutoConfig,
     PreTrainedTokenizer,
-    PreTrainedModel
+    PreTrainedModel,
+    Mxfp4Config,
 )
 
 
@@ -117,6 +118,15 @@ class LLM:
         # Only pass quantization_config if explicitly provided (prevents conflicts)
         if bnb_config is not None:
             model_kwargs["quantization_config"] = bnb_config
+        else:
+            # Check if the model is MXFP4 quantized and dequantize for training
+            # MXFP4 quantization doesn't support training, so we need to dequantize
+            quant_cfg = getattr(config, "quantization_config", None)
+            if quant_cfg is not None:
+                quant_method = quant_cfg.get("quant_method") if isinstance(quant_cfg, dict) else getattr(quant_cfg, "quant_method", None)
+                if quant_method == "mxfp4":
+                    print("[INFO] Detected MXFP4 quantized model - enabling dequantization for training support")
+                    model_kwargs["quantization_config"] = Mxfp4Config(dequantize=True)
         
         # --- ZeRO-3 guard: strip incompatible args ---
         # NOTE: Other files using device_map (RAG_AlterNN.py, TuneRL.py, MergeLLM.py, etc.)
