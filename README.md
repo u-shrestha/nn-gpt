@@ -14,24 +14,16 @@ For Linux/Mac:
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate
-   python -m pip install --upgrade pip
+   python3 -m pip install --upgrade pip
    ```
 For Windows:
    ```bash
    python3 -m venv .venv
    .venv\Scripts\activate
-   python -m pip install -- pip
+   python3 -m pip install --upgrade pip
    ```
 
 It is assumed that CUDA 12.6 is installed; otherwise, consider replacing 'cu126' with the appropriate version. Most LLM usage scenarios require GPUs with at least 24 GB of memory.
-
-## Installation of NNGPT with pip
-
-```bash
-   pip install nn-gpt --extra-index-url https://download.pytorch.org/whl/cu126
-   pip install nn-gpt[flash] --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu126
-   ```
-
 
 ## Environment for NNGPT Developers
 ### Pip package manager
@@ -64,6 +56,13 @@ and export/generate:
 python -m ab.stat.export
 ```
 
+## Installation of NNGPT with pip
+
+```bash
+   pip install nn-gpt --extra-index-url https://download.pytorch.org/whl/cu126
+   pip install nn-gpt[flash] --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu126
+   ```
+
 ## Use
 
 - **`ab.gpt.NNAlter*.py`** – Generates modified neural network models.  
@@ -92,7 +91,7 @@ If recently added dependencies are missing in the <a href='https://hub.docker.co
 
 ## Citation
 
-The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing our articles for <a target='_blank' href='https://arxiv.org/pdf/2511.20333'>NNGPT</a> and <a target='_blank' href='https://arxiv.org/pdf/2504.06006'>hyperparameter tuning</a>:
+The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing our articles for <a target='_blank' href='https://arxiv.org/pdf/2511.20333'>NNGPT</a> and <a target='_blank' href='https://openaccess.thecvf.com/content/ICCV2025W/AIM/papers/Kochnev_Optuna_vs_Code_Llama_Are_LLMs_a_New_Paradigm_for_ICCVW_2025_paper.pdf'>hyperparameter tuning</a>:
 ```bibtex
 
 @article{ABrain.NNGPT,
@@ -103,10 +102,11 @@ The original version of this project was created at the Computer Vision Laborato
 }
 
 @InProceedings{ABrain.HPGPT,
-  title={Optuna vs Code Llama: Are LLMs a New Paradigm for Hyperparameter Tuning?},
-  author={Kochnev, Roman and Goodarzi, Arash Torabi and Bentyn, Zofia Antonina and Ignatov, Dmitry and Timofte, Radu},
-  booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision Workshops (ICCVW)},
-  year={2025}
+	title={Optuna vs Code Llama: Are LLMs a New Paradigm for Hyperparameter Tuning?},
+	author={Kochnev, Roman and Goodarzi, Arash Torabi and Bentyn, Zofia Antonina and Ignatov, Dmitry and Timofte, Radu},
+	booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision Workshops (ICCVW)},
+	pages = {5664--5674},
+	year={2025}
 }
 ```
 ## Licenses
