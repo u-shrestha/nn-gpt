@@ -87,7 +87,7 @@ use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={tem
     if evaluation_strategy is not None:
         # PIPELINE MODE: Use pipeline-specific settings
         training_kwargs = {
-            'report_to': None,
+            'report_to': [],
             'per_device_train_batch_size': per_device_train_batch_size,
             'gradient_accumulation_steps': gradient_accumulation_steps,
             'learning_rate': learning_rate,
@@ -133,7 +133,7 @@ use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={tem
             'num_train_epochs': num_train_epochs,
             'lr_scheduler_type': lr_scheduler,
             'max_grad_norm': max_grad_norm,
-            'report_to': None,
+            'report_to': [],
             'per_device_train_batch_size': per_device_train_batch_size,
             'gradient_accumulation_steps': gradient_accumulation_steps,
             'warmup_ratio': warmup_ratio,

@@ -105,7 +105,7 @@ class LoRA:
         self.model = prepare_model_for_kbit_training(self.model)
         self.model.gradient_checkpointing_enable()
         self.peft_model = get_peft_model(self.model, self.peft_config)
-        
+        self.peft_model._hf_peft_config_loaded = True 
         # Log trainable parameters immediately after adapters are attached
         print(f"[LoRA] Adapters attached. Effective target_modules: {self.peft_config.target_modules}")
         print("[LoRA] Trainable parameter summary:")
