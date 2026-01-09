@@ -20,6 +20,13 @@ from transformers import (
     Mxfp4Config,
 )
 
+# Unsloth conditional import
+try:
+    from unsloth import FastModel
+    UNSLOTH_AVAILABLE = True
+except ImportError:
+    UNSLOTH_AVAILABLE = False
+
 
 class LLM:
     def __init__(self,
@@ -32,9 +39,32 @@ class LLM:
                  base_path=out_dir,
                  context_length=None,
                  gguf_file=None,
-                 training_args=None):
-        # --- Tokenizer ---
+                 training_args=None,
+                 use_unsloth=False,
+                 load_in_4bit=True):
         self.context_length = context_length
+        self._use_unsloth = use_unsloth
+        
+        # ===== Unsloth Fast Path =====
+        if use_unsloth:
+            if not UNSLOTH_AVAILABLE:
+                raise ImportError("Unsloth not installed. Run: pip install unsloth")
+            
+            self.model, self.tokenizer = FastModel.from_pretrained(
+                model_name=model_path,
+                max_seq_length=context_length or 4096,
+                load_in_4bit=load_in_4bit,
+                token=access_token,
+            )
+            
+            if self.tokenizer.pad_token_id is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            self.tokenizer.padding_side = "right"
+            print(f"[Unsloth] Loaded {model_path}, 4bit={load_in_4bit}")
+            return
+        
+        # ===== Original HuggingFace Path =====
+        # --- Tokenizer ---
         tok_fl_nm = llm_tokenizer_dir(base_path, model_path)
         raw_fl_nm = llm_dir(base_path, model_path)
         tokenizer_exists = exists(tok_fl_nm)

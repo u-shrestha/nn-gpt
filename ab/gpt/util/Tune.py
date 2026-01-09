@@ -185,6 +185,8 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
     use_deepspeed = config['use_deepspeed']
     only_best_accuracy = config['only_best_accuracy']
     context_length = config.get('context_length')
+    use_unsloth = config.get('use_unsloth', False)
+    load_in_4bit = config.get('load_in_4bit', True)
 
     access_token = None
     if token_from_file:
@@ -207,7 +209,9 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         access_token=access_token,
         use_deepspeed=use_deepspeed,
         context_length=context_length,
-        training_args=training_args
+        training_args=training_args,
+        use_unsloth=use_unsloth,
+        load_in_4bit=load_in_4bit
     )
     model = model_loader.get_model()
     tokenizer = model_loader.get_tokenizer()
