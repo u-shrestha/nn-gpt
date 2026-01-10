@@ -18,7 +18,7 @@ acgpt_dir = out_dir / 'acgpt'
 nnrag_dir = out_dir / 'rag'
 new_dataset_dir = nngpt_dir / 'new_lemur'
 new_lemur_nn_dir = new_dataset_dir / 'nn'
-new_lemur_stat_dir = new_dataset_dir / 'stat'
+new_lemur_stat_dir = new_dataset_dir / 'train'
 brute_dir = gpt_dir / 'brute'
 ast_dir = brute_dir / 'ast'
 ea_dir = brute_dir / 'ea'
@@ -61,3 +61,51 @@ def epoch_dir(*args):
     for d in args:
         e_dir = e_dir / f'A{d}'
     return e_dir
+
+core_nns = [
+    'AirNet',
+    'AirNext',
+    'AlexNet',
+    'BagNet',
+    'BayesianNet-1',
+    'ConvNeXt',
+    'ConvNeXtTransformer',
+    'DPN107',
+    'DPN131',
+    'DPN68',
+    'DarkNet',
+    'DeepLabV3-1',
+    'DenseNet',
+    'Diffuser',
+    'EfficientNet',
+    'FCN16s',
+    'FCN32s-1',
+    'FCN8s',
+    'FCOS',
+    'FasterRCNN',
+    'FractalNet',
+    'GoogLeNet',
+    'ICNet',
+    'InceptionV3-1',
+    'LRASPP',
+    'LSTM',
+    'MNASNet',
+    'MaxVit',
+    'MobileNetV2',
+    'MobileNetV3',
+    'RESNETLSTM',
+    'RNN',
+    'RegNet',
+    'ResNet',
+    'ResNetTransformer',
+    'RetinaNet',
+    'SSDFull',
+    'SSDLite',
+    'ShuffleNet',
+    'SqueezeNet-1',
+    'SwinTransformer',
+    'UNet-1',
+    'UNet2D',
+    'VGG',
+    'VisionTransformer'
+]
