@@ -58,7 +58,7 @@ def flatten_chunks(data):
 
 
 def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf, training_args, peft_config,
-         max_prompts=None, save_llm_output=True, max_new_tokens=16 * 1024, nn_name_prefix=None, temperature=1.0, top_k=50, top_p=0.9):
+         max_prompts=None, save_llm_output=True, max_new_tokens=16 * 1024, nn_name_prefix=None, temperature=1.0, top_k=50, top_p=0.9, test_metric=None):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
     with open(conf_llm_dir / llm_conf) as f:
@@ -108,7 +108,8 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         tokenizer,
         training_args=training_args,
         access_token=access_token,
-        peft_config=peft_config)
+        peft_config=peft_config,
+        test_metric=test_metric)
 
     print('Using Max Length:', model_loader.get_max_length())
 
@@ -148,10 +149,10 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
 def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict_global, test_nn, max_new_tokens, save_llm_output, nn_name_prefix):
     print('Preparing prompts for generation, this might take a while...')
     
-    out_gen_dir = str(trans_dir / 'out-gen')
-    result_gen_dir = str(trans_dir / 'result-gen')
-  
     
+    out_gen_dir = str(trans_dir / 'epoch1')
+    result_gen_dir = str(trans_dir / 'result-e1')
+  
     prompts = []
     
     # Load all data from folders to be used for seed prompts
@@ -166,15 +167,13 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict_gl
         for pr in prompt_config['prompt']:
             prompt += pr + '\n'
             
-        # Get seed data from folder DataFrame
-        # Sample random transforms to use as seeds
+        # Get seed data
         if len(all_data) < test_nn:
             print(f"Warning: Requested {test_nn} samples, but only {len(all_data)} available. Using all.", flush=True)
             data_sample = all_data.sample(n=len(all_data))
         else:
             data_sample = all_data.sample(n=test_nn)
 
-        # Use all data as the pool for addon data
         addon_data = all_data
         
         for _, row in data_sample.iterrows():
@@ -194,47 +193,54 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict_gl
             else:
                 print(f"Warning: Could not find addon data for {row['id_name']}. Skipping prompt.", flush=True)
                 
-   
     models_dir = synth_dir(out_path)
     
     for idx, prompt_data in tqdm(enumerate(prompts)):
         model_dir = models_dir / f'B{idx}'
         prompt, origdf = prompt_data
         
-        code, hp, tr, full_out = chat_bot.chat(prompt, engineer_prompt=False, max_new_tokens=max_new_tokens)
+        
+        code, hp, _, full_out = chat_bot.chat(prompt, engineer_prompt=False, max_new_tokens=max_new_tokens)
         
         if save_llm_output: create_file(model_dir, new_out_file, full_out)
         makedirs(model_dir, exist_ok=True)
+
+      
+        tr_content = None
         
-        if hp:
-            try:
-                print(f'Generated params: {hp}')
-                hp = json.loads(hp.replace("'", '"'))
-                with open(model_dir / hp_file, 'w+') as f:
-                    json.dump(hp, f)
-            except Exception as e:
-                print(f"Error parsing HP JSON: {e}", flush=True)
-            
+        # Try finding standard <tr> tags
+        if '<tr>' in full_out:
+            start = full_out.find('<tr>') + 4
+            end = full_out.find('</tr>', start)
+            if end != -1:
+                tr_content = full_out[start:end]
         
-        if tr:
+        # Look for the python code block if <tr> fails
+        if not tr_content and 'def transform' in full_out:
+            start = full_out.find('def transform')
+            tr_content = full_out[start:] 
+            if '</' in tr_content:
+                tr_content = tr_content.split('</')[0]
+        
+        # Clean and Save
+        if tr_content:
+            tr_content = tr_content.replace('```python', '').replace('```', '').strip()
             try:
-                print(f'Generated transformer:\n\n{tr}\n----\n')
-                create_file(model_dir, transformer_file, tr) 
+                print(f'Generated transformer:\n\n{tr_content}\n----\n')
+                create_file(model_dir, transformer_file, tr_content)
             except Exception as e:
-                print(f"Error saving transformer code: {e}", flush=True)
+                print(f"Error saving transformer: {e}")
                 continue 
         else:
-            print(f"Warning: No <tr> tag found in output for B{idx}. Skipping save.", flush=True)
-            continue 
-       
-        
+            print(f"Warning: Could not extract valid transform code for B{idx}. Skipping.")
+            continue # Skip to next prompt if no code found
+      
+        # Save DataFrame info
         df_file = model_dir / 'dataframe.df'
         if origdf is None:
             if isfile(df_file):
                 os.remove(df_file)
-                print(f'[DEBUG]Removed unmatched file: {df_file}')
         else:
-            # Save the original code for comparison
             create_file(model_dir, f"original_{origdf['id_name']}.py", origdf['transform_code'])
             origdf.to_pickle(df_file)
             
@@ -251,8 +257,4 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict_gl
         print('[DEBUG] Release_memory.')
         release_memory()
         
-    # No lemur cache to clear
-    # print('Clear LEMUR query cache.')
-    # lemur.data.cache_clear()
-    # print('The cache has been cleared.')
     print('Folder data reload will occur next epoch.')

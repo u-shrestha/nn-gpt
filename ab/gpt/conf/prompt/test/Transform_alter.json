@@ -84,8 +84,7 @@
         "addon_task": null,
         "prompt": [
             "Let's think step by step and design a transform function for image classification task. The solution should include full usable transforms.",
-            "Let's think step by step and build an image preprocessing pipeline that extends basic normalization, so it will allow for extraction of more complex features. Start by outlining the challenges of basic transforms and then implement the code.",
-            "Let's think step by step and create a state-of-the-art transform pipeline for image classification task. Make sure it contains all necessary transforms and also incorporate new features to enhance model robustness and accuracy. Start by outlining the typical weak points of image preprocessing and then account for them in the generated code.",
+              "Let's think step by step and create a state-of-the-art transform pipeline for image classification task. Make sure it contains all necessary transforms and also incorporate new features to enhance model robustness and accuracy. Start by outlining the typical weak points of image preprocessing and then account for them in the generated code.",
             "Let's think step by step and build a nuanced transform pipeline for image classification that will achieve accuracy of at least 80%. Start by identifying the key factors that influence model accuracy, then implement the code incorporating strategies to address these factors."
         ]
     }

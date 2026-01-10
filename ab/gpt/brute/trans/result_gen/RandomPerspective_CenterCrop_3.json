@@ -1,0 +1,10 @@
+{
+  "accuracy": 0.5057,
+  "time metric": 2.405137410882053,
+  "batch": 64,
+  "duration": 16868059104,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "RandomPerspective_CenterCrop_3",
+  "uid": "cbdbfa87bcdd40c88406d5955101baad"
+}

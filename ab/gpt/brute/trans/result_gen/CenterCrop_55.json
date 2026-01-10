@@ -1,0 +1,10 @@
+{
+  "accuracy": 0.5398,
+  "time metric": 4.668211690544433,
+  "batch": 64,
+  "duration": 9421166587,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "CenterCrop_55",
+  "uid": "2b5973734413f1dbb5b579cb2f9e0403"
+}

@@ -52,7 +52,7 @@ def load_data_from_folders(out_gen_dir: str, result_gen_dir: str, only_best_accu
 
     if not all_data:
         # Return an empty DataFrame instead of raising ValueError
-        print("Warning: No matching data found in out-gen and result-gen folders. Returning empty DataFrame.")
+        print("Warning: No matching data found in out-best and result-best folders. Returning empty DataFrame.")
         return pd.DataFrame()
         
     df = pd.DataFrame(all_data)
@@ -68,7 +68,7 @@ def load_data_from_folders(out_gen_dir: str, result_gen_dir: str, only_best_accu
 
 class TransformGenPrompt(Prompt):
     """
-    Assumes the existence of results in result-gen and code in out-gen
+    Assumes the existence of results in result-best and code in out-best
     """
 
     # Removed dir arguments to match how Tune.py calls the constructor
@@ -76,8 +76,8 @@ class TransformGenPrompt(Prompt):
         super().__init__(max_len, tokenizer)
         self.prompts_path = prompts_path
       
-        self.out_gen_dir = trans_dir / 'out-gen'
-        self.result_gen_dir = trans_dir / 'result-gen'
+        self.out_gen_dir = trans_dir / 'epoch1'
+        self.result_gen_dir = trans_dir / 'result-e1'
 
     @override
     def get_raw_dataset(self, only_best_accuracy, n_training_prompts=None) -> DataFrame:
@@ -179,12 +179,12 @@ class TransformGenPrompt(Prompt):
                      
                 output_template = '\n'.join(prompt_dict[key]['output'])
                 
-                # Format the response
+                try:
                     response = output_template.format(**para_dict)
                 except KeyError as e:
                     print(f"Warning: Missing key {e} for formatting response. Skipping row.")
                     continue
-               
+              
 
                 text = self.tokenizer.apply_chat_template(
                     [

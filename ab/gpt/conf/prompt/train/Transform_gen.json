@@ -20,8 +20,8 @@
       "You are an expert image transformation optimizer.",
       "Baseline transform code (Accuracy: {accuracy}):",
       "<tr>{transform_code}</tr>",
-      "Generate an improved Python transform function ('transform') that achieves a higher accuracy (at least {addon_accuracy}) with 1 epoch, batch 64, lr 0.01, and momentum 0.9 ",
-      "Output only the <tr> XML tag containing the complete, improved Python code."
+      "Generate an improved Python transform function ('transform') that achieves a higher accuracy with 1 epoch, batch 64, lr 0.01, and momentum 0.9 for 'cifar-10' dataset and task: 'img-classification' ",
+      "Your response MUST contain exactly one set of the XML tags <tr>...</tr>. DO NOT include any leading or trailing text, markdown fences (```), comments, or any other XML tags like <path> or <text>."
     ],
     "output": [
       "<tr>{addon_transform_code}</tr>"

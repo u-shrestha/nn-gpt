@@ -2,26 +2,12 @@ __pycache__/
 *.pyc
 
 
-result-gen/
-result-prompt/
-result/
-result-1/
-result-best/
-result-ft/
-
-
-out/
-out-gen/
-out-prompt/
-out-1/
-out-11/
-out-best/
-out-ft/
 
 
 path/
-plots/
 db/
 data/
+out/
+test/
 
-stat/
+

@@ -132,7 +132,7 @@ def generate_transform_file(transforms_list, directory):
     """
     Generate a transform file with 1, 2 or 3 transforms + fixed transforms.
     """
-    # Build base filename from transform names (include all transforms in name)
+    # Build base filename from transform names
     name_parts = [t['name'][:20] for t in transforms_list]
     base_name = '_'.join(name_parts)
     base_name = re.sub(r'[^a-zA-Z0-9_]', '', base_name)
@@ -232,7 +232,7 @@ def main():
         help= "Number of transforms per file (1, 2, or 3)"
     )
     parser.add_argument(
-        '-n', '--file_num', type=int, default=2000,
+        '-n', '--file_num', type=int, default=200,
         help=f"Number of files to generate"
     )
     parser.add_argument(

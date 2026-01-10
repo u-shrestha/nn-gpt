@@ -1,0 +1,10 @@
+{
+  "accuracy": 0.4645,
+  "time metric": 1.3464619501568584,
+  "batch": 64,
+  "duration": 27070946933,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "RandomResizedCrop_GaussianBlur_2",
+  "uid": "dc01da57ba9839fef20b76acd5246f42"
+}

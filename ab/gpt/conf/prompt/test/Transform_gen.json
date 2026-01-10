@@ -20,10 +20,10 @@
       "<tr>{transform_code}</tr>",
       "Reference 2 (Accuracy: {addon_accuracy}):",
       "<tr>{addon_transform_code}</tr>",
-      "Provide a new, high-performance transform and its hyperparameters for 'cifar-10' (task: 'img-classification').",
+      "Provide a new, high-performance transform for 'cifar-10' (task: 'img-classification') for training with 1 epoch, batch 64, lr 0.01, and momentum 0.9",
       "Respond with:",
       "1. A <tr> XML tag containing the complete Python transform code (function name 'transform').",
-      "Output only the XML tag <tr> with their contents."
+      "The code must be wrapped strictly in <tr> and </tr> tags."
     ]
   }
 }
