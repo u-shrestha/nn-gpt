@@ -1,18 +1,31 @@
-import torch_pruning as tp
-import torch
-import torch.nn as nn
-import time
-import os
 import sys
-import importlib.util
-from pathlib import Path
+import os
+import time
 import io
 import base64
+import json
+import importlib.util
+from pathlib import Path
+
+# Third-party libraries
+import torch
+import torch.nn as nn
+import torch.nn.utils.prune as prune
+import torch_pruning as tp
+from thop import profile
+
+# Dynamically add workspace roots to path based on script location
+# File is at: .../nn-gpt/ab/gpt/util/batch_spr.py
+script_path = Path(__file__).resolve()
+gw_root = script_path.parent.parent.parent.parent  # Points to .../nn-gpt
+ds_root = gw_root.parent / 'nn-dataset'          # Points to .../nn-dataset
+
+sys.path.append(str(ds_root))
+sys.path.append(str(gw_root))
+
+# Custom Project Imports (Must be after sys.path setup)
 import ab.nn.api as nn_dataset
 import Const as const
-import torch.nn.utils.prune as prune
-import json
-from thop import profile
 
 # Constants
 BASE_OUT_DIR = const.synth_dir(const.epoch_dir('0'))
