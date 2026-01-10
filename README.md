@@ -91,7 +91,7 @@ If recently added dependencies are missing in the <a href='https://hub.docker.co
 
 ## Citation
 
-The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing our articles for <a target='_blank' href='https://arxiv.org/pdf/2511.20333'>NNGPT</a>, <a target='_blank' href='https://arxiv.org/pdf/2601.02997'>neural network architecture design</a> and <a target='_blank' href='https://openaccess.thecvf.com/content/ICCV2025W/AIM/papers/Kochnev_Optuna_vs_Code_Llama_Are_LLMs_a_New_Paradigm_for_ICCVW_2025_paper.pdf'>hyperparameter tuning</a> with LLMs:
+The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing our articles for <a target='_blank' href='https://arxiv.org/pdf/2511.20333'>NNGPT</a>, <a target='_blank' href='https://arxiv.org/pdf/2601.02997'>architecture design</a> and <a target='_blank' href='https://openaccess.thecvf.com/content/ICCV2025W/AIM/papers/Kochnev_Optuna_vs_Code_Llama_Are_LLMs_a_New_Paradigm_for_ICCVW_2025_paper.pdf'>hyperparameter tuning</a> with LLMs:
 ```bibtex
 
 @article{ABrain.NNGPT,
