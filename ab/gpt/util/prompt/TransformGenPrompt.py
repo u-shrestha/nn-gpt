@@ -10,9 +10,9 @@ from ab.gpt.util.prompt.Prompt import Prompt
 from tqdm import tqdm
 from ab.gpt.util.Const import trans_dir 
 
+
 def shuffle_data(df: DataFrame):
     return df.sample(frac=1).reset_index(drop=True)
-
 
 
 def load_data_from_folders(out_gen_dir: str, result_gen_dir: str, only_best_accuracy=True) -> DataFrame:
@@ -25,7 +25,6 @@ def load_data_from_folders(out_gen_dir: str, result_gen_dir: str, only_best_accu
     
     for res_file in tqdm(json_files, desc="Reading data files"):
         base_name = os.path.basename(res_file).replace('.json', '')
-        
         code_file = os.path.join(out_gen_dir, f"{base_name}.py") 
         
         if os.path.exists(code_file):
@@ -52,12 +51,12 @@ def load_data_from_folders(out_gen_dir: str, result_gen_dir: str, only_best_accu
 
     if not all_data:
         # Return an empty DataFrame instead of raising ValueError
-        print("Warning: No matching data found in out-best and result-best folders. Returning empty DataFrame.")
+        print("Warning: No matching data found in folders. Returning empty DataFrame.")
         return pd.DataFrame()
         
     df = pd.DataFrame(all_data)
     
-    # Replace 'only_best_accuracy' filter, taking the best entry per 'id_name'
+    # Taking the best entry per 'id_name'
    
     if only_best_accuracy and 'accuracy' in df.columns:
         df = df.sort_values('accuracy', ascending=False).drop_duplicates('id_name')
@@ -68,22 +67,20 @@ def load_data_from_folders(out_gen_dir: str, result_gen_dir: str, only_best_accu
 
 class TransformGenPrompt(Prompt):
     """
-    Assumes the existence of results in result-best and code in out-best
+    Assumes the existence of results in result and code in out
     """
 
-    # Removed dir arguments to match how Tune.py calls the constructor
-    def __init__(self, max_len: int, tokenizer: PreTrainedTokenizerBase, prompts_path):
+    def __init__(self, max_len: int, tokenizer: PreTrainedTokenizerBase, prompts_path, out_dir=None, res_dir=None):
         super().__init__(max_len, tokenizer)
         self.prompts_path = prompts_path
       
-        self.out_gen_dir = trans_dir / 'epoch1'
-        self.result_gen_dir = trans_dir / 'result-e1'
+        self.out_gen_dir = out_dir
+        self.result_gen_dir = res_dir
 
     @override
     def get_raw_dataset(self, only_best_accuracy, n_training_prompts=None) -> DataFrame:
         """
-        :return:
-            pandas.Dataframe object with columns formatted for training.
+        Return pandas.Dataframe object with columns formatted for training.
         """
         prompt_lists = []
 
@@ -117,7 +114,6 @@ class TransformGenPrompt(Prompt):
                 if n_training_prompts and len(dataframe) >= n_training_prompts:
                     break
                 
-                # Ensure row is a dict
                 row_dict = row.to_dict()
                 para_dict = dict()
                 

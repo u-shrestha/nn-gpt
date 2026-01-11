@@ -22,3 +22,5 @@ out/
 **/tokenizer/
 output.log
 stat/
+db/
+path/

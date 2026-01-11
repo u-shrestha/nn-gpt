@@ -43,7 +43,7 @@ def get_args():
     #parser.add_argument('--input', type=Path, default=TRANSFORM_DIR, help="Base directory containing the transform folders."),
     #parser.add_argument('--output', type=Path, default=RESULT_DIR, help="Directory to save results.")
 
-    parser.add_argument('--threshold', type=float, default=0, 
+    parser.add_argument('--threshold', type=float, default=0.40, 
                         help="Accuracy threshold to save 'best' models. Set 0 to disable.")
     
     return parser.parse_args()
