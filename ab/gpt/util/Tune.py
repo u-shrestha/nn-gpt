@@ -185,6 +185,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
     use_deepspeed = config['use_deepspeed']
     only_best_accuracy = config['only_best_accuracy']
     context_length = config.get('context_length')
+    input_ids_length = config.get('input_ids_length')
     use_unsloth = config.get('use_unsloth', False)
     load_in_4bit = config.get('load_in_4bit', True)
 
@@ -402,7 +403,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         
         # Original code path using NNGenPrompt (only executes when data_dir is not provided)
         # data_processor = NNGenPrompt(model_loader.get_max_length(), tokenizer, train_config_path)
-        data_processor = NNGenPrompt(context_length if context_length else model_loader.get_max_length(), tokenizer, train_config_path)
+        data_processor = NNGenPrompt(input_ids_length if input_ids_length else model_loader.get_max_length(), tokenizer, train_config_path)
         dataset = data_processor.get_dataset(only_best_accuracy, max_prompts=max_prompts)
         # dataset = load_from_disk(nngpt_dir / 'dataset')
 
