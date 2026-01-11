@@ -380,7 +380,8 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         tokenizer,
         training_args=training_args,
         access_token=access_token,
-        peft_config=peft_config)
+        peft_config=peft_config,
+        use_unsloth=use_unsloth)
 
     print('Using Max Length:', model_loader.get_max_length())
 

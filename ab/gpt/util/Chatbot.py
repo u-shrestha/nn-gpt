@@ -38,12 +38,12 @@ class ChatBot:
 
         if self.__keep_memory:
             self.__messages.append({"role": "user", "content": prompt})
-            in_next = self.__messages
+            in_text = self.__messages
         else:
-            in_next = [{"role": "user", "content": prompt}]
+            in_text = [{"role": "user", "content": prompt}]
 
         out = self.__pipeline(
-            in_next,
+            in_text,
             max_new_tokens=max_new_tokens,
             do_sample=True,  # Allow Random answer
             max_len=max_len,
@@ -51,6 +51,7 @@ class ChatBot:
             top_k=self.top_k,
             top_p=self.top_p,
         )[0]["generated_text"][-1]['content']
+        print("ChatBot Generation complete.")
         assert isinstance(out, str)
         if self.__keep_memory: self.__messages.append({"role": "assistant", "content": out})
         nn = extract_code(out)

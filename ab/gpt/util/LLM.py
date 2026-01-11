@@ -52,9 +52,11 @@ class LLM:
             
             self.model, self.tokenizer = FastModel.from_pretrained(
                 model_name=model_path,
+                dtype = None,
                 max_seq_length=context_length or 4096,
                 load_in_4bit=load_in_4bit,
                 token=access_token,
+                full_finetuning = False,
             )
             
             if self.tokenizer.pad_token_id is None:
