@@ -37,7 +37,7 @@ LR_SCHEDULER = 'cosine'  # Learning rate scheduler
 PER_DEVICE_TRAIN_BATCH_SIZE = 1
 GRADIENT_ACCUMULATION_STEPS = 8  # Increased for better stability
 WARMUP_RATIO = 0.05  # Warmup as ratio of total steps
-TEST_NN = 10
+TEST_NN = 2
 LOGGING_STEPS = 96  # Less frequent logging
 OPTIMIZER = 'paged_adamw_8bit'
 LLM_TUNE_CONF = 'NN_gen.json'   #'Transform_gen.json' for transform fine-tune
@@ -54,7 +54,7 @@ TOP_K = 70
 TOP_P = 0.9
 TEST_METRIC = None  # 'bleu' or other metric for evaluation
 ONNX_RUN = False
-TRANS_MODE = False
+TRANS_MODE = False  # only transform fine-tuning
 
 # --- Pipeline-Optimized Defaults (for iterative_finetune.py) ---
 # These defaults are optimized for multi-cycle iterative fine-tuning

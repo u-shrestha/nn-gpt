@@ -31,7 +31,7 @@ ds_conf = conf_dir / 'DeepSpeed.json'
 
 # Transform dir paths
 TRANSFORM_OUT_DIR = trans_dir / 'dataset_epoch1'
-TRANSFORM_RES_DIR = trans_dir / 'result-epoch1'
+TRANSFORM_RES_DIR = trans_dir / 'result_epoch1'
 
 
 
@@ -405,7 +405,7 @@ def trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict
     # Evaluate produced CV models
     if exists(models_dir):
         try:
-            run_eval('FT', epoch)
+            run_eval(epoch_num=epoch, FT_MODE=True)
         except Exception as e:
             print(f"Error running evaluation main(): {e}", flush=True)
             

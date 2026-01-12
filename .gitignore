@@ -24,3 +24,4 @@ output.log
 stat/
 db/
 path/
+test/

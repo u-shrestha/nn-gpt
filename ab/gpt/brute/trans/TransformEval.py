@@ -1,7 +1,6 @@
 import os
 import json
 import shutil
-import argparse
 from pathlib import Path
 import ab.nn.api as api
 
@@ -17,6 +16,10 @@ TASK = "img-classification"
 DATASET = "cifar-10"
 METRIC = "acc"
 MODEL_FILTER = "ResNet"
+THRESHOLD= 0.40
+
+#FT_MODE = True  #'False' for evaluation of transforms in a single folder
+ 
 
 
 # HYPERPARAMETERS
@@ -27,26 +30,6 @@ DEFAULTS = {
     'momentum': 0.9,
     'epoch': 1
 }
-
-
-
-def get_args():
-    parser = argparse.ArgumentParser(description="Evaluate Transforms")
-    
-    # Mode Selection
-    parser.add_argument('--mode', type=str, choices=['GEN', 'FT'], required=True, 
-                        help="GEN: evaluate the generated transform in a single folder, FT: evaluate transforms generated during fine tuning.")
-    parser.add_argument('--epoch_num', type=int, default=None, 
-                        help="Fine tuning epoch num.")
-    
-    # Paths
-    #parser.add_argument('--input', type=Path, default=TRANSFORM_DIR, help="Base directory containing the transform folders."),
-    #parser.add_argument('--output', type=Path, default=RESULT_DIR, help="Directory to save results.")
-
-    parser.add_argument('--threshold', type=float, default=0.40, 
-                        help="Accuracy threshold to save 'best' models. Set 0 to disable.")
-    
-    return parser.parse_args()
 
 
 def get_best_model_from_db():
@@ -71,14 +54,14 @@ def get_best_model_from_db():
 
 
 
-def get_candidates(mode, epoch_num):
+def get_candidates(epoch_num= None, FT_MODE= False): 
     """
     Scan for transform files based on the mode
     """
 
     candidates = []
     
-    if mode == 'GEN':
+    if not FT_MODE:
         # Look for .py files directly
       
         search_dir = TRANSFORM_DIR
@@ -92,7 +75,7 @@ def get_candidates(mode, epoch_num):
                 'source_file': entry
             })
 
-    elif mode == 'FT':
+    else:
         # # Iterate through all subdirs in the path
         base_input_dir = synth_dir(epoch_dir(epoch_num)) 
         
@@ -115,11 +98,11 @@ def get_candidates(mode, epoch_num):
 
 
 
-def run_eval(mode, epoch_num):
+def run_eval(epoch_num= None, FT_MODE= False):
     
     # Get model and candidates
     best_model = get_best_model_from_db()
-    candidates = get_candidates(args.mode, args.epoch_num)
+    candidates = get_candidates(epoch_num, FT_MODE)
     
     print(f"Found {len(candidates)} transforms to evaluate.")
 
@@ -132,6 +115,7 @@ def run_eval(mode, epoch_num):
             'transform': cand['transform_param']
         })
 
+        context_dir= Path(cand['context_dir'])
         try:
             # Run evaluation
             result = api.check_nn(
@@ -142,8 +126,8 @@ def run_eval(mode, epoch_num):
                 prm=prm,
                 save_to_db=False,
                 prefix=f"{best_model['nn']}_eval_{cand['name']}",
-                save_path= cand['context_dir'],
-                transform_dir=cand['context_dir']
+                save_path=context_dir,
+                transform_dir=context_dir
             )
 
             if result:
@@ -162,13 +146,13 @@ def run_eval(mode, epoch_num):
                 
                 }
                 
-                json_path = cand['context_dir']/ f"{cand['name']}.json"
+                json_path = context_dir/f"{cand['name']}.json"
                 with open(json_path, 'w') as f:
                     json.dump(result_data, f, indent=2)
 
-                if mode == 'FT':
-                    if args.threshold > 0 and float(accuracy) >= args.threshold:
-                        print(f"  [SUCCESS] Accuracy >= {args.threshold}")
+                if FT_MODE:
+                    if THRESHOLD > 0 and float(accuracy) >= THRESHOLD:
+                        print(f"  [SUCCESS] Accuracy >= {THRESHOLD}")
                         # Copy .py file
                         shutil.copy(cand['source_file'], TRANSFORM_DIR/f"A{epoch_num}{cand['name']}.py")
                         # Copy .json file
@@ -177,11 +161,10 @@ def run_eval(mode, epoch_num):
         except Exception as e:
             print(f"  Error: {e}")
             error_data = {"accuracy": 0.0, "transform": cand['name'], "error": str(e)}
-            with open(cand['context_dir'] / f"{cand['name']}.json", 'w') as f:
+            with open(context_dir / f"{cand['name']}.json", 'w') as f:
                 json.dump(error_data, f, indent=2)
 
 
-
 if __name__ == "__main__":
-    args = get_args()
-    run_eval(args.mode, args.epoch_num)
+    #run_eval()
+    run_eval(epoch_num=0, FT_MODE=True)
