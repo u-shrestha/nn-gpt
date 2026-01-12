@@ -1,0 +1,10 @@
+{
+  "accuracy": 0.2831,
+  "time metric": 0.8735147449592128,
+  "batch": 64,
+  "duration": 20961294707,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "RandomSolarize_ColorJitter_3",
+  "uid": "ee2ca7d4d88286cbf98fcdeb5b37f7bb"
+}

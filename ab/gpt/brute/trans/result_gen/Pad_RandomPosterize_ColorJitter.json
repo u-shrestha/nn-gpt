@@ -1,0 +1,10 @@
+{
+  "accuracy": 0.4239,
+  "time metric": 1.1309868621988803,
+  "batch": 64,
+  "duration": 28638705791,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "Pad_RandomPosterize_ColorJitter",
+  "uid": "9f1c01d16da12a85dc374812b26781d5"
+}

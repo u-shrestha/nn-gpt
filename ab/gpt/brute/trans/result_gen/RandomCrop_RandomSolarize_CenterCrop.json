@@ -1,0 +1,10 @@
+{
+  "accuracy": 0.4413,
+  "time metric": 2.5614422819041742,
+  "batch": 64,
+  "duration": 13324524328,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "RandomCrop_RandomSolarize_CenterCrop",
+  "uid": "0b5b48cee0fca86b585fa695ee00c84f"
+}

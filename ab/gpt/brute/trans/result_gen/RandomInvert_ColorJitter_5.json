@@ -1,0 +1,10 @@
+{
+  "accuracy": 0.2926,
+  "time metric": 0.8762088589648162,
+  "batch": 64,
+  "duration": 21981060569,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "RandomInvert_ColorJitter_5",
+  "uid": "fa6cefd3104a9ea5af969711d3802ff8"
+}
