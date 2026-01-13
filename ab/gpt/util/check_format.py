@@ -1,8 +1,19 @@
-import torch
 import sys
+from pathlib import Path
 import os
 
-sys.path.append('/home/tehreem/nn-gpt/out/nngpt/llm/epoch/A0/synth_nn/B0')
+# Dynamically add workspace roots to path based on script location
+script_path = Path(__file__).resolve()
+gw_root = script_path.parent.parent.parent.parent  # Points to .../nn-gpt
+ds_root = gw_root.parent / 'nn-dataset'          # Points to .../nn-dataset
+
+sys.path.append(str(ds_root))
+sys.path.append(str(gw_root))
+
+# Also add the B0 output directory dynamically for new_nn import
+# Path: .../nn-gpt/out/nngpt/llm/epoch/A0/synth_nn/B0
+b0_path = gw_root / 'out' / 'nngpt' / 'llm' / 'epoch' / 'A0' / 'synth_nn' / 'B0'
+sys.path.append(str(b0_path))
 
 try:
     import new_nn

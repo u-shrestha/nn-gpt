@@ -1,5 +1,14 @@
 import sys
-sys.path.append('/home/tehreem/nn-dataset')
+from pathlib import Path
+
+# Dynamically add workspace roots to path based on script location
+script_path = Path(__file__).resolve()
+gw_root = script_path.parent.parent.parent.parent  # Points to .../nn-gpt
+ds_root = gw_root.parent / 'nn-dataset'          # Points to .../nn-dataset
+
+sys.path.append(str(ds_root))
+sys.path.append(str(gw_root))
+
 import ab.nn.api as nn_dataset
 
 try:
