@@ -32,19 +32,19 @@ MAX_GRAD_NORM = 1.0  # Gradient clipping
 PEFT = None
 SKIP_EPOCHES = -1
 
-NUM_TRAIN_EPOCHS = 1  # Standalone default
+NUM_TRAIN_EPOCHS = 3  # Standalone default
 LR_SCHEDULER = 'cosine'  # Learning rate scheduler
 PER_DEVICE_TRAIN_BATCH_SIZE = 1
 GRADIENT_ACCUMULATION_STEPS = 8  # Increased for better stability
 WARMUP_RATIO = 0.05  # Warmup as ratio of total steps
-TEST_NN = 2
+TEST_NN = 10
 LOGGING_STEPS = 96  # Less frequent logging
 OPTIMIZER = 'paged_adamw_8bit'
 LLM_TUNE_CONF = 'NN_gen.json'   #'Transform_gen.json' for transform fine-tune
 NN_GEN_CONF = 'NN_gen.json'     #'Transform_gen.json'
 NN_GEN_CONF_ID = 'improve_classification_only'
 LLM_CONF = 'ds_coder_7b_olympic.json'
-MAX_PROMPTS = 1024  # Increased
+MAX_PROMPTS = 4 * 1024  # Increased
 MAX_NEW_TOKENS = 16 * 1024
 SAVE_LLM_OUTPUT = True
 USE_DEEPSPEED = False
@@ -54,6 +54,8 @@ TOP_K = 70
 TOP_P = 0.9
 TEST_METRIC = None  # 'bleu' or other metric for evaluation
 ONNX_RUN = False
+TRANS_MODE = False  # only transform fine-tuning
+
 # --- Pipeline-Optimized Defaults (for iterative_finetune.py) ---
 # These defaults are optimized for multi-cycle iterative fine-tuning
 PIPELINE_LEARNING_RATE = 1e-5  # Conservative for stability (vs standalone 1e-6)
@@ -425,9 +427,9 @@ if __name__ == '__main__':
                         help=f"[Pipeline] Weight decay for regularization (default: None).")
     # parser.add_argument('--onnx_run', type=float, default=ONNX_RUN,
     # #                     help=f"Run model generation step with LLM in ONNX format (default: {ONNX_RUN}).")
-    # parser.add_argument('--onnx_run', action='store_true', default=False,
-    #                 help="Enable ONNX format for LLM model generation.")
-    
+    parser.add_argument('--trans_mode', type=float, default=TRANS_MODE,
+                        help=f"Run model generation for transforms only (default: {TRANS_MODE}).")
+
     parser.add_argument('--onnx_run', type=int, choices=[0, 1], default=0,
                     help="Enable ONNX (1) or disable (0, default)")
 

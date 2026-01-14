@@ -28,7 +28,7 @@ ea_dir = brute_dir / 'ea'
 fract_dir = brute_dir / 'fract'
 trans_dir = brute_dir / 'trans'
 
-config_file = conf_llm_dir / 'nngpt_ds_coder_1.3b_instruct.json'
+config_file = conf_llm_dir / 'nngpt_ds_coder_1.3b_instruct.json' # 'nngpt_dsr1_distill_qwen_7b_r.json'
 with open(config_file) as f:
     base_llm = json.load(f)['base_model_name']
 

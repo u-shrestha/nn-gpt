@@ -1,3 +1,5 @@
+import importlib
+import inspect
 import os
 import os.path
 import re
@@ -134,6 +136,28 @@ def extract_code(txt):
     else:
         print("[EXTRACT] ✗ No NN code found")
         return None
+
+def read_py_file_as_string(file_path):
+    """
+    read_py_file_as_string。
+
+    param:
+        file_path (str): path of the file to read.
+
+    Return:
+        str: Content of the file.
+    """
+    try:
+        spec = importlib.util.spec_from_file_location("module_name", file_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        source_code = inspect.getsource(module)
+        return source_code
+    except Exception as e:
+        print(f"error when reading file: {e}")
+        return None
+
 
 def extract_hyperparam(txt):
     """

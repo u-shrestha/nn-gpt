@@ -74,7 +74,7 @@ class ChatBot:
                 out = self.__pipeline(
                     in_next,
                     max_new_tokens=max_new_tokens,
-                    do_sample=True,
+                    do_sample=True,  # Allow Random answer
                     max_len=max_len,
                     temperature=self.temperature,
                     top_k=self.top_k,
