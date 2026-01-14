@@ -1,5 +1,3 @@
-# ab/gpt/util/Util.py
-
 import os
 import os.path
 import re
@@ -7,7 +5,7 @@ import shutil
 import ast
 import json
 from pathlib import Path
-from ab.gpt.util.Const_Onnx import new_lemur_nn_dir, new_nn_file, new_lemur_stat_dir
+from ab.gpt.util.Const import new_lemur_nn_dir, new_nn_file, new_lemur_stat_dir
 from ..util.Code import *
 
 def nn_accepted(nn_dir):

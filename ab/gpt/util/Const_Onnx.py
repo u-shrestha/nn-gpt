@@ -1,5 +1,4 @@
 from ab.nn.util.Const import base_module, ab_root_path, out_dir
-
 import json
 
 new_nn_file = 'new_nn.py'
@@ -9,7 +8,6 @@ new_out_file = 'full_output.txt'
 
 gpt = 'gpt'
 gpt_dir = ab_root_path / base_module / gpt
-
 conf_dir = gpt_dir / 'conf'
 conf_prompt_dir = conf_dir / 'prompt'
 conf_test_dir = conf_prompt_dir / 'test'
@@ -31,12 +29,10 @@ fract_dir = brute_dir / 'fract'
 trans_dir = brute_dir / 'trans'
 
 config_file = conf_llm_dir / 'nngpt_ds_coder_1.3b_instruct.json'
-
 with open(config_file) as f:
     base_llm = json.load(f)['base_model_name']
 
-
-# Hugging Face cache directories
+# Hugging Face cache directories .. onnx sepcific
 huggingface_cache = out_dir / 'llm'
 huggingface_tokenizer_cache = out_dir / 'tokenizer'
 default_huggingface_cache = huggingface_cache
@@ -67,3 +63,51 @@ def epoch_dir(*args):
     for d in args:
         e_dir = e_dir / f'A{d}'
     return e_dir
+
+core_nns = [
+    'AirNet',
+    'AirNext',
+    'AlexNet',
+    'BagNet',
+    'BayesianNet-1',
+    'ConvNeXt',
+    'ConvNeXtTransformer',
+    'DPN107',
+    'DPN131',
+    'DPN68',
+    'DarkNet',
+    'DeepLabV3-1',
+    'DenseNet',
+    'Diffuser',
+    'EfficientNet',
+    'FCN16s',
+    'FCN32s-1',
+    'FCN8s',
+    'FCOS',
+    'FasterRCNN',
+    'FractalNet',
+    'GoogLeNet',
+    'ICNet',
+    'InceptionV3-1',
+    'LRASPP',
+    'LSTM',
+    'MNASNet',
+    'MaxVit',
+    'MobileNetV2',
+    'MobileNetV3',
+    'RESNETLSTM',
+    'RNN',
+    'RegNet',
+    'ResNet',
+    'ResNetTransformer',
+    'RetinaNet',
+    'SSDFull',
+    'SSDLite',
+    'ShuffleNet',
+    'SqueezeNet-1',
+    'SwinTransformer',
+    'UNet-1',
+    'UNet2D',
+    'VGG',
+    'VisionTransformer'
+]
