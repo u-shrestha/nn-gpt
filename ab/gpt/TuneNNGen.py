@@ -10,10 +10,10 @@ from transformers import TrainingArguments
 
 from ab.gpt.NNEval import NN_TRAIN_EPOCHS
 from ab.gpt.util.Const import nngpt_dir, new_out_file
-from ab.gpt.util.Tune_Onnx import tune, ds_conf
 
 # --- Default Evaluation Parameters ---
 # These will be used as defaults for argparse arguments
+
 START_LAYER = 0
 END_LAYER = 24
 TUNE_LAYERS = range(START_LAYER, END_LAYER)
@@ -53,7 +53,6 @@ TOP_K = 70
 TOP_P = 0.9
 TEST_METRIC = None  # 'bleu' or other metric for evaluation
 ONNX_RUN = False
-
 # --- Pipeline-Optimized Defaults (for iterative_finetune.py) ---
 # These defaults are optimized for multi-cycle iterative fine-tuning
 PIPELINE_LEARNING_RATE = 1e-5  # Conservative for stability (vs standalone 1e-6)
@@ -72,6 +71,11 @@ PIPELINE_PER_DEVICE_EVAL_BATCH_SIZE = 1  # Reduce eval batch size to save memory
 PIPELINE_EVALUATION_STRATEGY = 'steps'
 PIPELINE_LOAD_BEST_MODEL_AT_END = True
 PIPELINE_METRIC_FOR_BEST_MODEL = 'eval_loss'
+
+if ONNX_RUN:
+    from ab.gpt.util.Tune_Onnx import tune, ds_conf
+else:
+    from ab.gpt.util.Tune import tune, ds_conf
 
 def get_pipeline_defaults():
     """
