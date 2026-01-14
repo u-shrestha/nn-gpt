@@ -9,3 +9,5 @@ data/
 curation_output/
 iterative_pipeline.log
 .gitignore
+*.egg-info/
+unsloth_compiled_cache/
