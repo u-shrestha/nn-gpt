@@ -3,6 +3,14 @@ import os
 import json
 from typing import Literal
 
+# Unsloth conditional import
+# Unsloth should be imported before transformers and peft
+try:
+    import unsloth
+    UNSLOTH_AVAILABLE = True
+except ImportError:
+    UNSLOTH_AVAILABLE = False
+
 from peft import LoraConfig
 from transformers import TrainingArguments
 
