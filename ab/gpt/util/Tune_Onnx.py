@@ -14,8 +14,8 @@ from ab.nn.util.Util import release_memory, create_file
 from peft import PeftModel
 from tqdm import tqdm
 import ab.gpt.NNEval as NNEval
-from ab.gpt.util.Chatbot_Onnx import ChatBot
-from ab.gpt.util.Const_Onnx import (
+from ab.gpt.util.Chatbot import ChatBot
+from ab.gpt.util.Const import (
     ab_root_path,
     conf_dir,
     conf_llm_dir,
@@ -33,7 +33,7 @@ from ab.gpt.util.Const_Onnx import (
 
 from ab.gpt.util.LLMUtil import quantization_config_4bit
 from ab.gpt.util.LoRA import LoRA
-from ab.gpt.util.Util_Onnx import exists
+from ab.gpt.util.Util import exists
 from ab.gpt.util.prompt.NNGenPrompt import NNGenPrompt
 
 ds_conf = conf_dir / 'DeepSpeed.json'
