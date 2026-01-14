@@ -1,5 +1,16 @@
-import Const as const
+import sys
+from pathlib import Path
 import os
+
+# Dynamically add workspace roots to path based on script location
+script_path = Path(__file__).resolve()
+gw_root = script_path.parent.parent.parent.parent  # Points to .../nn-gpt
+ds_root = gw_root.parent / 'nn-dataset'          # Points to .../nn-dataset
+
+sys.path.append(str(ds_root))
+sys.path.append(str(gw_root))
+
+import Const as const
 
 print(f"Models in Const.py: {len(const.core_nns)}")
 out_dir = const.synth_dir(const.epoch_dir('0'))

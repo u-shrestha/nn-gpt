@@ -1,0 +1,35 @@
+{
+  "improve_classification_only": {
+    "task": "img-classification",
+    "addon_task": null,
+    "input_list": [
+      {"para": "accuracy", "value": "accuracy"},
+      {"para": "transform_code", "value": "transform_code"}
+    ],
+    "addon_list": [
+      {"para": "addon_accuracy", "value": "accuracy"},
+      {"para": "addon_transform_code", "value": "transform_code"}
+    ],
+    "no_repeat": [],
+    "keep_same": [],
+    "prompt": [
+      "You are an expert image transformation generator.",
+      "Your task is to synthesize a high-performance augmentation strategy with common patterns and ideas of two reference transforms.",
+      "### Reference 1 (Acc: {accuracy})",
+      "<tr>{transform_code}</tr>",
+      "### Reference 2 (Acc: {addon_accuracy})",
+      "<tr>{addon_transform_code}</tr>",
+      "### Task",
+      "Create a new 'transform' function for CIFAR-10 that combines the effective parts of both references.",
+      "Target Settings: 1 epoch, batch 64, lr 0.01.",
+      "### Instructions",
+      "1. Briefly analyze why Ref 1 and 2 worked, and propose a strategy.",
+      "2. <tr>: Write the executable Python code.",
+      "### Negative Constraints",
+      "- DO NOT output SVG, <path>, <g>, or HTML tags.",
+      "- DO NOT output markdown fences (```).",
+      "Respond strictly in this format:",
+      "<tr>... code ...</tr>"  
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 wheel
 torch==2.8.0
-nn-dataset>=2.1.2
+nn-dataset>=2.2.6
 bitsandbytes>=0.45.0
 peft>=0.14.0
 gguf>=0.10.0

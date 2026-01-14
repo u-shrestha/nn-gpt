@@ -3,6 +3,7 @@ import shutil
 import json
 from os import makedirs
 from os.path import isfile
+import glob
 
 import ab.nn.api as lemur
 import deepspeed
@@ -19,9 +20,19 @@ from ab.gpt.util.LoRA import LoRA
 from ab.gpt.util.Util import exists
 from ab.gpt.util.prompt.NNGenPrompt import NNGenPrompt
 
+
+from ab.gpt.brute.trans.TransformEval import run_eval
+from ab.gpt.util.prompt.TransformGenPrompt import TransformGenPrompt, load_data_from_folders
+
 # from datasets import load_from_disk
 
+
 ds_conf = conf_dir / 'DeepSpeed.json'
+
+# Transform dir paths
+TRANSFORM_OUT_DIR = trans_dir / 'dataset_epoch1'
+TRANSFORM_RES_DIR = trans_dir / 'result_epoch1'
+
 
 
 def apply_sliding_window(example, max_length, stride, tokenizer):
@@ -56,7 +67,8 @@ def flatten_chunks(data):
 
 
 def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf, training_args, peft_config,
-         max_prompts=None, save_llm_output=True, max_new_tokens=16 * 1024, nn_name_prefix=None, temperature=1.0, top_k=50, top_p=0.9, test_metric=None, onnx_run=False):
+         max_prompts=None, save_llm_output=True, max_new_tokens=16 * 1024, nn_name_prefix=None, temperature=1.0, top_k=50, top_p=0.9, test_metric=None, onnx_run=False, trans_mode=False ):
+    
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
     with open(conf_llm_dir / llm_conf) as f:
@@ -76,6 +88,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
             access_token = f.readline()
 
     print(f'[DEBUG]Argument Information:\nSkip generation until Epoch: {skip_epoch}\nPath to saved LoRA Layers: {llm_path}')
+    
     train_config_path = conf_train_dir / llm_tune_conf
 
     # Load test prompts
@@ -106,7 +119,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         model = PeftModel.from_pretrained(model, llm_path, is_trainable=True)
         model = model.merge_and_unload()
 
-    # initialize deepspeed before we do infer in ChatBot, since trainer is not initialized now.
+    # initialize deepspeed before we do infer in ChatBot
     if use_deepspeed:
         deepspeed.initialize(model=model, config_params=ds_conf)
 
@@ -122,20 +135,41 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
     print('Using Max Length:', model_loader.get_max_length())
 
     # loop train and eval cycles
-    chat_bot = ChatBot(model, tokenizer, temperature=temperature, top_k=top_k, top_p=top_p)  # Only initialize ONCE
+    chat_bot = ChatBot(model, tokenizer, temperature=temperature, top_k=top_k, top_p=top_p) # Only initialize ONCE
 
     shutil.rmtree(epoch_dir(), ignore_errors=True)
     for epoch in range(llm_tune_epochs):
         print(f'[INFO]Start Epoch {epoch}')
         out_path = epoch_dir(epoch)
         if epoch < skip_epoch:
-            print(f'Skipped nn generation at epoch {epoch}')
+            print(f'Skipped generation at epoch {epoch}')
         else:
-            nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix)
+            if trans_mode:
+                trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix)
+            else:
+                nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix)
+
         # fine tune model for 1 epoch / Using training_args and save copy
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')
         # data_processor = NNGenPrompt(model_loader.get_max_length(), tokenizer, train_config_path)
-        data_processor = NNGenPrompt(context_length if context_length else model_loader.get_max_length(), tokenizer, train_config_path)
+
+        # Select data processor based on mode
+        if trans_mode:
+            
+            data_processor = TransformGenPrompt(
+                context_length if context_length else model_loader.get_max_length(), 
+                tokenizer, 
+                train_config_path,
+                TRANSFORM_OUT_DIR,
+                TRANSFORM_RES_DIR
+            )
+        else:
+            data_processor = NNGenPrompt(
+                context_length if context_length else model_loader.get_max_length(), 
+                tokenizer, 
+                train_config_path
+            )
+
         dataset = data_processor.get_dataset(only_best_accuracy, max_prompts=max_prompts)
         # dataset = load_from_disk(nngpt_dir / 'dataset')
 
@@ -285,3 +319,97 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
     print('Clear LEMUR query cache.')
     lemur.data.cache_clear()
     print('The cache has been cleared.')
+
+
+
+def trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict_global, test_nn, max_new_tokens, save_llm_output, nn_name_prefix):
+    """
+    Transform Script Generation
+    """
+    print('Running Transform Generation...')
+    
+    out_gen_dir = str(TRANSFORM_OUT_DIR)
+    result_gen_dir = str(TRANSFORM_RES_DIR)
+  
+    prompts = []
+
+    # Load all data from folders to be used for seed prompts
+    all_data = load_data_from_folders(out_gen_dir, result_gen_dir, only_best_accuracy=True)
+    if len(all_data) == 0:
+        print("Warning: No data loaded from folders for generation. Skipping.", flush=True)
+        return
+        
+    for key in conf_keys:
+        prompt_config = prompt_dict_global[key]
+        prompt = ''
+        for pr in prompt_config['prompt']:
+            prompt += pr + '\n'
+
+        # Get seed data    
+        if len(all_data) < test_nn:
+            print(f"Warning: Requested {test_nn} samples, but only {len(all_data)} available. Using all.", flush=True)
+            data_sample = all_data.sample(n=len(all_data))
+        else:
+            data_sample = all_data.sample(n=test_nn)
+
+        addon_data = all_data
+        
+        for _, row in data_sample.iterrows():
+            para_dict = dict()
+            row_dict = row.to_dict()
+            for it in prompt_config['input_list']:
+                para_dict[it['para']] = row_dict.get(it['value'])
+            
+            # Avoid sampling the same transform
+            filtered_addon_data = addon_data.loc[addon_data.id_name != row['id_name']]
+            if len(filtered_addon_data) > 0:
+                addon_row = filtered_addon_data.sample(n=1).iloc[0].to_dict()
+                if prompt_config.get('addon_list'):
+                    for it in prompt_config['addon_list']:
+                        para_dict[it['para']] = addon_row.get(it['value'])
+                prompts.append((prompt.format(**para_dict), row))
+            else:
+                print(f"Warning: Could not find addon data for {row['id_name']}. Skipping prompt.", flush=True)
+                
+    models_dir = synth_dir(out_path)
+    
+    for idx, prompt_data in tqdm(enumerate(prompts)):
+        model_dir = models_dir / f'B{idx}'
+        prompt, origdf = prompt_data
+        
+        code, hp, tr, full_out = chat_bot.chat(prompt, engineer_prompt=False, max_new_tokens=max_new_tokens)
+        
+        if save_llm_output: create_file(model_dir, new_out_file, full_out)
+        makedirs(model_dir, exist_ok=True)
+
+
+        if tr is not None and tr.strip():
+            print(f'Generated transformer:\n\n{tr}\n----\n')
+            create_file(model_dir, transformer_file, tr)
+            
+        else:
+            print(f'[ERROR] No code generated for model B{idx}')
+            continue  
+
+        df_file = model_dir / 'dataframe.df'
+        if origdf is None:
+            if isfile(df_file):
+                os.remove(df_file)
+        else:
+            create_file(model_dir, f"original_{origdf['id_name']}.py", origdf['transform_code'])
+            origdf.to_pickle(df_file)
+            
+    print('[DEBUG] Release memory.')
+    release_memory()
+
+    # Evaluate produced CV models
+    if exists(models_dir):
+        try:
+            run_eval(epoch_num=epoch, FT_MODE=True)
+        except Exception as e:
+            print(f"Error running evaluation main(): {e}", flush=True)
+            
+        print('[DEBUG] Release_memory.')
+        release_memory()
+        
+    print('Folder data reload will occur next epoch.')

@@ -1,3 +1,9 @@
+dataset/
+*.pkl
+*.jsonl
+__pycache__/
+data/
+data_v2/
 __pycache__/
 *.pyc
 .venv/
@@ -16,3 +22,6 @@ out/
 **/tokenizer/
 output.log
 stat/
+db/
+path/
+test/

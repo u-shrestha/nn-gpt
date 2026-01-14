@@ -1,0 +1,10 @@
+{
+  "accuracy": 0.586,
+  "time metric": 3.5670173230459024,
+  "batch": 64,
+  "duration": 13624828701,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "Pad_86",
+  "uid": "85c1293509411c4decac9bc0b9574c21"
+}

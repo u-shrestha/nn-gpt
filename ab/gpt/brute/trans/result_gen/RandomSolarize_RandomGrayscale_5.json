@@ -1,0 +1,10 @@
+{
+  "accuracy": 0.5307,
+  "time metric": 3.3686979776276047,
+  "batch": 64,
+  "duration": 12785355139,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "RandomSolarize_RandomGrayscale_5",
+  "uid": "dacddf56a41c5c2491d8dbfb9b9e69c2"
+}

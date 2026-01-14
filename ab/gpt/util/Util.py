@@ -225,12 +225,12 @@ def extract_delta(txt):
                        '<delta>', '</delta>')
     if delta:
         return delta
-    
+
     # Try to extract unified diff format
     lines = txt.splitlines()
     delta_lines = []
     in_diff = False
-    
+
     for line in lines:
         if line.startswith('---') or line.startswith('+++') or line.startswith('@@'):
             in_diff = True
@@ -241,10 +241,10 @@ def extract_delta(txt):
             elif line.strip() and not line.startswith('diff'):
                 # End of diff block
                 break
-    
+
     if delta_lines:
         return '\n'.join(delta_lines)
-    
+
     return None
 
 def copy_to_lemur(gen_nn_dir, name, task, dataset, metric):

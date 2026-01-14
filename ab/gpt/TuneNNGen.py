@@ -15,6 +15,7 @@ from ab.gpt.util.Const import nngpt_dir, new_out_file
 # These will be used as defaults for argparse arguments
 
 START_LAYER = 0
+
 END_LAYER = 24
 TUNE_LAYERS = range(START_LAYER, END_LAYER)
 R = 32  # dimension of the updated matrices
@@ -36,11 +37,11 @@ LR_SCHEDULER = 'cosine'  # Learning rate scheduler
 PER_DEVICE_TRAIN_BATCH_SIZE = 1
 GRADIENT_ACCUMULATION_STEPS = 8  # Increased for better stability
 WARMUP_RATIO = 0.05  # Warmup as ratio of total steps
-TEST_NN = 10
+TEST_NN = 2
 LOGGING_STEPS = 96  # Less frequent logging
 OPTIMIZER = 'paged_adamw_8bit'
-LLM_TUNE_CONF = 'NN_gen.json'
-NN_GEN_CONF = 'NN_gen.json'
+LLM_TUNE_CONF = 'NN_gen.json'   #'Transform_gen.json' for transform fine-tune
+NN_GEN_CONF = 'NN_gen.json'     #'Transform_gen.json'
 NN_GEN_CONF_ID = 'improve_classification_only'
 LLM_CONF = 'ds_coder_7b_olympic.json'
 MAX_PROMPTS = 1024  # Increased
@@ -123,7 +124,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          # Pipeline-specific overrides (for backward compatibility with iterative_finetune.py)
          evaluation_strategy=None, eval_steps=None, save_strategy=None, save_steps=None, 
          save_total_limit=None, load_best_model_at_end=False, metric_for_best_model=None, warmup_steps=None, weight_decay=None,
-         per_device_eval_batch_size=None, onnx_run=ONNX_RUN):
+         per_device_eval_batch_size=None, onnx_run=ONNX_RUN, trans_mode=TRANS_MODE):
     print(f'''All hyperparameters: 
 num_train_epochs={num_train_epochs}, lr_scheduler={lr_scheduler}, max_grad_norm={max_grad_norm}, tune_layers={tune_layers}, test_metric={test_metric}, 
 r={r}, lora_alpha={lora_alpha}, lora_dropout={lora_dropout}, target_modules={target_modules}, task_type={task_type}, bias={bias}, 
@@ -131,7 +132,7 @@ learning_rate={learning_rate}, llm_tune_conf={llm_tune_conf}, nn_gen_conf={nn_ge
 llm_conf={llm_conf}, test_nn={test_nn}, nn_train_epochs={nn_train_epochs}, peft={peft}, skip_epoches={skip_epoches}, 
 per_device_train_batch_size={per_device_train_batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}, warmup_ratio={warmup_ratio}, 
 logging_steps={logging_steps}, optimizer={optimizer}, max_prompts={max_prompts}, save_llm_output={save_llm_output}, max_new_tokens={max_new_tokens}, 
-use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={temperature}, top_k={top_k}, top_p={top_p}, onnx_run={onnx_run} ''')
+use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={temperature}, top_k={top_k}, top_p={top_p}, onnx_run={onnx_run},  trans_mode={trans_mode}''')
 
     # Build test_prm for standalone mode (epoch-based evaluation)
     # Pipeline mode will override with step-based evaluation via evaluation_strategy
@@ -254,7 +255,7 @@ use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={tem
 
     tune(test_nn, nn_train_epochs, skip_epoches, peft, llm_tune_conf, nn_gen_conf, nn_gen_conf_id, llm_conf, training_args, peft_config,
          max_prompts=max_prompts, save_llm_output=save_llm_output, max_new_tokens=max_new_tokens, nn_name_prefix=nn_name_prefix, 
-         temperature=temperature, top_k=top_k, top_p=top_p, onnx_run=onnx_run)
+         temperature=temperature, top_k=top_k, top_p=top_p, onnx_run=onnx_run, trans_mode=trans_mode)
     
     print("\n" + "="*70)
     print("FINE-TUNING CONFIGURATION SUMMARY")
@@ -518,4 +519,5 @@ if __name__ == '__main__':
          warmup_steps=args.warmup_steps,
          weight_decay=args.weight_decay,
          onnx_run=args.onnx_run
+
          )
