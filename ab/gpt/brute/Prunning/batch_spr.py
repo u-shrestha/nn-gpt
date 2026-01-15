@@ -17,11 +17,12 @@ from thop import profile
 # Dynamically add workspace roots to path based on script location
 # File is at: .../nn-gpt/ab/gpt/util/batch_spr.py
 script_path = Path(__file__).resolve()
-gw_root = script_path.parent.parent.parent.parent  # Points to .../nn-gpt
+gw_root = script_path.parent.parent.parent.parent.parent  # Points to .../nn-gpt
 ds_root = gw_root.parent / 'nn-dataset'          # Points to .../nn-dataset
 
 sys.path.append(str(ds_root))
 sys.path.append(str(gw_root))
+sys.path.append(str(gw_root / 'ab' / 'gpt' / 'util'))
 
 # Custom Project Imports (Must be after sys.path setup)
 import ab.nn.api as nn_dataset

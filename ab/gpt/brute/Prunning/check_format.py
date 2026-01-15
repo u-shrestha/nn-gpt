@@ -4,7 +4,7 @@ import os
 
 # Dynamically add workspace roots to path based on script location
 script_path = Path(__file__).resolve()
-gw_root = script_path.parent.parent.parent.parent  # Points to .../nn-gpt
+gw_root = script_path.parent.parent.parent.parent.parent  # Points to .../nn-gpt
 ds_root = gw_root.parent / 'nn-dataset'          # Points to .../nn-dataset
 
 sys.path.append(str(ds_root))
