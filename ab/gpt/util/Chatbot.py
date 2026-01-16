@@ -117,15 +117,45 @@ class ChatBot:
                 truncation=True,
                 max_length=self.tokenizer.model_max_length - (max_new_tokens or 4096)
             )
+
+
+            # -- FIX 1: Validate token IDs before GPU move -- 
+
+            if 'input_ids' in inputs:
+                input_ids = inputs['input_ids']
+                vocab_size = self.tokenizer.vocab_size
+                max_token_id = input_ids.max().item()
+
+            if max_token_id >= vocab_size:
+                print(f"[WARN] Invalid token IDs detected: max_id={max_token_id}, vocab_size={vocab_size}")
+                print(f"[WARN] Clamping to valid range [0, {vocab_size-1}]")
+
+            clamp_value = self.tokenizer.eos_token_id if self.tokenizer.eos_token_id is not None else vocab_size - 1
+            input_ids = torch.clamp(input_ids, max=clamp_value)
+            inputs['input_ids'] = input_ids
+            print(f"[WARN] After clamping: max_id={input_ids.max().item()}")
+
             
             # Move to appropriate device
-            if hasattr(self.model, 'device'):
+            # if hasattr(self.model, 'device'):
+            #     device = self.model.device
+            # elif self.is_onnx:
+            #     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+            # else:
+            #     device = next(self.model.parameters()).device
+            
+            if hasattr(self.model, 'device') and self.model.device is not None:
                 device = self.model.device
             elif self.is_onnx:
-                device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+                device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
             else:
-                device = next(self.model.parameters()).device
-            
+                try:
+                    device = next(self.model.parameters()).device
+                except StopIteration:
+                    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+
+                    
             inputs = {k: v.to(device) for k, v in inputs.items()}
             
             # FIX: Store input length before generation
