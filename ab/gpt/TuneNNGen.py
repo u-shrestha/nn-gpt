@@ -429,9 +429,8 @@ if __name__ == '__main__':
     # #                     help=f"Run model generation step with LLM in ONNX format (default: {ONNX_RUN}).")
     parser.add_argument('--trans_mode', type=float, default=TRANS_MODE,
                         help=f"Run model generation for transforms only (default: {TRANS_MODE}).")
-
-    parser.add_argument('--onnx_run', type=int, choices=[0, 1], default=0,
-                    help="Enable ONNX (1) or disable (0, default)")
+    parser.add_argument('--onnx_run', type=float, default=ONNX_RUN,
+                        help=f"Run model generation step with LLM in ONNX format (default: {ONNX_RUN}).")
 
     args = parser.parse_args()
 
