@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import torch
 
 import ab.nn.api as nn_dataset
 from ab.nn.util.Util import create_file
@@ -44,7 +45,10 @@ def format_prompt_with_supporting_models(prompt_template, para_dict, supporting_
     return formatted_prompt
 
 
-def alter(epochs, test_conf, llm_name, gguf_file=None, n=1, temperature=0.6, top_k=50):
+def alter(epochs, test_conf, llm_name, gguf_file=None, n=1, temperature=0.6, top_k=50, *args, **kwargs):
+    inference_gpt_oss = kwargs.get('inference_gpt_oss', False)
+    inference_gpt_oss_max_input_length = kwargs.get('inference_gpt_oss_max_input_length', None)
+
     # Load test prompts
     with open(conf_test_dir / test_conf) as f:
         prompt_dict = json.load(f)
@@ -111,9 +115,22 @@ def alter(epochs, test_conf, llm_name, gguf_file=None, n=1, temperature=0.6, top
             model_dir = synth_dir(out_path) / f"B{B_index}"
             code_file = model_dir / new_nn_file
             df_file = model_dir / 'dataframe.df'
-            inputs = tokenizer.apply_chat_template([{'role': 'user', 'content': prompt}, ], add_generation_prompt=True, return_tensors="pt").to(model.device)
+            inputs = tokenizer.apply_chat_template([{'role': 'user', 'content': prompt}, ], add_generation_prompt=True, return_tensors="pt")
+            # Handle both tensor and BatchEncoding return types
+            if hasattr(inputs, 'input_ids'):
+                inputs = inputs.input_ids.to(model.device)
+            else:
+                inputs = inputs.to(model.device)
+            
+            if inference_gpt_oss:
+                # Skip prompts that are too long to avoid O(n²) attention OOM
+                if inputs.shape[-1] > inference_gpt_oss_max_input_length:
+                    print(f"[INFO] Skipping prompt {idx}: input length {inputs.shape[-1]} > {inference_gpt_oss_max_input_length}")
+                    continue
             # tokenizer.eos_token_id is the id of <｜end▁of▁sentence｜>  token
-            outputs = model.generate(inputs, max_new_tokens=64 * 1024, do_sample=True, temperature=temperature, top_k=top_k, top_p=0.95, num_return_sequences=1,
+            with torch.no_grad():
+                model.eval()
+                outputs = model.generate(inputs, max_new_tokens=8*1024, do_sample=True, temperature=temperature, top_k=top_k, top_p=0.95, num_return_sequences=1,
                                      eos_token_id=tokenizer.eos_token_id)
             out = tokenizer.decode(outputs[0][len(inputs[0]):], skip_special_tokens=True)
             print("Response Available!")
@@ -317,8 +334,7 @@ def alter_delta(epochs, test_conf, llm_name, gguf_file=None, n=1, temperature=0.
             
             # Fallback: try to extract full code if delta extraction/application failed
             if not delta or origdf is None:
-            else:
-                # Fallback: try to extract full code if delta extraction failed
+                # Fallback: try to extract full code if delta extraction failed 
                 nn_code = extract_code(out)
                 if nn_code:
                     print(f"[INFO] Delta extraction failed, using extracted code as fallback: {code_file}")
