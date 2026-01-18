@@ -1,0 +1,10 @@
+{
+  "accuracy": 0.3433,
+  "time metric": 1.1498799841076415,
+  "batch": 64,
+  "duration": 21158729899,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "RandomVerticalFlip_ColorJitter_RandomHorizontalFlip",
+  "uid": "65a525b55df07d8c249ade130e802478"
+}

@@ -1,5 +1,8 @@
+# ab/gpt/util/Chatbot.py
+
 from transformers import PreTrainedTokenizer, PreTrainedModel, pipeline
 from ab.gpt.util.Util import extract_code, extract_hyperparam, extract_transform
+import torch
 
 extra_instructions = (
     " Use PyTorch for the implementation. Keep the code short. Name the main class of the model \"Net\"."
@@ -9,50 +12,183 @@ extra_instructions = (
 )
 
 example_prompt = (
-        "Write PyTorch code for an efficient classification model that includes self-attention blocks."
-        + extra_instructions
+    "Write PyTorch code for an efficient classification model that includes self-attention blocks."
+    + extra_instructions
 )
 
-
 class ChatBot:
-    def __init__(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, keep_memory=False, temperature=1.0, top_k=50, top_p=0.9):
+    def __init__(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, keep_memory=False,
+                 temperature=1.0, top_k=50, top_p=0.9):
         self.show_additional_info = False
         self.model = model
         self.tokenizer = tokenizer
-        self.__pipeline = pipeline(
-            "text-generation",
-            model=self.model,
-            tokenizer=self.tokenizer,
-        )
         self.__keep_memory = keep_memory
         self.temperature = temperature
         self.top_k = top_k
         self.top_p = top_p
+        
+        # Check if model is ONNX (wrapped or direct ORTModel)
+        self.is_onnx = (
+            hasattr(model, 'ort_model') or  # Our OnnxCausalLMWrapper
+            type(model).__name__ == 'ORTModelForCausalLM' or
+            'ORTModel' in type(model).__name__
+        )
+        
+        # Only create pipeline for PyTorch models
+        if not self.is_onnx:
+            try:
+                self.__pipeline = pipeline(
+                    "text-generation",
+                    model=self.model,
+                    tokenizer=self.tokenizer,
+                )
+                print("[INFO] Using Hugging Face pipeline for generation")
+            except Exception as e:
+                print(f"[WARN] Pipeline creation failed: {e}")
+                print("[INFO] Falling back to direct generation")
+                self.__pipeline = None
+        else:
+            print("[INFO] ONNX model detected, using direct generation (no pipeline)")
+            self.__pipeline = None
+        
         if self.__keep_memory:
             self.__messages = []
 
     def chat(self, prompt: str, max_len=None, max_new_tokens=None, engineer_prompt=True) -> tuple[str, str, str, str]:
-        self.model.eval()
+        # Set model to eval mode (no-op for ONNX)
+        if hasattr(self.model, "eval"):
+            self.model.eval()
+        
         if engineer_prompt:
             prompt += extra_instructions
-
+        
         if self.__keep_memory:
             self.__messages.append({"role": "user", "content": prompt})
             in_text = self.__messages
         else:
-            in_text = [{"role": "user", "content": prompt}]
+            in_next = [{"role": "user", "content": prompt}]
+        
+        # Use pipeline if available (PyTorch path)
+        if self.__pipeline is not None:
+            try:
+                out = self.__pipeline(
+                    in_next,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=True,  # Allow Random answer
+                    max_len=max_len,
+                    temperature=self.temperature,
+                    top_k=self.top_k,
+                    top_p=self.top_p,
+                )[0]["generated_text"][-1]['content']
+                
+                assert isinstance(out, str)
+                
+                if self.__keep_memory:
+                    self.__messages.append({"role": "assistant", "content": out})
+                
+                nn = extract_code(out)
+                return nn, extract_hyperparam(out), extract_transform(out), out
+                
+            except Exception as e:
+                print(f"[ERROR] Pipeline generation failed: {e}")
+                print("[INFO] Falling back to direct generation")
+        
+        # Direct generation (ONNX or PyTorch fallback)
+        return self._direct_generate(in_next, max_new_tokens, max_len)
 
-        out = self.__pipeline(
-            in_text,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,  # Allow Random answer
-            max_len=max_len,
-            temperature=self.temperature,
-            top_k=self.top_k,
-            top_p=self.top_p,
-        )[0]["generated_text"][-1]['content']
-        print("ChatBot Generation complete.")
-        assert isinstance(out, str)
-        if self.__keep_memory: self.__messages.append({"role": "assistant", "content": out})
-        nn = extract_code(out)
-        return nn, extract_hyperparam(out), extract_transform(out), out
+    def _direct_generate(self, messages, max_new_tokens, max_len):
+        """Direct model.generate() call without pipeline - works for ONNX and PyTorch"""
+        try:
+            # Apply chat template to format messages
+            if hasattr(self.tokenizer, 'apply_chat_template'):
+                formatted_prompt = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True
+                )
+            else:
+                # Fallback: concatenate messages
+                formatted_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages])
+            
+            # Tokenize input
+            inputs = self.tokenizer(
+                formatted_prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=self.tokenizer.model_max_length - (max_new_tokens or 4096)
+            )
+
+
+            # -- FIX 1: Validate token IDs before GPU move -- 
+
+            if 'input_ids' in inputs:
+                input_ids = inputs['input_ids']
+                vocab_size = self.tokenizer.vocab_size
+                max_token_id = input_ids.max().item()
+
+            if max_token_id >= vocab_size:
+                print(f"[WARN] Invalid token IDs detected: max_id={max_token_id}, vocab_size={vocab_size}")
+                print(f"[WARN] Clamping to valid range [0, {vocab_size-1}]")
+
+            clamp_value = self.tokenizer.eos_token_id if self.tokenizer.eos_token_id is not None else vocab_size - 1
+            input_ids = torch.clamp(input_ids, max=clamp_value)
+            inputs['input_ids'] = input_ids
+            print(f"[WARN] After clamping: max_id={input_ids.max().item()}")
+
+            
+            # Move to appropriate device
+            # if hasattr(self.model, 'device'):
+            #     device = self.model.device
+            # elif self.is_onnx:
+            #     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+            # else:
+            #     device = next(self.model.parameters()).device
+            
+            if hasattr(self.model, 'device') and self.model.device is not None:
+                device = self.model.device
+            elif self.is_onnx:
+                device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+            else:
+                try:
+                    device = next(self.model.parameters()).device
+                except StopIteration:
+                    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+
+                    
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            # FIX: Store input length before generation
+            input_length = inputs['input_ids'].shape[-1]  # Use shape[-1] for sequence length
+            
+            # Generate
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens or 4096,
+                    max_length=max_len,
+                    do_sample=True,
+                    temperature=self.temperature,
+                    top_k=self.top_k,
+                    top_p=self.top_p,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+            
+            # FIX: Decode only the generated part (skip input prompt)
+            generated_ids = outputs[0][input_length:]  # Use input_length, not shape[1]
+            out = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+            
+            assert isinstance(out, str)
+            
+            if self.__keep_memory:
+                self.__messages.append({"role": "assistant", "content": out})
+            
+            nn = extract_code(out)
+            return nn, extract_hyperparam(out), extract_transform(out), out
+            
+        except Exception as e:
+            print(f"[ERROR] Direct generation failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return None, None, None, ""

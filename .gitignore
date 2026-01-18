@@ -1,3 +1,9 @@
+dataset/
+*.pkl
+*.jsonl
+__pycache__/
+data/
+data_v2/
 __pycache__/
 *.pyc
 .venv/
@@ -11,3 +17,13 @@ iterative_pipeline.log
 .gitignore
 *.egg-info/
 unsloth_compiled_cache/
+
+# Run artifacts (do not commit)
+out/
+**/checkpoint-*
+**/tokenizer/
+output.log
+stat/
+db/
+path/
+test/

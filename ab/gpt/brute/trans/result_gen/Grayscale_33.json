@@ -1,0 +1,10 @@
+{
+  "accuracy": 0.561,
+  "time metric": 4.321961842124724,
+  "batch": 64,
+  "duration": 10666452339,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "Grayscale_33",
+  "uid": "945db7c76f8acd86aaf568bbd98226af"
+}
