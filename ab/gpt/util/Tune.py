@@ -153,11 +153,10 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
             if trans_mode:
                 trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix)
             else:
-                nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix)
+                nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix, unsloth_max_input_length=unsloth_max_input_length)
 
         # fine tune model for 1 epoch / Using training_args and save copy
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')
-        # data_processor = NNGenPrompt(model_loader.get_max_length(), tokenizer, train_config_path)
 
         # Select data processor based on mode
         if trans_mode:
@@ -170,24 +169,12 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
                 TRANSFORM_RES_DIR
             )
         else:
-            data_processor = NNGenPrompt(
-                context_length if context_length else model_loader.get_max_length(), 
-                tokenizer, 
-                train_config_path
-            )
+            if not use_unsloth:
+                data_processor = NNGenPrompt(context_length if context_length else model_loader.get_max_length(), tokenizer, train_config_path)
+            else:
+                data_processor = NNGenPrompt(unsloth_max_input_length if unsloth_max_input_length else model_loader.get_max_length(), tokenizer, train_config_path)
+        dataset = data_processor.get_dataset(only_best_accuracy, max_prompts=max_prompts, max_new_tokens=max_new_tokens)
 
-        dataset = data_processor.get_dataset(only_best_accuracy, max_prompts=max_prompts)
-        # dataset = load_from_disk(nngpt_dir / 'dataset')
-
-        # if context_length:
-        #     chunked_dataset = dataset.map(
-        #         lambda x: apply_sliding_window(x, context_length, 1024, tokenizer),
-        #         remove_columns=dataset.column_names,
-        #         batch_size=16
-        #     )
-        #     dataset = chunked_dataset.map(flatten_chunks, batched=True, remove_columns=["chunks"])
-
-        # print('Dataset length:', len(dataset))
         print('Dataset length:', len(dataset))
         model.train()
         model = lora_tuner.train(dataset, tokenizer, out_path / base_model_name)
