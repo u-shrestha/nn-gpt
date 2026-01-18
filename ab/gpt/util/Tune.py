@@ -81,6 +81,10 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
     use_deepspeed = config['use_deepspeed']
     only_best_accuracy = config['only_best_accuracy']
     context_length = config.get('context_length')
+    unsloth_max_input_length = config.get('max_input_length', None)
+    use_unsloth = config.get('use_unsloth', False)
+    unsloth_load_in_4bit = config.get('load_in_4bit', True)
+    max_new_tokens = config.get('max_new_tokens', max_new_tokens)
 
     access_token = None
     if token_from_file:
@@ -109,7 +113,10 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         quantization_config_4bit,
         access_token=access_token,
         use_deepspeed=use_deepspeed,
-        context_length=context_length
+        context_length=context_length,
+        training_args=training_args,
+        use_unsloth=use_unsloth,
+        load_in_4bit=unsloth_load_in_4bit
     )
     model = model_loader.get_model()
     tokenizer = model_loader.get_tokenizer()
@@ -128,9 +135,8 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         tokenizer,
         training_args=training_args,
         access_token=access_token,
-        peft_config=peft_config
-        # , test_metric=test_metric
-    )
+        peft_config=peft_config,
+        use_unsloth=use_unsloth)
 
     print('Using Max Length:', model_loader.get_max_length())
 
@@ -189,7 +195,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         release_memory()
 
 
-def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix):
+def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix, unsloth_max_input_length=None):
     # Move inside the loop to create new prompt with newly created models.
     print('Preparing prompts for generation, this might take a while...')
     
@@ -233,6 +239,19 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
     for idx, prompt in tqdm(enumerate(prompts)):
         model_dir = models_dir / f'B{idx}'
         prompt, origdf = prompt
+
+        if unsloth_max_input_length:
+            # skip if prompt is too long
+            in_text = [{"role": "user", "content": prompt}]
+            output = chat_bot.tokenizer.apply_chat_template(
+                in_text,
+                add_generation_prompt=True,
+            )
+            print(f'Sample prompt length: {len(output)}, max_input_length: {unsloth_max_input_length}')
+            if len(output) > unsloth_max_input_length:
+                print(f'Prompt is too long, skipping...')
+                continue
+
         code, hp, tr, full_out = chat_bot.chat(prompt, engineer_prompt=False, max_new_tokens=max_new_tokens)
         if save_llm_output: create_file(model_dir, new_out_file, full_out)
         makedirs(model_dir, exist_ok=True)

@@ -91,21 +91,48 @@ class LoRA:
                  tokenizer: PreTrainedTokenizerBase,
                  training_args: TrainingArguments,
                  access_token=None,
-                 peft_config=None
+                 peft_config=None,
+                 use_unsloth=False
                  ):
         self.model = model
         self.tokenizer = tokenizer
         self.training_args = training_args
         self.access_token = access_token
+        self._use_unsloth = use_unsloth
+        
         if peft_config is None:
             modules = find_all_linear_names(self.model)
             self.peft_config = create_peft_config(modules)
         else:
             self.peft_config = peft_config
-        self.model = prepare_model_for_kbit_training(self.model)
-        self.model.gradient_checkpointing_enable()
-        self.peft_model = get_peft_model(self.model, self.peft_config)
         
+        if use_unsloth:
+            # Use Unsloth's native LoRA attachment (keeps bfloat16 dtypes)
+            try:
+                from unsloth import FastModel
+                self.peft_model = FastModel.get_peft_model(
+                    self.model,
+                    r=self.peft_config.r,
+                    lora_alpha=self.peft_config.lora_alpha,
+                    lora_dropout=self.peft_config.lora_dropout,
+                    target_modules=list(self.peft_config.target_modules),
+                    bias="none",
+                    use_gradient_checkpointing="unsloth",  # Unsloth's optimized checkpointing
+                    random_state=42,
+                )
+                print("[LoRA] Using Unsloth's FastModel.get_peft_model() for bfloat16 compatibility")
+            except Exception as e:
+                print(f"[LoRA] Unsloth get_peft_model failed: {e}, falling back to standard PEFT")
+                use_unsloth = False
+                self._use_unsloth = False
+        
+        if not use_unsloth:
+            # Standard PEFT flow for non-Unsloth models
+            self.model = prepare_model_for_kbit_training(self.model)
+            self.model.gradient_checkpointing_enable()
+            self.peft_model = get_peft_model(self.model, self.peft_config)
+        
+        self.peft_model._hf_peft_config_loaded = True 
         # Log trainable parameters immediately after adapters are attached
         print(f"[LoRA] Adapters attached. Effective target_modules: {self.peft_config.target_modules}")
         print("[LoRA] Trainable parameter summary:")

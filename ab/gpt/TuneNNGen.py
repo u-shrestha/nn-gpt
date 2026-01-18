@@ -4,6 +4,14 @@ import json
 import sys
 from typing import Literal
 
+# Unsloth conditional import
+# Unsloth should be imported before transformers and peft
+try:
+    import unsloth
+    UNSLOTH_AVAILABLE = True
+except ImportError:
+    UNSLOTH_AVAILABLE = False
+
 import torch
 from peft import LoraConfig
 from transformers import TrainingArguments
@@ -44,7 +52,7 @@ LLM_TUNE_CONF = 'NN_gen.json'   #'Transform_gen.json' for transform fine-tune
 NN_GEN_CONF = 'NN_gen.json'     #'Transform_gen.json'
 NN_GEN_CONF_ID = 'improve_classification_only'
 LLM_CONF = 'ds_coder_7b_olympic.json'
-MAX_PROMPTS = 4 * 1024  # Increased
+MAX_PROMPTS = 4  # Increased
 MAX_NEW_TOKENS = 16 * 1024
 SAVE_LLM_OUTPUT = True
 USE_DEEPSPEED = False
@@ -158,10 +166,11 @@ use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={tem
     if evaluation_strategy is not None:
         # PIPELINE MODE: Use pipeline-specific settings
         training_kwargs = {
-            'report_to': None,
+            'report_to': [],
             'per_device_train_batch_size': per_device_train_batch_size,
             'gradient_accumulation_steps': gradient_accumulation_steps,
             'learning_rate': learning_rate,
+            'bf16': True,  # Use bf16 to match Unsloth's bfloat16 compute dtype
             'logging_steps': logging_steps,
             'output_dir': nngpt_dir / 'outputs',
             'optim': optimizer,
@@ -204,11 +213,12 @@ use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={tem
             'num_train_epochs': num_train_epochs,
             'lr_scheduler_type': lr_scheduler,
             'max_grad_norm': max_grad_norm,
-            'report_to': None,
+            'report_to': [],
             'per_device_train_batch_size': per_device_train_batch_size,
             'gradient_accumulation_steps': gradient_accumulation_steps,
             'warmup_ratio': warmup_ratio,
             'learning_rate': learning_rate,
+            'bf16': True,  # Use bf16 to match Unsloth's bfloat16 compute dtype
             'logging_steps': logging_steps,
             'output_dir': nngpt_dir / 'outputs',
             'optim': optimizer,
