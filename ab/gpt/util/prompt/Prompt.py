@@ -9,10 +9,19 @@ def preprocess_batch(batch, tokenizer, max_length):
     """
     Tokenizing a batch
     """
-    return tokenizer(
+    result = tokenizer(
         batch['text'],
         truncation=False
     )
+    # Also tokenize response to check its length
+    if 'response' in batch:
+        response_tokenized = tokenizer(
+            batch['response'],
+            truncation=False
+        )
+        # Add response_length field for filtering
+        result['response'] = response_tokenized['input_ids']
+    return result
 
 
 class Prompt:
@@ -29,7 +38,7 @@ class Prompt:
         """
         pass
 
-    def get_dataset(self, only_best_accuracy=False, seed=None, max_prompts=None):
+    def get_dataset(self, only_best_accuracy=False, seed=None, max_prompts=None, max_new_tokens=4096):
         dataset = Dataset.from_pandas(self.get_raw_dataset(only_best_accuracy, max_prompts))
         print("Preprocessing dataset...")
 
@@ -43,7 +52,14 @@ class Prompt:
             remove_columns=['instruction', 'context', 'response', 'text', 'category'],
         )
         # Filter out samples that have input_ids exceeding max_length
-        dataset = dataset.filter(lambda sample: len(sample['input_ids']) < self.max_len)
+        # and response tokenized length exceeding max_new_tokens
+        dataset = dataset.filter(
+            lambda sample: len(sample['input_ids']) < self.max_len 
+            and len(sample.get('response', [])) < max_new_tokens
+        )
+        # Remove response_length field after filtering (it was only used for filtering)
+        if 'response' in dataset.column_names:
+            dataset = dataset.remove_columns(['response'])
 
         # Shuffle dataset
         dataset = dataset.shuffle(seed=seed) if seed else dataset.shuffle()

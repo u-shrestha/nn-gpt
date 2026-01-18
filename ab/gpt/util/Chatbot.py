@@ -64,7 +64,7 @@ class ChatBot:
         
         if self.__keep_memory:
             self.__messages.append({"role": "user", "content": prompt})
-            in_next = self.__messages
+            in_text = self.__messages
         else:
             in_next = [{"role": "user", "content": prompt}]
         
