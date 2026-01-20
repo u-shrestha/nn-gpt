@@ -83,11 +83,6 @@ PIPELINE_EVALUATION_STRATEGY = 'steps'
 PIPELINE_LOAD_BEST_MODEL_AT_END = True
 PIPELINE_METRIC_FOR_BEST_MODEL = 'eval_loss'
 
-if ONNX_RUN:
-    from ab.gpt.util.Tune_Onnx import tune, ds_conf
-else:
-    from ab.gpt.util.Tune import tune, ds_conf
-
 def get_pipeline_defaults():
     """
     Get pipeline-optimized training defaults for iterative fine-tuning.
@@ -135,6 +130,12 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          evaluation_strategy=None, eval_steps=None, save_strategy=None, save_steps=None, 
          save_total_limit=None, load_best_model_at_end=False, metric_for_best_model=None, warmup_steps=None, weight_decay=None,
          per_device_eval_batch_size=None, onnx_run=ONNX_RUN, trans_mode=TRANS_MODE):
+
+    if onnx_run:
+        from ab.gpt.util.Tune_Onnx import tune, ds_conf
+    else:
+        from ab.gpt.util.Tune import tune, ds_conf
+
     print(f'''All hyperparameters: 
 num_train_epochs={num_train_epochs}, lr_scheduler={lr_scheduler}, max_grad_norm={max_grad_norm}, tune_layers={tune_layers}, test_metric={test_metric}, 
 r={r}, lora_alpha={lora_alpha}, lora_dropout={lora_dropout}, target_modules={target_modules}, task_type={task_type}, bias={bias}, 
