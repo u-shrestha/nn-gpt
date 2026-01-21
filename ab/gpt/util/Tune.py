@@ -99,13 +99,8 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
     with open(conf_test_dir / nn_gen_conf) as prompt_file:
         prompt_dict = json.load(prompt_file)
     assert isinstance(prompt_dict, dict)
-
-    # --- START: Choosing LLM by commenting out one line ---
-    if onnx_run:
-        print('Use ONNX LLM')
-        from ab.gpt.util.LLM_ONNX import LLM
-    else:
-        from ab.gpt.util.LLM import LLM
+   
+    from ab.gpt.util.LLM import LLM
 
     # Load model and tokenizer
     model_loader = LLM(
