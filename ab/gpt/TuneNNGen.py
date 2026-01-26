@@ -4,24 +4,11 @@ import json
 import sys
 from typing import Literal
 
-# Unsloth conditional import
-# Unsloth should be imported before transformers and peft
-try:
-    import unsloth
-    UNSLOTH_AVAILABLE = True
-except ImportError:
-    UNSLOTH_AVAILABLE = False
-
 import torch
-from peft import LoraConfig
-from transformers import TrainingArguments
-
-from ab.gpt.NNEval import NN_TRAIN_EPOCHS
-from ab.gpt.util.Const import nngpt_dir, new_out_file
+from ab.gpt.util.Const import nngpt_dir, new_out_file, NN_TRAIN_EPOCHS
 
 # --- Default Evaluation Parameters ---
 # These will be used as defaults for argparse arguments
-
 START_LAYER = 0
 
 END_LAYER = 24
@@ -62,6 +49,7 @@ TOP_K = 70
 TOP_P = 0.9
 TEST_METRIC = None  # 'bleu' or other metric for evaluation
 ONNX_RUN = False
+UNSLOTH_OPT = False
 TRANS_MODE = False  # only transform fine-tuning
 
 # --- Pipeline-Optimized Defaults (for iterative_finetune.py) ---
@@ -129,7 +117,20 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          # Pipeline-specific overrides (for backward compatibility with iterative_finetune.py)
          evaluation_strategy=None, eval_steps=None, save_strategy=None, save_steps=None, 
          save_total_limit=None, load_best_model_at_end=False, metric_for_best_model=None, warmup_steps=None, weight_decay=None,
-         per_device_eval_batch_size=None, onnx_run=ONNX_RUN, trans_mode=TRANS_MODE):
+         per_device_eval_batch_size=None, onnx_run=ONNX_RUN, unsloth_opt=UNSLOTH_OPT, trans_mode=TRANS_MODE):
+
+    # Unsloth conditional import
+    # Unsloth should be imported before transformers and peft
+    UNSLOTH_AVAILABLE = False
+    if unsloth_opt:
+        try:
+            import unsloth
+            UNSLOTH_AVAILABLE = True
+        except:
+            pass
+
+    from peft import LoraConfig
+    from transformers import TrainingArguments
 
     if onnx_run:
         from ab.gpt.util.Tune_Onnx import tune, ds_conf
@@ -143,7 +144,8 @@ learning_rate={learning_rate}, llm_tune_conf={llm_tune_conf}, nn_gen_conf={nn_ge
 llm_conf={llm_conf}, test_nn={test_nn}, nn_train_epochs={nn_train_epochs}, peft={peft}, skip_epoches={skip_epoches}, 
 per_device_train_batch_size={per_device_train_batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}, warmup_ratio={warmup_ratio}, 
 logging_steps={logging_steps}, optimizer={optimizer}, max_prompts={max_prompts}, save_llm_output={save_llm_output}, max_new_tokens={max_new_tokens}, 
-use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={temperature}, top_k={top_k}, top_p={top_p}, onnx_run={onnx_run},  trans_mode={trans_mode}''')
+use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={temperature}, top_k={top_k}, top_p={top_p}, onnx_run={onnx_run}, 
+unsloth_opt={unsloth_opt},  trans_mode={trans_mode}''')
 
     # Build test_prm for standalone mode (epoch-based evaluation)
     # Pipeline mode will override with step-based evaluation via evaluation_strategy
@@ -436,12 +438,12 @@ if __name__ == '__main__':
                         help=f"[Pipeline] Warmup steps override (default: None, uses warmup_ratio for standalone).")
     parser.add_argument('--weight_decay', type=float, default=None,
                         help=f"[Pipeline] Weight decay for regularization (default: None).")
-    # parser.add_argument('--onnx_run', type=float, default=ONNX_RUN,
-    # #                     help=f"Run model generation step with LLM in ONNX format (default: {ONNX_RUN}).")
-    parser.add_argument('--trans_mode', type=float, default=TRANS_MODE,
+    parser.add_argument('--trans_mode', type=bool, default=TRANS_MODE,
                         help=f"Run model generation for transforms only (default: {TRANS_MODE}).")
-    parser.add_argument('--onnx_run', type=float, default=ONNX_RUN,
+    parser.add_argument('--onnx_run', type=bool, default=ONNX_RUN,
                         help=f"Run model generation step with LLM in ONNX format (default: {ONNX_RUN}).")
+    parser.add_argument('--unsloth_opt', type=bool, default=UNSLOTH_OPT,
+                        help=f"Use Unsloth optimizations (default: {UNSLOTH_OPT}).")
 
     args = parser.parse_args()
 
@@ -530,6 +532,6 @@ if __name__ == '__main__':
          metric_for_best_model=args.metric_for_best_model,
          warmup_steps=args.warmup_steps,
          weight_decay=args.weight_decay,
-         onnx_run=args.onnx_run
-
-         )
+         onnx_run=args.onnx_run,
+         unsloth_opt = args.unsloth_opt
+    )

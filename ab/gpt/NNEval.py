@@ -5,14 +5,13 @@ import time
 from ab.nn.util.Util import release_memory, uuid4
 from ab.gpt.util.Util import read_py_file_as_string
 
-from ab.gpt.util.Const import epoch_dir, new_nn_file, nngpt_dir, synth_dir, hp_file
+from ab.gpt.util.Const import epoch_dir, new_nn_file, nngpt_dir, synth_dir, hp_file, NN_TRAIN_EPOCHS
 from ab.gpt.util.Eval import Eval
 from ab.gpt.util.Util import verify_nn_code, copy_to_lemur
 from ab.gpt.util.CycleResults import generate_cycle_results, collect_cycle_metrics, save_cycle_results
 
 # --- Default Evaluation Parameters ---
 # These will be used as defaults for argparse arguments
-NN_TRAIN_EPOCHS = 1  # How many epochs to train the altered NN for evaluation
 TASK = 'img-classification'
 DATASET = 'cifar-10'
 METRIC = 'acc'
