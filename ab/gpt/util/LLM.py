@@ -20,13 +20,6 @@ from transformers import (
     Mxfp4Config,
 )
 
-# Unsloth conditional import
-try:
-    from unsloth import FastModel
-    UNSLOTH_AVAILABLE = True
-except ImportError:
-    UNSLOTH_AVAILABLE = False
-
 
 class LLM:
     def __init__(self,
@@ -47,9 +40,6 @@ class LLM:
         
         # ===== Unsloth Fast Path =====
         if use_unsloth:
-            if not UNSLOTH_AVAILABLE:
-                raise ImportError("Unsloth not installed. Run: pip install unsloth")
-            
             self.model, self.tokenizer = FastModel.from_pretrained(
                 model_name=model_path,
                 dtype = None,
