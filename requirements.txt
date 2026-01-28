@@ -2,6 +2,7 @@ wheel
 torch==2.8.0
 nn-dataset>=2.2.6
 nn-rag>=2.2.4
+nn-dup>=2.2.4
 bitsandbytes>=0.45.0
 peft>=0.14.0
 gguf>=0.10.0
