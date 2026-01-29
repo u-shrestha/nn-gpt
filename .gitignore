@@ -31,3 +31,6 @@ test/
 ab/gpt/brute/ga/modular/FracStats/
 ab/gpt/brute/ga/modular/Fractals/
 ab/gpt/brute/ga/modular/FIX_REPORT.md
+ab/gpt/brute/ga/meta_evolution/Fractals/
+ab/gpt/brute/ga/meta_evolution/ga_fractal_arch/
+ab/gpt/brute/ga/meta_evolution/stats/
