@@ -17,52 +17,42 @@ def format_prompt_with_supporting_models(prompt_template, para_dict, supporting_
     Format prompt template with supporting models information.
     Handles complex formatting including supporting models display.
     """
-    para_dict["n"] = len(supporting_models) if supporting_models else 0
+    # Add number of supporting models to para_dict
+    para_dict['n'] = len(supporting_models) if supporting_models else 0
 
+    # Create a formatted string for supporting models
     if supporting_models:
         supporting_models_text = ""
         for i, model in enumerate(supporting_models, 1):
             supporting_models_text += f"\nSupporting Model {i}:\n"
             for key, value in model.items():
                 supporting_models_text += f"  {key}: {value}\n"
-        para_dict["supporting_models_prompt"] = supporting_models_text
+        para_dict['supporting_models_prompt'] = supporting_models_text
     else:
-        para_dict["supporting_models_prompt"] = "No supporting models available."
+        para_dict['supporting_models_prompt'] = "No supporting models available."
 
+    # Format the prompt with all parameters
     try:
         formatted_prompt = prompt_template.format(**para_dict)
     except KeyError as e:
+        # If there are missing parameters, use a fallback approach
         print(f"[WARNING] Missing parameter in prompt template: {e}")
         formatted_prompt = prompt_template
+        # Replace available parameters
         for key, value in para_dict.items():
             formatted_prompt = formatted_prompt.replace(f"{{{key}}}", str(value))
 
     return formatted_prompt
 
-
 def alter(epochs, test_conf, llm_name, gguf_file=None, n=1, temperature=0.6, top_k=50, *args, **kwargs):
-    """
-    Generate improved neural network models using full-code generation.
+    inference_gpt_oss = kwargs.get('inference_gpt_oss', False)
+    inference_gpt_oss_max_input_length = kwargs.get('inference_gpt_oss_max_input_length', None)
 
-    Features included:
-    - Batched inference (kwargs['batch_size'], default 8)
-    - GPU-safe tokenization (pad_token set to eos if missing)
-    - Left padding for decoder-only models
-    - Supporting models injection (n samples from addon_task)
-    - inference_gpt_oss length guard (skip long prompts)
-    - Always writes raw LLM outputs (new_out_file) for every attempt
-    - Stable per-attempt B-index folder mapping (one folder per attempted generation)
-    - Restores tokenizer.padding_side on exit
-    """
-    inference_gpt_oss = kwargs.get("inference_gpt_oss", False)
-    inference_gpt_oss_max_input_length = kwargs.get("inference_gpt_oss_max_input_length", None)
+    if inference_gpt_oss and inference_gpt_oss_max_input_length is None:
+        inference_gpt_oss_max_input_length = 10**18
+    batch_size = max(1, int(kwargs.get("batch_size", 1)))
 
-    batch_size = int(kwargs.get("batch_size", 1))
-    batch_size = max(1, batch_size)
-
-    max_input_tokens = int(kwargs.get("max_input_tokens", 8192))
-    max_new_tokens = int(kwargs.get("max_new_tokens", 8 * 1024))
-
+    # Load test prompts
     with open(conf_test_dir / test_conf) as f:
         prompt_dict = json.load(f)
     assert isinstance(prompt_dict, dict)
@@ -70,164 +60,195 @@ def alter(epochs, test_conf, llm_name, gguf_file=None, n=1, temperature=0.6, top
     model_loader = LLM(llm_name, gguf_file=gguf_file)
     model = model_loader.get_model()
     tokenizer = model_loader.get_tokenizer()
-
-    # --- GPU-safe padding setup ---
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-
-    old_padding_side = getattr(tokenizer, "padding_side", "right")
-    tokenizer.padding_side = "left"
-
-    print(
-        f"Load Model Complete. Batched generation enabled (batch_size={batch_size}). "
-        f"Will fetch {n} supporting models per prompt."
-    )
-
-    def _prompt_len_ids(text: str) -> int:
-        try:
-            return len(tokenizer(text, add_special_tokens=False).input_ids)
-        except Exception:
-            return len(tokenizer(text).input_ids)
+    print(f"Load Model Complete, Start Loop... (Will fetch {n} supporting models per prompt)")
 
     shutil.rmtree(epoch_dir(), ignore_errors=True)
+    for epoch in range(epochs):
+        out_path = epoch_dir(epoch)
 
-    try:
-        for epoch in range(epochs):
-            out_path = epoch_dir(epoch)
+        # Generate Prompts
+        prompts = []
+        for key in prompt_dict.keys():
+            prompt = ""
+            for pr in prompt_dict[key]['prompt']:
+                prompt += pr + "\n"
+            # Get nn-dataset codes
+            data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['task']).groupby(by="nn").sample(n=1)
+            # Get addon nn-dataset codes
+            addon_data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['addon_task'])
+            for _, row in data.iterrows():
+                para_dict = dict()
+                for it in prompt_dict[key]["input_list"]:
+                    para_dict[it['para']] = row[it['value']]
 
-            prompts = []
-            for key in prompt_dict.keys():
-                prompt = ""
-                for pr in prompt_dict[key]["prompt"]:
-                    prompt += pr + "\n"
+                # Fetch n supporting models from database
+                supporting_models = []
+                if not (addon_data is None) and n > 0:
+                    # Avoid sampling the same nn_code as the original
+                    available_addon_data = addon_data.loc[addon_data.nn != row['nn']]
 
-                # Get nn-dataset codes
-                data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]["task"]).groupby(by="nn").sample(n=1)
+                    # Sample n supporting models (or as many as available if less than n)
+                    n_samples = min(n, len(available_addon_data))
+                    if n_samples > 0:
+                        addon_rows = available_addon_data.sample(n=n_samples)
 
-                # Get addon nn-dataset codes
-                addon_data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]["addon_task"])
+                        # Create a list to store supporting model information
+                        for _, addon_row in addon_rows.iterrows():
+                            model_info = {}
+                            for it in prompt_dict[key]['addon_list']:
+                                model_info[it['para']] = addon_row[it['value']]
+                            supporting_models.append(model_info)
 
-                for _, row in data.iterrows():
-                    para_dict = dict()
-                    for it in prompt_dict[key]["input_list"]:
-                        para_dict[it["para"]] = row[it["value"]]
+                    # Add the supporting models to the parameter dictionary
+                    para_dict['supporting_models'] = supporting_models
 
-                    # Fetch n supporting models
-                    supporting_models = []
-                    if not (addon_data is None) and n > 0:
-                        available_addon_data = addon_data.loc[addon_data.nn != row["nn"]]
-                        n_samples = min(n, len(available_addon_data))
-                        if n_samples > 0:
-                            addon_rows = available_addon_data.sample(n=n_samples)
-                            for _, addon_row in addon_rows.iterrows():
-                                model_info = {}
-                                for it in prompt_dict[key]["addon_list"]:
-                                    model_info[it["para"]] = addon_row[it["value"]]
-                                supporting_models.append(model_info)
+                    # Also add individual parameters for backward compatibility
+                    if supporting_models:  # Use the first model for backward compatibility
+                        first_model = supporting_models[0]
+                        for it in prompt_dict[key]['addon_list']:
+                            para_dict[it['para']] = first_model[it['para']]
+                # Format the prompt with supporting models
+                formatted_prompt = format_prompt_with_supporting_models(prompt, para_dict, supporting_models)
+                prompts.append((formatted_prompt, row))
 
-                        para_dict["supporting_models"] = supporting_models
-
-                        # Backward compatibility: also expose first model fields
-                        if supporting_models:
-                            first_model = supporting_models[0]
-                            for it in prompt_dict[key]["addon_list"]:
-                                para_dict[it["para"]] = first_model[it["para"]]
-
-                    formatted_prompt = format_prompt_with_supporting_models(prompt, para_dict, supporting_models)
-
-                    # Apply chat template as TEXT (not tokenized yet)
-                    chat_text = tokenizer.apply_chat_template(
-                        [{"role": "user", "content": formatted_prompt}],
-                        tokenize=False,
-                        add_generation_prompt=True,
-                    )
-
-                    if inference_gpt_oss and inference_gpt_oss_max_input_length is not None:
-                        if _prompt_len_ids(chat_text) > inference_gpt_oss_max_input_length:
-                            continue
-
-                    prompts.append((chat_text, row))
-
-            B_global_index = 0
-            print(f"Total models to generate: {len(prompts)}")
-
-            for i in tqdm(range(0, len(prompts), batch_size), desc=f"Epoch {epoch} (Batched Generate Codes)"):
-                batch = prompts[i : i + batch_size]
-                batch_texts = [p[0] for p in batch]
-                batch_rows = [p[1] for p in batch]
-
-                model_inputs = tokenizer(
-                    batch_texts,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=max_input_tokens,
-                ).to(model.device)
-
-                with torch.no_grad():
-                    model.eval()
-                    outputs = model.generate(
-                        **model_inputs,
-                        max_new_tokens=max_new_tokens,
-                        do_sample=True,
-                        temperature=temperature,
-                        top_k=top_k,
-                        top_p=0.95,
-                        num_return_sequences=1,
-                        eos_token_id=tokenizer.eos_token_id,
-                        pad_token_id=tokenizer.pad_token_id,
-                        use_cache=True,
-                    )
-
-                input_len = model_inputs.input_ids.shape[1]
-                decoded_outputs = tokenizer.batch_decode(outputs[:, input_len:], skip_special_tokens=True)
-
-                for out_text, origdf in zip(decoded_outputs, batch_rows):
-                    model_dir = synth_dir(out_path) / f"B{B_global_index}"
-                    code_file = model_dir / new_nn_file
-                    df_file = model_dir / "dataframe.df"
-
-                    model_dir.mkdir(parents=True, exist_ok=True)
-                    create_file(model_dir, new_out_file, out_text)
-
-                    nn_code = extract_code(out_text)
-                    if nn_code:
-                        with open(code_file, "w") as f:
-                            f.write(nn_code)
-
-                        if origdf is None:
-                            if os.path.isfile(df_file):
-                                os.remove(df_file)
+        # produce new CV models
+        B_index = 0
+        if batch_size > 1:
+            if tokenizer.pad_token_id is None:
+                tokenizer.pad_token = tokenizer.eos_token
+                tokenizer.pad_token_id = tokenizer.eos_token_id
+            old_padding_side = getattr(tokenizer, "padding_side", "right")
+            tokenizer.padding_side = "left"
+            try:
+                for i in tqdm(range(0, len(prompts), batch_size), desc=f"Generate Codes (Batch {batch_size})"):
+                    batch_raw = prompts[i:i + batch_size]
+                    batch_ids, batch_rows = [], []
+                    for p_text, p_row in batch_raw:
+                        try:
+                            ids = tokenizer.apply_chat_template([{'role': 'user', 'content': p_text}], add_generation_prompt=True, tokenize=True)
+                        except TypeError:
+                            rendered = tokenizer.apply_chat_template([{'role': 'user', 'content': p_text}], add_generation_prompt=True, tokenize=False)
+                            ids = tokenizer(rendered, add_special_tokens=False).input_ids
+                        if inference_gpt_oss and inference_gpt_oss_max_input_length is not None:
+                            if len(ids) > inference_gpt_oss_max_input_length:
+                                print(f"[INFO] Skipping prompt in batch: length {len(ids)} > {inference_gpt_oss_max_input_length}")
+                                continue
+                        batch_ids.append(ids)
+                        batch_rows.append(p_row)
+                    if not batch_ids: continue
+                    try:
+                        inputs = tokenizer.pad({'input_ids': batch_ids}, padding=True, return_tensors="pt").to(model.device)
+                    except Exception:
+                        inputs = tokenizer.pad([{'input_ids': x} for x in batch_ids], padding=True, return_tensors="pt").to(model.device)
+                    with torch.no_grad():
+                        model.eval()
+                        outputs = model.generate(**inputs, max_new_tokens=8*1024, do_sample=True, temperature=temperature, top_k=top_k, top_p=0.95, num_return_sequences=1, eos_token_id=tokenizer.eos_token_id, pad_token_id=tokenizer.pad_token_id)
+                    input_len = inputs.input_ids.shape[1]
+                    decoded_outputs = []
+                    for k in range(outputs.size(0)):
+                        if outputs.size(1) >= input_len and torch.equal(outputs[k, :input_len], inputs.input_ids[k]):
+                            start = input_len
                         else:
-                            orig_code_file = model_dir / f"original_{origdf['nn']}.py"
-                            with open(orig_code_file, "w") as f:
-                                f.write(origdf["nn_code"])
-                            origdf.to_pickle(df_file)
+                            start = int(inputs.attention_mask[k].sum().item()) if hasattr(inputs, "attention_mask") else input_len
+                        decoded_outputs.append(tokenizer.decode(outputs[k, start:], skip_special_tokens=True))
+                    for out, origdf in zip(decoded_outputs, batch_rows):
+                        print("Response Available!")
+                        nn_code = extract_code(out)
+                        if nn_code:
+                            model_dir = synth_dir(out_path) / f"B{B_index}"
+                            code_file = model_dir / new_nn_file
+                            df_file = model_dir / 'dataframe.df'
+                            print(f"[INFO]Saving code to: {code_file}")
+                            code_file.parent.mkdir(exist_ok=True, parents=True)
+                            with open(code_file, 'w') as file: file.write(nn_code)
+                            create_file(model_dir, new_out_file, out)
+                            if origdf is None:
+                                if os.path.isfile(df_file): os.remove(df_file)
+                            else:
+                                orig_code_file = model_dir / f"original_{origdf['nn']}.py"
+                                with open(orig_code_file, 'w') as file: file.write(origdf['nn_code'])
+                                origdf.to_pickle(df_file)
+                            B_index += 1
+                        else:
+                            print("[INFO]Response Invalid!")
+            finally:
+                tokenizer.padding_side = old_padding_side
+            continue
 
-                    B_global_index += 1
-    finally:
-        tokenizer.padding_side = old_padding_side
+        for idx, prompt in tqdm(enumerate(prompts), desc="Generate Codes"):
+            prompt, origdf = prompt
+            model_dir = synth_dir(out_path) / f"B{B_index}"
+            code_file = model_dir / new_nn_file
+            df_file = model_dir / 'dataframe.df'
+            inputs = tokenizer.apply_chat_template([{'role': 'user', 'content': prompt}, ], add_generation_prompt=True, return_tensors="pt")
+            # Handle both tensor and BatchEncoding return types
+            if hasattr(inputs, 'input_ids'):
+                inputs = inputs.input_ids.to(model.device)
+            else:
+                inputs = inputs.to(model.device)
 
+            if inference_gpt_oss:
+                # Skip prompts that are too long to avoid O(n²) attention OOM
+                if inputs.shape[-1] > inference_gpt_oss_max_input_length:
+                    print(f"[INFO] Skipping prompt {idx}: input length {inputs.shape[-1]} > {inference_gpt_oss_max_input_length}")
+                    continue
+            # tokenizer.eos_token_id is the id of <｜end▁of▁sentence｜>  token
+            with torch.no_grad():
+                model.eval()
+                outputs = model.generate(inputs, max_new_tokens=8*1024, do_sample=True, temperature=temperature, top_k=top_k, top_p=0.95, num_return_sequences=1,
+                                     eos_token_id=tokenizer.eos_token_id)
+            out = tokenizer.decode(outputs[0][len(inputs[0]):], skip_special_tokens=True)
+            print("Response Available!")
+            nn_code = extract_code(out)
+            if nn_code:
+                print(f"[INFO]Saving code to: {code_file}")
+                code_file.parent.mkdir(exist_ok=True, parents=True)  # Move here to avoid empty folder
+                with open(code_file, 'w') as file:
+                    file.write(nn_code)
+                create_file(model_dir, new_out_file, out)
+                if origdf is None:
+                    if os.path.isfile(df_file):  # Clean up dataframe.df, if no additional information generated this time.
+                        os.remove(df_file)
+                else:
+                    # Store DataFrame information, mainly for passing parameters to evaluator.
+                    orig_code_file = model_dir / f"original_{origdf['nn']}.py"
+                    with open(orig_code_file, 'w') as file:
+                        file.write(origdf['nn_code'])
+
+                    origdf.to_pickle(df_file)
+                B_index += 1
+            else:
+                print("[INFO]Response Invalid!")
+                continue
 
 def alter_delta(epochs, test_conf, llm_name, gguf_file=None, n=1, temperature=0.6, top_k=50):
     """
     Generate improved neural network models using delta-based approach.
-
     Similar to alter() but:
     1. LLM generates code deltas (unified diffs) instead of full code
     2. Deltas are applied to baseline code to reconstruct improved code
     3. Requires delta-enabled config file (with use_delta: true)
+
+    Args:
+        epochs: Number of generation epochs
+        test_conf: Config file name (should be delta-enabled, e.g., 'NN_gen_delta.json')
+        llm_name: LLM model name/path
+        gguf_file: Optional GGUF file path
+        n: Number of supporting models
+        temperature: Generation temperature
+        top_k: Top-k sampling parameter
     """
+    # Load test prompts
     with open(conf_test_dir / test_conf) as f:
         prompt_dict = json.load(f)
     assert isinstance(prompt_dict, dict)
 
+    # Check if delta mode is enabled
     use_delta = False
     for key in prompt_dict.keys():
         key_config = prompt_dict[key]
         if isinstance(key_config, dict):
-            use_delta = key_config.get("use_delta", False) or "delta" in str(key).lower()
+            use_delta = key_config.get('use_delta', False) or 'delta' in str(key).lower()
             if use_delta:
                 break
 
@@ -238,65 +259,78 @@ def alter_delta(epochs, test_conf, llm_name, gguf_file=None, n=1, temperature=0.
     model_loader = LLM(llm_name, gguf_file=gguf_file)
     model = model_loader.get_model()
     tokenizer = model_loader.get_tokenizer()
-    print("Load Model Complete, Start Loop... (Delta mode enabled)")
+    print(f"Load Model Complete, Start Loop... (Delta mode enabled)")
 
     shutil.rmtree(epoch_dir(), ignore_errors=True)
     for epoch in range(epochs):
         out_path = epoch_dir(epoch)
 
+        # Generate Prompts
         prompts = []
         for key in prompt_dict.keys():
             prompt = ""
-            for pr in prompt_dict[key]["prompt"]:
+            for pr in prompt_dict[key]['prompt']:
                 prompt += pr + "\n"
-
-            data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]["task"]).groupby(by="nn").sample(n=1)
-
+            # Get nn-dataset codes
+            data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['task']).groupby(by="nn").sample(n=1)
+            # Get addon nn-dataset codes (if addon_task is specified)
             addon_data = None
-            if prompt_dict[key].get("addon_task"):
-                addon_data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]["addon_task"])
+            if prompt_dict[key].get('addon_task'):
+                addon_data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['addon_task'])
 
             for _, row in data.iterrows():
                 para_dict = dict()
                 for it in prompt_dict[key]["input_list"]:
-                    para_dict[it["para"]] = row[it["value"]]
+                    para_dict[it['para']] = row[it['value']]
 
-                if prompt_dict[key].get("addon_list") and addon_data is not None:
+                # Handle addon_list (similar to original alter() function)
+                if prompt_dict[key].get('addon_list') and addon_data is not None:
+                    # Fetch n supporting models from database
                     supporting_models = []
                     if n > 0:
-                        available_addon_data = addon_data.loc[addon_data.nn != row["nn"]]
+                        # Avoid sampling the same nn_code as the original
+                        available_addon_data = addon_data.loc[addon_data.nn != row['nn']]
+
+                        # Sample n supporting models (or as many as available if less than n)
                         n_samples = min(n, len(available_addon_data))
                         if n_samples > 0:
                             addon_rows = available_addon_data.sample(n=n_samples)
+
+                            # Create a list to store supporting model information
                             for _, addon_row in addon_rows.iterrows():
                                 model_info = {}
-                                for it in prompt_dict[key]["addon_list"]:
-                                    model_info[it["para"]] = addon_row[it["value"]]
+                                for it in prompt_dict[key]['addon_list']:
+                                    model_info[it['para']] = addon_row[it['value']]
                                 supporting_models.append(model_info)
 
-                            para_dict["supporting_models"] = supporting_models
+                            # Add the supporting models to the parameter dictionary
+                            para_dict['supporting_models'] = supporting_models
 
-                            if supporting_models:
+                            # Also add individual parameters for backward compatibility
+                            if supporting_models:  # Use the first model for backward compatibility
                                 first_model = supporting_models[0]
-                                for it in prompt_dict[key]["addon_list"]:
-                                    para_dict[it["para"]] = first_model[it["para"]]
+                                for it in prompt_dict[key]['addon_list']:
+                                    para_dict[it['para']] = first_model[it['para']]
 
+                    # Format the prompt with supporting models
                     formatted_prompt = format_prompt_with_supporting_models(prompt, para_dict, supporting_models)
                     prompts.append((formatted_prompt, row))
                 else:
+                    # No addon_list, use simple prompt formatting
                     prompts.append((prompt.format(**para_dict), row))
 
+        # produce new CV models
         B_index = 0
-        for idx, prompt_item in tqdm(enumerate(prompts), desc="Generate Deltas"):
-            prompt, origdf = prompt_item
+        for idx, prompt in tqdm(enumerate(prompts), desc="Generate Deltas"):
+            prompt, origdf = prompt
             model_dir = synth_dir(out_path) / f"B{B_index}"
             code_file = model_dir / new_nn_file
-            df_file = model_dir / "dataframe.df"
+            df_file = model_dir / 'dataframe.df'
 
             inputs = tokenizer.apply_chat_template(
-                [{"role": "user", "content": prompt}],
+                [{'role': 'user', 'content': prompt}],
                 add_generation_prompt=True,
-                return_tensors="pt",
+                return_tensors="pt"
             ).to(model.device)
 
             outputs = model.generate(
@@ -307,52 +341,72 @@ def alter_delta(epochs, test_conf, llm_name, gguf_file=None, n=1, temperature=0.
                 top_k=top_k,
                 top_p=0.95,
                 num_return_sequences=1,
-                eos_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id
             )
-            out = tokenizer.decode(outputs[0][len(inputs[0]) :], skip_special_tokens=True)
+            out = tokenizer.decode(outputs[0][len(inputs[0]):], skip_special_tokens=True)
             print("Response Available!")
 
+            # Extract delta from LLM output
             delta = extract_delta(out)
 
             if delta and origdf is not None:
                 try:
                     from ab.gpt.util.DeltaUtil import apply_delta, validate_delta
+                    baseline_code = origdf.get('nn_code', '')
 
-                    baseline_code = origdf.get("nn_code", "")
+                    if baseline_code:
+                        # Validate delta format before attempting to apply
+                        if not validate_delta(delta):
+                            print(f"[WARNING] Invalid delta format for model B{B_index}. Trying fallback to extract full code.")
+                            delta = None  # Will trigger fallback below
+                        else:
+                            # Apply delta to baseline to get improved code
+                            nn_code = apply_delta(baseline_code, delta)
 
-                    if baseline_code and validate_delta(delta):
-                        nn_code = apply_delta(baseline_code, delta)
-                        if nn_code:
-                            code_file.parent.mkdir(exist_ok=True, parents=True)
-                            with open(code_file, "w") as f:
-                                f.write(nn_code)
+                            if nn_code:
+                                print(f"[INFO] Successfully applied delta, saving code to: {code_file}")
+                                code_file.parent.mkdir(exist_ok=True, parents=True)
+                                with open(code_file, 'w') as file:
+                                    file.write(nn_code)
+                                create_file(model_dir, new_out_file, out)
 
-                            create_file(model_dir, new_out_file, out)
+                                # Save original baseline code for reference
+                                orig_code_file = model_dir / f"original_{origdf['nn']}.py"
+                                with open(orig_code_file, 'w') as file:
+                                    file.write(baseline_code)
 
-                            orig_code_file = model_dir / f"original_{origdf['nn']}.py"
-                            with open(orig_code_file, "w") as f:
-                                f.write(baseline_code)
+                                # Save delta for debugging
+                                delta_file = model_dir / 'delta.diff'
+                                with open(delta_file, 'w') as file:
+                                    file.write(delta)
 
-                            delta_file = model_dir / "delta.diff"
-                            with open(delta_file, "w") as f:
-                                f.write(delta)
+                                origdf.to_pickle(df_file)
+                                B_index += 1
+                            else:
+                                print(f"[WARNING] Delta application returned None for model B{B_index}. Trying fallback.")
+                                delta = None  # Will trigger fallback below
+                    else:
+                        print(f"[WARNING] No baseline code found in origdf for model B{B_index}. Trying fallback.")
+                        delta = None  # Will trigger fallback below
+                except ImportError as e:
+                    print(f"[ERROR] Failed to import delta utilities for model B{B_index}: {e}. Trying fallback.")
+                    delta = None  # Will trigger fallback below
+                except Exception as e:
+                    print(f"[ERROR] Unexpected error applying delta for model B{B_index}: {e}. Trying fallback.")
+                    delta = None  # Will trigger fallback below
 
-                            origdf.to_pickle(df_file)
-                            B_index += 1
-                            continue
-                except Exception:
-                    pass
-
-            # Fallback to full code extraction
-            nn_code = extract_code(out)
-            if nn_code:
-                code_file.parent.mkdir(exist_ok=True, parents=True)
-                with open(code_file, "w") as f:
-                    f.write(nn_code)
-
-                create_file(model_dir, new_out_file, out)
-                if origdf is not None:
-                    origdf.to_pickle(df_file)
-                B_index += 1
-            else:
-                continue
+            # Fallback: try to extract full code if delta extraction/application failed
+            if not delta or origdf is None:
+                # Fallback: try to extract full code if delta extraction failed
+                nn_code = extract_code(out)
+                if nn_code:
+                    print(f"[INFO] Delta extraction failed, using extracted code as fallback: {code_file}")
+                    code_file.parent.mkdir(exist_ok=True, parents=True)
+                    with open(code_file, 'w') as file:
+                        file.write(nn_code)
+                    create_file(model_dir, new_out_file, out)
+                    if origdf is not None:
+                        origdf.to_pickle(df_file)
+                    B_index += 1
+                else:
+                    print("[INFO] Response Invalid (no delta or code found)!")
