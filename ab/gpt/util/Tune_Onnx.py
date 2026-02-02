@@ -11,11 +11,11 @@ import gc
 import ab.nn.api as lemur
 import deepspeed
 from ab.nn.util.Util import release_memory, create_file
-from peft import PeftModel
 from tqdm import tqdm
 import ab.gpt.NNEval as NNEval
 from ab.gpt.util.Chatbot import ChatBot
 from ab.gpt.util.Const import (
+    out_dir,
     ab_root_path,
     conf_dir,
     conf_llm_dir,
@@ -164,7 +164,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         from ab.gpt.util.OnnxExport import export_llm_to_onnx
         from ab.gpt.util.OnnxWrapper import OnnxCausalLMWrapper
 
-        export_onnx_path = Path(ab_root_path) / 'onnx_output_folder'
+        export_onnx_path = out_dir / 'onnx_llm'
         onnx_model_file = export_onnx_path / 'model.onnx'
 
     
