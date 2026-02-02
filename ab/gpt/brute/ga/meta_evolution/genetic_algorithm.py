@@ -45,13 +45,22 @@ class GeneticAlgorithm:
     # --- END LLM: CROSSOVER ---
 
     # --- START LLM: MUTATION ---
+    def mutate_gene(self, current_value, possible_values):
+        """
+        Return a new gene value.
+        The LLM will optimize this function logic.
+        """
+        if len(possible_values) > 1:
+            possible_values.remove(current_value)
+        else:
+            return current
     def _mutate(self, chromosome):
         mutated_chromo = chromosome.copy()
         for gene in self.search_space.keys():
             if random.random() < self.mutation_rate:
                 possibles = [v for v in self.search_space[gene] if v != mutated_chromo[gene]]
                 if possibles:
-                    mutated_chromo[gene] = random.choice(possibles)
+                    mutated_chromo[gene] = self.mutate_gene(mutated_chromo[gene], possibles)
         return mutated_chromo
     # --- END LLM: MUTATION ---
 
@@ -71,9 +80,11 @@ class GeneticAlgorithm:
         best_overall = None
 
         for gen in range(start_gen, num_generations):
+            print(f"\n\n >>> GENERATION {gen + 1} <<<\n")
             # Evaluate
-            for ind in self.population:
+            for i, ind in enumerate(self.population):
                 if ind['fitness'] is None:
+                    print(f"  Evaluating Individual {i+1}/{len(self.population)}")
                     ind['fitness'] = fitness_function(ind['chromosome'])
             
             # Sort

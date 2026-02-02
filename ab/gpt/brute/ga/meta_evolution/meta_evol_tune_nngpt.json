@@ -28,11 +28,15 @@
               },
               {
                 "name": "GENERATIONS",
-                "value": "10"
+                "value": "5"
               },
               {
                 "name": "MUTATION_RATE",
                 "value": "0.6"
+              },
+              {
+                "name": "META_ATTEMPTS",
+                "value": "10"
               }
             ],
             "securityContext": {
