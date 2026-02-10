@@ -40,13 +40,7 @@ from .const import (
 # 1. Neural Network Unique Functions
 # ============================================================================
 
-def unique_nn(
-    epoch_max: int,
-    nns: List[str],
-    dataset: str = 'cifar-10',
-    task: str = 'img-classification',
-    metric: str = 'accuracy'
-) -> pd.DataFrame:
+def unique_nn(epoch_max, nns, dataset, task, metric):
     """
     Retrieve unique neural network models from database.
     
@@ -60,25 +54,56 @@ def unique_nn(
     Args:
         epoch_max: Maximum number of epochs to filter by
         nns: List of neural network names to include
-        dataset: Dataset name (default: 'cifar-10')
-        task: Task type (default: 'img-classification')
-        metric: Evaluation metric (default: 'accuracy')
+        dataset: Dataset name
+        task: Task type
+        metric: Evaluation metric
     
     Returns:
-        pd.DataFrame: Sorted by metric (descending), containing:
-            - model_name
-            - scheduler_type
-            - metric_value
-            - hyperparameters
-            - epoch
+        pd.DataFrame: Sorted by accuracy (descending)
     """
+    try:
+        from ab.nn.api import data
+        
+        # Get models with special prefixes (rag-, unq-)
+        df = data(
+            nn_prefixes=('rag-', 'unq-'),
+            only_best_accuracy=True,
+            task=task,
+            dataset=dataset,
+            metric=metric,
+            epoch=epoch_max
+        )
+        
+        # Concatenate with specified models
+        df = pd.concat([
+            df,
+            data(
+                nn=nns,
+                only_best_accuracy=True,
+                task=task,
+                dataset=dataset,
+                metric=metric,
+                epoch=epoch_max
+            )
+        ])
+        
+        return df.sort_values(by='accuracy', ascending=False)
     
-    # Query database for models
+    except ImportError:
+        print("⚠️ ab.nn.api not available, using local database fallback")
+        return _unique_nn_local(epoch_max, nns, dataset, task, metric)
+    except Exception as e:
+        print(f"❌ Error retrieving unique models: {e}")
+        return pd.DataFrame()
+
+
+def _unique_nn_local(epoch_max, nns, dataset, task, metric):
+    """Local fallback for unique_nn when ab.nn.api is not available."""
     query = f"""
         SELECT 
             model_name,
             scheduler_type,
-            {metric} as metric_value,
+            accuracy,
             hyperparameters,
             epoch
         FROM scheduler_results
@@ -88,7 +113,7 @@ def unique_nn(
             AND dataset = ?
             AND task = ?
             AND best_accuracy = 1
-        ORDER BY {metric} DESC
+        ORDER BY accuracy DESC
     """
     
     params = [epoch_max] + nns + [dataset, task]
@@ -97,25 +122,13 @@ def unique_nn(
         conn = _get_db_connection()
         df = pd.read_sql_query(query, conn, params=params)
         conn.close()
-        
-        if df.empty:
-            print(f"⚠️ No results found for models: {nns}")
-            return pd.DataFrame()
-        
-        print(f"✅ Retrieved {len(df)} unique models from database")
-        return df.sort_values(by='metric_value', ascending=False)
-    
+        return df if not df.empty else pd.DataFrame()
     except Exception as e:
-        print(f"❌ Error querying database: {e}")
+        print(f"❌ Error querying local database: {e}")
         return pd.DataFrame()
 
 
-def unique_nn_cls(
-    epoch_max: int,
-    dataset: str = 'cifar-10',
-    task: str = 'img-classification',
-    metric: str = 'accuracy'
-) -> pd.DataFrame:
+def unique_nn_cls(epoch_max, dataset='cifar-10', task='img-classification', metric='acc'):
     """
     Retrieve unique neural network classification models.
     
@@ -126,12 +139,11 @@ def unique_nn_cls(
         epoch_max: Maximum epochs to filter by
         dataset: Dataset name (default: 'cifar-10')
         task: Task type (default: 'img-classification')
-        metric: Evaluation metric (default: 'accuracy')
+        metric: Evaluation metric (default: 'acc')
     
     Returns:
-        pd.DataFrame: Core classification models sorted by metric
+        pd.DataFrame: Core classification models sorted by accuracy
     """
-    
     return unique_nn(
         epoch_max=epoch_max,
         nns=IMAGE_CLASSIFICATION_MODELS,
