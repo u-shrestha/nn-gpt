@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.models as models
 import torch.optim.lr_scheduler as lr_scheduler
+from torch.optim.swa_utils import SWALR
 import json
 
 # Try to import transformers for HF schedulers (optional)
@@ -526,6 +527,40 @@ pytorch_strategies = [
         "type": "Lambda",
         "hyperparams": {"gamma"},
         "code": "epoch_max = prm['epoch_max']\ngamma = prm.get('gamma', 0.1)\nscheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda epoch: gamma if epoch > epoch_max // 2 else 1.0)"
+    },
+    
+    # ReduceLROnPlateau - reduce LR when validation metric plateaus
+    {
+        "name": "ReduceLROnPlateau_patience_5",
+        "type": "Metric-based",
+        "hyperparams": {"factor", "patience", "threshold"},
+        "code": "scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=prm.get('factor', 0.1), patience=prm.get('patience', 5), threshold=prm.get('threshold', 0.0001), verbose=False)"
+    },
+    {
+        "name": "ReduceLROnPlateau_patience_10",
+        "type": "Metric-based",
+        "hyperparams": {"factor", "patience", "threshold"},
+        "code": "scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=prm.get('factor', 0.1), patience=prm.get('patience', 10), threshold=prm.get('threshold', 0.0001), verbose=False)"
+    },
+    {
+        "name": "ReduceLROnPlateau_aggressive",
+        "type": "Metric-based",
+        "hyperparams": {"factor", "patience", "threshold"},
+        "code": "scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=prm.get('factor', 0.5), patience=prm.get('patience', 3), threshold=prm.get('threshold', 0.0001), verbose=False)"
+    },
+    
+    # SWALR - Stochastic Weight Averaging LR Scheduler
+    {
+        "name": "SWALR_cosine_base",
+        "type": "SWA",
+        "hyperparams": {"swa_start", "anneal_strategy"},
+        "code": "base_scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=prm['epoch_max'])\nscheduler = SWALR(optimizer, swa_scheduler=base_scheduler, anneal_epochs=int(prm['epoch_max'] * 0.1), anneal_strategy=prm.get('anneal_strategy', 'cos'))"
+    },
+    {
+        "name": "SWALR_linear_base",
+        "type": "SWA",
+        "hyperparams": {"swa_start", "anneal_strategy"},
+        "code": "base_scheduler = lr_scheduler.LinearLR(optimizer, start_factor=prm.get('start_factor', 0.1), total_iters=int(prm['epoch_max'] * 0.2))\nscheduler = SWALR(optimizer, swa_scheduler=base_scheduler, anneal_epochs=int(prm['epoch_max'] * 0.1), anneal_strategy=prm.get('anneal_strategy', 'linear'))"
     },
 ]
 
