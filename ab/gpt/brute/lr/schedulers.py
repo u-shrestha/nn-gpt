@@ -50,6 +50,16 @@ try:
         get_hyperparams,
         validate_hyperparams,
         print_model_summary,
+        get_model_with_prefix,
+        parse_model_prefix,
+        get_unique_nn_functions,
+        get_all_unique_models,
+        get_model_by_tier,
+        init_finetune_workflow,
+        update_finetune_statistics,
+        get_finetune_statistics,
+        generate_extended_class_data,
+        query_class_group_accuracy,
     )
     CONFIG_AVAILABLE = True
 except ImportError as e:
@@ -78,8 +88,61 @@ if CONFIG_AVAILABLE:
     # Use configured output directory
     OUTPUT_DIR = str(OUTPUT_DIRS['base'])
     BASE_MODEL_NAME = FILE_CONVENTIONS['model_prefix']
-    ACTIVE_DATASET = 'cifar-10'
-    ACTIVE_TASK = 'img-classification'
+    
+    # ========================================================================
+    # Model Prefix Logic & Fine-Tuning Configuration
+    # ========================================================================
+    print(f"\n{'─'*70}")
+    print("MODEL PREFIX LOGIC & FINE-TUNING SETUP")
+    print(f"{'─'*70}")
+    
+    active_model = get_active_model()
+    prefixed_model = get_model_with_prefix(active_model)
+    model_functions = get_unique_nn_functions(active_model)
+    
+    print(f"\n✅ Current Focus Model: {active_model}")
+    print(f"   Prefixed Name: {prefixed_model}")
+    print(f"   Depth: {model_functions.get('depth', 'N/A')}")
+    print(f"   Description: {model_functions.get('description', 'N/A')}")
+    print(f"   Parameters (M): {model_functions.get('num_params_millions', 'N/A')}")
+    print(f"   Inference Speed: {model_functions.get('inference_speed', 'N/A')}")
+    
+    # Show model priority/tiers
+    tier1_models = get_model_by_tier('tier_1_primary')
+    tier2_models = get_model_by_tier('tier_2_extended')
+    
+    print(f"\n📊 Model Priority Tiers:")
+    print(f"   Tier 1 (Primary - Currently Active): {tier1_models}")
+    print(f"   Tier 2 (Extended - Next Phase): {tier2_models}")
+    
+    # Initialize fine-tuning workflows
+    print(f"\n🔧 Fine-Tuning Workflow Initialization:")
+    active_dataset = 'cifar-10'
+    active_task = 'img-classification'
+    num_cifar_classes = 10  # Start with 10, extend to 20 in Phase 2
+    
+    print(f"   Dataset: {active_dataset}")
+    print(f"   Task: {active_task}")
+    print(f"   Classes: {num_cifar_classes}")
+    
+    # Pre-initialize class data storage
+    print(f"\n📁 Initializing class-specific data storage...")
+    for scheduler_idx in range(1, 36):  # 35 schedulers
+        scheduler_name = f"{BASE_MODEL_NAME}{scheduler_idx:03d}"
+        init_class_data(
+            model_name=active_model,
+            scheduler_type=scheduler_name,
+            num_classes=num_cifar_classes,
+            epoch=0
+        )
+        if scheduler_idx == 1:
+            print(f"   ✓ Scheduler {scheduler_idx:02d} initialized...")
+        elif scheduler_idx == 35:
+            print(f"   ✓ Scheduler {scheduler_idx:02d} initialized (COMPLETE)")
+    
+    ACTIVE_DATASET = active_dataset
+    ACTIVE_TASK = active_task
+    NUM_CLASSES = num_cifar_classes
 else:
     # Fallback configuration
     print("⚠️  Using fallback configuration (no const/util)")
@@ -87,59 +150,11 @@ else:
     BASE_MODEL_NAME = "A0_"
     ACTIVE_DATASET = 'cifar-10'
     ACTIVE_TASK = 'img-classification'
-
-# -----------------------------------------------------------------------------
-# ============================================================================
-# Fine-Tuning & Model Selection
-# ============================================================================
-print(f"\n--- Model Selection & Fine-Tuning Configuration ---")
-
-if CONFIG_AVAILABLE:
-    active_model = get_active_model()
-    print(f"✅ Model for fine-tuning: {active_model}")
-    print(f"📊 Dataset: {ACTIVE_DATASET}")
-    print(f"🎯 Task: {ACTIVE_TASK}")
-    
-    # Initialize class-specific data tracking for the active model
-    print(f"📁 Initializing class data storage...")
-    from .const import CIFAR10_CLASSES
-    for scheduler_idx in range(1, 35):  # Pre-initialize for first 34 schedulers
-        scheduler_name = f"{BASE_MODEL_NAME}{scheduler_idx:03d}"
-        init_class_data(
-            model_name=active_model,
-            scheduler_type=scheduler_name,
-            num_classes=len(CIFAR10_CLASSES),
-            epoch=0
-        )
-
-
-
-# ============================================================================
-# Fine-Tuning & Model Selection
-# ============================================================================
-print(f"\n--- Model Selection & Fine-Tuning Configuration ---")
-
-if CONFIG_AVAILABLE:
-    active_model = get_active_model()
-    print(f"✅ Model for fine-tuning: {active_model}")
-    print(f"📊 Dataset: {ACTIVE_DATASET}")
-    print(f"🎯 Task: {ACTIVE_TASK}")
-    
-    # Initialize class-specific data tracking for the active model
-    print(f"📁 Initializing class data storage...")
-    from .const import CIFAR10_CLASSES
-    for scheduler_idx in range(1, 35):  # Pre-initialize for first 34 schedulers
-        scheduler_name = f"{BASE_MODEL_NAME}{scheduler_idx:03d}"
-        init_class_data(
-            model_name=active_model,
-            scheduler_type=scheduler_name,
-            num_classes=len(CIFAR10_CLASSES),
-            epoch=0
-        )
+    NUM_CLASSES = 10
 
 # 0. Setup & Cleanup
-# -----------------------------------------------------------------------------
-print(f"--- Setup Phase ---")
+# ─────────────────────────────────────────────────────────────────────────
+print(f"\n--- Setup Phase ---")
 
 # 1. Ensure the full path exists
 os.makedirs(OUTPUT_DIR, exist_ok=True)
