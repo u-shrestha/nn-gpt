@@ -1,11 +1,4 @@
-#!/usr/bin/env python3
-"""
-Fine-tuning script for ResNet models on CIFAR-10
-Uses local scheduler configurations and database
-"""
-
-import os
-import sys
+"""Fine-tuning script for ResNet18 on CIFAR-10"""
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -14,30 +7,6 @@ import torchvision
 import torchvision.transforms as transforms
 from torchvision.models import resnet18
 import time
-from datetime import datetime
-
-# Configuration
-ACTIVE_MODEL = 'ResNet18'
-CIFAR10_CLASSES = [
-    'airplane', 'automobile', 'bird', 'cat', 'deer',
-    'dog', 'frog', 'horse', 'ship', 'truck'
-]
-
-def init_database():
-    """Initialize database (stub)"""
-    pass
-
-def save_scheduler_result(**kwargs):
-    """Save scheduler results to database (stub)"""
-    pass
-
-def generate_extended_class_data(**kwargs):
-    """Generate class data (stub)"""
-    pass
-
-def init_finetune_workflow(**kwargs):
-    """Initialize fine-tuning workflow (stub)"""
-    pass
 
 
 class CIFARTrainer:

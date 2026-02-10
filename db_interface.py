@@ -1,14 +1,8 @@
-#!/usr/bin/env python3
-"""
-Database Interface for Accessing Training Results
-Provides easy access to scheduler_results and class_data tables
-"""
-
+"""Database interface for accessing training results"""
 import sqlite3
 import pandas as pd
 import os
-from datetime import datetime
-from typing import List, Dict, Optional
+from typing import Dict, Optional
 
 
 class DatabaseInterface:
@@ -26,8 +20,6 @@ class DatabaseInterface:
     def connect(self):
         """Create database connection"""
         return sqlite3.connect(self.db_path)
-    
-    # ==================== SCHEDULER RESULTS ====================
     
     def get_all_results(self, order_by: str = 'best_accuracy DESC') -> pd.DataFrame:
         """Get all scheduler results"""
@@ -112,8 +104,6 @@ class DatabaseInterface:
         conn.commit()
         conn.close()
     
-    # ==================== CLASS DATA ====================
-    
     def get_class_data(self, model_name: Optional[str] = None) -> pd.DataFrame:
         """Get class-level accuracy data"""
         conn = self.connect()
@@ -152,8 +142,6 @@ class DatabaseInterface:
         conn.commit()
         conn.close()
     
-    # ==================== STATISTICS ====================
-    
     def get_statistics(self) -> Dict:
         """Get overall statistics"""
         conn = self.connect()
@@ -191,8 +179,6 @@ class DatabaseInterface:
             'min_accuracy': min_accuracy,
             'total_training_time_min': round(total_training_time, 2) if total_training_time else None
         }
-    
-    # ==================== UTILITY ====================
     
     def print_summary(self):
         """Print database summary"""
