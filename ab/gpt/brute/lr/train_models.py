@@ -1,11 +1,11 @@
-"""Fine-tuning script for ResNet18 on CIFAR-10"""
+"""Fine-tuning script for multiple models on CIFAR-10"""
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR, ExponentialLR
 import torchvision
 import torchvision.transforms as transforms
-from torchvision.models import resnet18
+from torchvision import models
 import time
 
 
@@ -56,12 +56,73 @@ class CIFARTrainer:
         print(f"✓ Dataset loaded: {len(train_dataset)} train, {len(test_dataset)} test samples")
     
     def _load_model(self):
-        """Load ResNet18 model"""
+        """Load model based on model_name"""
         print(f"Loading {self.model_name}...")
-        self.model = resnet18(pretrained=False)
-        self.model.fc = nn.Linear(512, 10)  # CIFAR-10 has 10 classes
+        
+        model_dict = {
+            'ResNet18': models.resnet18(weights=None),
+            'ResNet34': models.resnet34(weights=None),
+            'ResNet50': models.resnet50(weights=None),
+            'ResNet101': models.resnet101(weights=None),
+            'VGG16': models.vgg16(weights=None),
+            'VGG19': models.vgg19(weights=None),
+            'MobileNetV2': models.mobilenet_v2(weights=None),
+            'MobileNetV3_Small': models.mobilenet_v3_small(weights=None),
+            'MobileNetV3_Large': models.mobilenet_v3_large(weights=None),
+            'DenseNet121': models.densenet121(weights=None),
+            'DenseNet169': models.densenet169(weights=None),
+            'EfficientNet_B0': models.efficientnet_b0(weights=None),
+            'EfficientNet_B1': models.efficientnet_b1(weights=None),
+            'SqueezeNet': models.squeezenet1_0(weights=None),
+            'InceptionV3': models.inception_v3(weights=None),
+            'GoogleNet': models.googlenet(weights=None),
+            'ShuffleNetV2': models.shufflenet_v2_x1_0(weights=None),
+            'AlexNet': models.alexnet(weights=None),
+        }
+        
+        if self.model_name not in model_dict:
+            raise ValueError(f"Model {self.model_name} not supported. Available: {list(model_dict.keys())}")
+        
+        self.model = model_dict[self.model_name]
+        
+        # Adapt final layer to CIFAR-10 (10 classes)
+        self._adapt_model_head()
         self.model = self.model.to(self.device)
         print(f"✓ Model loaded: {self.model_name}")
+    
+    def _adapt_model_head(self):
+        """Adapt model's classification head to CIFAR-10 (10 classes)"""
+        # ResNet variants
+        if 'ResNet' in self.model_name:
+            self.model.fc = nn.Linear(self.model.fc.in_features, 10)
+        # VGG variants
+        elif 'VGG' in self.model_name:
+            self.model.classifier[-1] = nn.Linear(self.model.classifier[-1].in_features, 10)
+        # MobileNet variants
+        elif 'MobileNet' in self.model_name:
+            self.model.classifier[-1] = nn.Linear(self.model.classifier[-1].in_features, 10)
+        # DenseNet variants
+        elif 'DenseNet' in self.model_name:
+            self.model.classifier = nn.Linear(self.model.classifier.in_features, 10)
+        # EfficientNet variants
+        elif 'EfficientNet' in self.model_name:
+            self.model.classifier[-1] = nn.Linear(self.model.classifier[-1].in_features, 10)
+        # SqueezeNet
+        elif 'SqueezeNet' in self.model_name:
+            self.model.classifier[1] = nn.Conv2d(512, 10, kernel_size=(1, 1), stride=(1, 1))
+        # InceptionV3
+        elif 'InceptionV3' in self.model_name:
+            self.model.fc = nn.Linear(self.model.fc.in_features, 10)
+            self.model.aux_logits = False
+        # GoogleNet
+        elif 'GoogleNet' in self.model_name:
+            self.model.fc = nn.Linear(self.model.fc.in_features, 10)
+        # ShuffleNet
+        elif 'ShuffleNet' in self.model_name:
+            self.model.fc = nn.Linear(self.model.fc.in_features, 10)
+        # AlexNet
+        elif 'AlexNet' in self.model_name:
+            self.model.classifier[-1] = nn.Linear(self.model.classifier[-1].in_features, 10)
         
     def train_epoch(self, optimizer, scheduler=None):
         """Train for one epoch"""
@@ -165,6 +226,68 @@ class CIFARTrainer:
         print(f"Best Test Accuracy: {max(results['test_accs']):.2f}%")
         
         return results
+
+
+def train_multiple_models(model_names=['ResNet18', 'ResNet34', 'MobileNetV2'], 
+                         num_epochs=1, learning_rate=0.001, 
+                         scheduler_types=['exponential']):
+    """Train multiple models on CIFAR-10"""
+    results_all = {}
+    
+    for model_name in model_names:
+        print(f"\n{'='*60}")
+        print(f"Training {model_name}")
+        print(f"{'='*60}\n")
+        
+        trainer = CIFARTrainer(model_name=model_name)
+        results = trainer.train(num_epochs=num_epochs, learning_rate=learning_rate, 
+                               scheduler_types=scheduler_types)
+        results_all[model_name] = results
+        
+        print(f"{'='*60}\n")
+    
+    return results_all
+
+
+def main():
+    """Main entry point"""
+    # Train multiple models
+    models_to_train = [
+        'ResNet18',
+        'ResNet34', 
+        'ResNet50',
+        'MobileNetV2',
+        'MobileNetV3_Small',
+        'DenseNet121',
+        'VGG16',
+        'EfficientNet_B0',
+    ]
+    
+    print("\n" + "="*60)
+    print("CIFAR-10 Multi-Model Fine-tuning")
+    print("="*60 + "\n")
+    
+    results = train_multiple_models(
+        model_names=models_to_train,
+        num_epochs=1,
+        learning_rate=0.001,
+        scheduler_types=['exponential']
+    )
+    
+    print("\n" + "="*60)
+    print("Summary of Results")
+    print("="*60 + "\n")
+    
+    for model_name, result in results.items():
+        best_acc = max(result['test_accs'])
+        train_time = result['training_time']
+        print(f"{model_name:20} | Accuracy: {best_acc:6.2f}% | Time: {train_time/60:6.2f} min")
+    
+    print("\n" + "="*60 + "\n")
+
+
+if __name__ == '__main__':
+    main()
 
 
 def main():
