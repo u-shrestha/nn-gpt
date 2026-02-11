@@ -109,7 +109,7 @@ def test_legacy_performance_smoke():
 
     print(f"[INFO] legacy perf: rows={len(df)} time={dt:.2f}s")
 
-    # Soft sanity guard (not brittle)
+    # Soft sanity guard 
     assert dt < 120, "Legacy query unexpectedly slow"
 
 def test_sql_variable_n_performance_smoke():
@@ -138,8 +138,6 @@ def test_sql_variable_n_performance_smoke():
     assert len(df) == N, f"Expected {N} rows, got {len(df)}"
     assert df["nn"].is_unique, "Duplicate nn entries detected"
 
-    # This should be fast (single CTE + window function),
-    # but allow generous headroom for slow CI / cold DB.
     assert dt < 30, "SQL variable-N query unexpectedly slow"
 def main():
     print("LEMUR / NNGPT integration tests")
@@ -156,3 +154,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
