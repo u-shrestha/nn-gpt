@@ -1,14 +1,14 @@
-# test.py
 from __future__ import annotations
 
+import os
 import sys
 import time
+import statistics
+from typing import Iterable, Sequence
 
 import ab.nn.api as lemur
 from ab.nn.api import JoinConf
-import time
 import functools
-
 
 def measure_time(func):
     @functools.wraps(func)
@@ -21,152 +21,221 @@ def measure_time(func):
 
     return wrapper
 
+#Fixed Benchmarks
+TASK = os.getenv("LEMUR_TASK", "img-classification")
+DATASET = os.getenv("LEMUR_DATASET", "cifar-10")
+METRIC = os.getenv("LEMUR_METRIC", "acc")
 
-def assert_columns(df, required):
+#Tuning knobs
+REPEATS = int(os.getenv("LEMUR_BENCH_REPEATS", "3"))          # how many timed runs (median taken)
+WARMUP = int(os.getenv("LEMUR_BENCH_WARMUP", "1"))           # warmup runs (not counted)
+LEGACY_ROWS = int(os.getenv("LEMUR_LEGACY_ROWS", "20000"))   # legacy perf smoke max_rows
+VAR_N_ROWS = int(os.getenv("LEMUR_VARN_ROWS", "500"))        # var-N perf smoke max_rows
+VAR_N = int(os.getenv("LEMUR_VARN", "10"))                   # N for variable-N query
+
+# thresholds (seconds)
+THRESH_LEGACY = float(os.getenv("LEMUR_THRESH_LEGACY", "60"))
+THRESH_VARN = float(os.getenv("LEMUR_THRESH_VARN", "30"))
+#THRESH_SCHEMA = float(os.getenv("LEMUR_THRESH_SCHEMA", "9999"))  # usually don't gate schema test by time
+
+
+def assert_columns(df, required: Sequence[str], label: str = ""):
     missing = [c for c in required if c not in df.columns]
-    assert not missing, f"Missing columns: {missing}"
+    if missing:
+        raise AssertionError(f"{label} missing columns: {missing}. Have={list(df.columns)}")
 
 
+def bench(fn, *, repeats: int = REPEATS, warmup: int = WARMUP) -> tuple[float, list[float]]:
+    # Warmup (build caches, load modules, first tmp_data creation, etc.)
+    for _ in range(max(0, warmup)):
+        fn()
+
+    times = []
+    for _ in range(max(1, repeats)):
+        t0 = time.perf_counter()
+        fn()
+        times.append(time.perf_counter() - t0)
+
+    return statistics.median(times), times
+
+
+def print_bench(name: str, median_s: float, runs: list[float]):
+    runs_str = ", ".join(f"{t:.2f}" for t in runs)
+    print(f"[BENCH] {name}: median={median_s:.2f}s runs=[{runs_str}] (task={TASK}, dataset={DATASET}, metric={METRIC})")
+
+
+# ---------------------- Tests ----------------------
 @measure_time
 def test_legacy_pairwise_schema():
     """
     Legacy behavior: 2-model join, wide schema.
-    This MUST stay unchanged.
+    MUST stay unchanged.
     """
     conf = JoinConf(
         num_joint_nns=2,
-        same_columns=('epoch', 'metric', 'dataset', 'task'),
+        same_columns=("epoch", "metric", "dataset", "task"),
         diff_columns=("nn",),
         enhance_nn=True,
-        # similarity_mode="none",
+        similarity_mode="none",
     )
 
-    df = lemur.data(sql=conf, include_nn_stats=True, task="img-classification", dataset="cifar-10", metric="acc")
+    df = lemur.data(
+        sql=conf,
+        include_nn_stats=True,
+        # IMPORTANT: these must be here so tmp_data is scoped!
+        task=TASK,
+        dataset=DATASET,
+        metric=METRIC,
+        max_rows=200,   # keep schema test small
+    )
 
     required = [
         "nn", "nn_code", "accuracy", "prm_id",
         "nn_2", "nn_code_2", "accuracy_2", "prm_id_2",
     ]
-
-    assert_columns(df, required)
+    assert_columns(df, required, label="legacy schema")
 
     print("[PASS] legacy pairwise schema")
-    print(df[["nn", "accuracy", "nn_2", "accuracy_2"]].head())
-
+    print(df[["nn", "accuracy", "nn_2", "accuracy_2"]].head(5))
 
 @measure_time
-def test_sql_variable_n():
+def test_sql_variable_n_correctness():
     """
-    NEW functionality:
-    SQL-only variable-N model selection.
-    One row per model, no similarity, no joins.
+    NEW: SQL-only variable-N model selection (tall schema).
+    One row per model, no joins.
     """
     N = 5
     conf = JoinConf(
         num_joint_nns=N,
-        task="img-classification",
-        dataset="cifar-10",
-        metric="acc",
         similarity_mode="none",
     )
 
-    df = lemur.data(sql=conf, max_rows=100, include_nn_stats=False)
-
-    assert len(df) == N, f"Expected {N} rows, got {len(df)}"
-
-    required = ["nn", "accuracy", "prm_id"]
-    assert_columns(df, required)
-
-    # Ensure uniqueness (no duplicate architectures)
-    assert df["nn"].is_unique, "Duplicate nn entries detected"
-
-    print("[PASS] SQL variable-N selection")
-    print(df[["nn", "accuracy"]])
-
-
-@measure_time
-def test_otf_anchor_band():
-    conf = JoinConf(
-        num_joint_nns=5,
-        task="img-classification",
-        dataset="cifar-10",
-        metric="acc",
-        similarity_mode="anchor_band_otf",
-        anchor_nn="rl-back-init-0b0d0b7728c47eb6cc9fe040ebb9d239",
-        similarity_band="high",
+    df = lemur.data(
+        sql=conf,
+        include_nn_stats=False,
+        task=TASK,
+        dataset=DATASET,
+        metric=METRIC,
+        max_rows=200,
     )
 
-    df = lemur.data(sql=conf, max_rows=200, include_nn_stats=False)
+    if len(df) != N:
+        raise AssertionError(f"Expected {N} rows, got {len(df)}")
 
-    assert len(df) > 0
-    assert "anchor_jaccard" in df.columns
+    required = ["nn", "accuracy", "prm_id"]
+    assert_columns(df, required, label="var-N correctness")
 
-    print("[PASS] OTF anchor band")
-    print(df[["nn", "accuracy", "anchor_jaccard"]])
+    if not df["nn"].is_unique:
+        raise AssertionError("Duplicate nn entries detected")
 
+    print("[PASS] SQL variable-N selection correctness")
+    print(df[["nn", "accuracy"]].head(10))
+
+@measure_time
+def test_otf_anchor_band_correctness():
+    """
+    OTF anchor band: returns rows with anchor_jaccard.
+    """
+    conf = JoinConf(
+        num_joint_nns=5,
+        similarity_mode="anchor_band_otf",
+        anchor_nn=os.getenv("LEMUR_ANCHOR_NN", "rl-back-init-0b0d0b7728c47eb6cc9fe040ebb9d239"),
+        similarity_band=os.getenv("LEMUR_SIM_BAND", "high"),
+    )
+
+    df = lemur.data(
+        sql=conf,
+        include_nn_stats=False,
+        task=TASK,
+        dataset=DATASET,
+        metric=METRIC,
+        max_rows=200,
+    )
+
+    if len(df) <= 0:
+        raise AssertionError("Expected >0 rows for OTF anchor band")
+    assert_columns(df, ["nn", "accuracy", "anchor_jaccard"], label="OTF anchor band")
+
+    print("[PASS] OTF anchor band correctness")
+    print(df[["nn", "accuracy", "anchor_jaccard"]].head(10))
 
 @measure_time
 def test_legacy_performance_smoke():
     """
     Performance smoke test for legacy path.
-    No strict SLA, just ensures no accidental blow-up.
     """
     conf = JoinConf(
         num_joint_nns=2,
         diff_columns=("nn",),
-        task="img-classification",
-        dataset="cifar-10",
-        metric="acc",
         similarity_mode="none",
     )
 
-    t0 = time.time()
-    df = lemur.data(sql=conf, max_rows=20000, include_nn_stats=False)
-    dt = time.time() - t0
+    def run():
+        lemur.data(
+            sql=conf,
+            include_nn_stats=False,
+            task=TASK,
+            dataset=DATASET,
+            metric=METRIC,
+            max_rows=LEGACY_ROWS,
+        )
 
-    print(f"[INFO] legacy perf: rows={len(df)} time={dt:.2f}s")
+    median_s, runs = bench(run)
+    print_bench("legacy_perf", median_s, runs)
 
-    # Soft sanity guard 
-    assert dt < 120, "Legacy query unexpectedly slow"
-
+    if median_s > THRESH_LEGACY:
+        raise AssertionError(f"Legacy query unexpectedly slow: median {median_s:.2f}s > {THRESH_LEGACY:.2f}s")
 
 @measure_time
 def test_sql_variable_n_performance_smoke():
     """
     Performance smoke test for SQL-only variable-N path.
-    Ensures query remains bounded and does not regress into
-    a full-table join or accidental cross-product.
     """
-    N = 10
-
     conf = JoinConf(
-        num_joint_nns=N,
-        task="img-classification",
-        dataset="cifar-10",
-        metric="acc",
+        num_joint_nns=VAR_N,
         similarity_mode="none",
     )
 
-    t0 = time.time()
-    df = lemur.data(sql=conf, max_rows=500, include_nn_stats=False)
-    dt = time.time() - t0
+    def run():
+        df = lemur.data(
+            sql=conf,
+            include_nn_stats=False,
+            task=TASK,
+            dataset=DATASET,
+            metric=METRIC,
+            max_rows=VAR_N_ROWS,
+        )
+        # Hard correctness guarantees
+        if len(df) != VAR_N:
+            raise AssertionError(f"Expected {VAR_N} rows, got {len(df)}")
+        if not df["nn"].is_unique:
+            raise AssertionError("Duplicate nn entries detected")
 
-    print(f"[INFO] SQL variable-N perf: rows={len(df)} time={dt:.2f}s")
+    median_s, runs = bench(run)
+    print_bench("sql_variable_n_perf", median_s, runs)
 
-    # Hard correctness guarantees
-    assert len(df) == N, f"Expected {N} rows, got {len(df)}"
-    assert df["nn"].is_unique, "Duplicate nn entries detected"
-
-    assert dt < 30, "SQL variable-N query unexpectedly slow"
+    if median_s > THRESH_VARN:
+        raise AssertionError(f"SQL variable-N query unexpectedly slow: median {median_s:.2f}s > {THRESH_VARN:.2f}s")
 
 
-def main():
+def main() -> int:
     print("LEMUR / NNGPT integration tests")
+    print(f"[SCOPE] task={TASK} dataset={DATASET} metric={METRIC}")
+    print(f"[BENCH CFG] repeats={REPEATS} warmup={WARMUP} legacy_rows={LEGACY_ROWS} varN={VAR_N} varN_rows={VAR_N_ROWS}")
+    print(f"[THRESH] legacy<{THRESH_LEGACY}s varN<{THRESH_VARN}s")
 
+    # Schema/correctness first
+    t0 = time.perf_counter()
     test_legacy_pairwise_schema()
-    test_sql_variable_n()
+    test_sql_variable_n_correctness()
+    test_otf_anchor_band_correctness()
+    schema_dt = time.perf_counter() - t0
+    print(f"[INFO] correctness suite took {schema_dt:.2f}s")
+    #if schema_dt > THRESH_SCHEMA:
+        #raise AssertionError("Correctness suite unexpectedly slow (usually indicates huge tmp_data scope)")
+
+    # Perf smoke after correctness
     test_legacy_performance_smoke()
-    test_otf_anchor_band()
     test_sql_variable_n_performance_smoke()
 
     print("\nALL TESTS PASSED")
