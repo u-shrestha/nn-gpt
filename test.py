@@ -44,8 +44,8 @@ def test_legacy_pairwise_schema():
     df = lemur.data(sql=conf, include_nn_stats=True, task="img-classification", dataset="cifar-10", metric="acc")
 
     required = [
-        "nn", "nn_code", "accuracy", "prm_id",
-        "nn_2", "nn_code_2", "accuracy_2", "prm_id_2",
+        "nn", "epoch", "nn_code", "accuracy", "prm_id", "prm", "transform_code",
+        "nn_2", "epoch_2", "nn_code_2", "accuracy_2", "prm_id_2", "prm_2", "transform_code_2"
     ]
 
     assert_columns(df, required)
