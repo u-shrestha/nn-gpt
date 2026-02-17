@@ -50,7 +50,7 @@ def test_legacy_pairwise_schema():
 
     assert_columns(df, required)
 
-    print("[PASS] legacy pairwise schema")
+    print(f"[PASS] legacy pairwise schema with result number: {len(df)}")
     print(df[["nn", "accuracy", "nn_2", "accuracy_2"]].head())
 
 
