@@ -16,6 +16,29 @@ example_prompt = (
     + extra_instructions
 )
 
+def _extract_generated_content(item):
+    """Normalize HF pipeline outputs across single/batch return shapes."""
+    cur = item
+    if isinstance(cur, list):
+        cur = cur[0] if cur else ""
+    if isinstance(cur, dict):
+        generated = cur.get("generated_text", "")
+        if isinstance(generated, list):
+            if not generated:
+                return ""
+            last = generated[-1]
+            if isinstance(last, dict):
+                return last.get("content", "")
+            if isinstance(last, str):
+                return last
+            return str(last)
+        if isinstance(generated, str):
+            return generated
+        return str(generated)
+    if isinstance(cur, str):
+        return cur
+    return str(cur)
+
 class ChatBot:
     def __init__(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, keep_memory=False,
                  temperature=1.0, top_k=50, top_p=0.9):
@@ -79,7 +102,8 @@ class ChatBot:
                     temperature=self.temperature,
                     top_k=self.top_k,
                     top_p=self.top_p,
-                )[0]["generated_text"][-1]['content']
+                )[0]
+                out = _extract_generated_content(out)
                 
                 assert isinstance(out, str)
                 
@@ -95,6 +119,41 @@ class ChatBot:
         
         # Direct generation (ONNX or PyTorch fallback)
         return self._direct_generate(in_next, max_new_tokens, max_len)
+
+    def chat_batch(self, prompts, max_len=None, max_new_tokens=None, engineer_prompt=True):
+        """Batch generation for multiple prompts; falls back to per-prompt generation."""
+        if not prompts:
+            return []
+
+        if self.__keep_memory:
+            return [self.chat(p, max_len=max_len, max_new_tokens=max_new_tokens, engineer_prompt=engineer_prompt) for p in prompts]
+
+        prepared_prompts = [p + extra_instructions if engineer_prompt else p for p in prompts]
+        messages_batch = [[{"role": "user", "content": p}] for p in prepared_prompts]
+
+        if self.__pipeline is not None:
+            try:
+                out_batch = self.__pipeline(
+                    messages_batch,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=True,
+                    max_len=max_len,
+                    temperature=self.temperature,
+                    top_k=self.top_k,
+                    top_p=self.top_p,
+                    batch_size=len(messages_batch),
+                )
+                results = []
+                for out in out_batch:
+                    generated = _extract_generated_content(out)
+                    nn = extract_code(generated)
+                    results.append((nn, extract_hyperparam(generated), extract_transform(generated), generated))
+                return results
+            except Exception as e:
+                print(f"[WARN] Pipeline batch generation failed: {e}")
+                print("[INFO] Falling back to per-prompt generation")
+
+        return [self.chat(p, max_len=max_len, max_new_tokens=max_new_tokens, engineer_prompt=engineer_prompt) for p in prompts]
 
     def _direct_generate(self, messages, max_new_tokens, max_len):
         """Direct model.generate() call without pipeline - works for ONNX and PyTorch"""
