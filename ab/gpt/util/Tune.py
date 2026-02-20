@@ -218,10 +218,10 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
     
     # produce new CV models
     models_dir = synth_dir(out_path)
+    pending = []
     # print(f"prompts: {prompts}")
-    for idx, prompt in tqdm(enumerate(prompts)):
-        model_dir = models_dir / f'B{idx}'
-        prompt, origdf = prompt
+    for idx, prompt_data in tqdm(enumerate(prompts)):
+        prompt, origdf = prompt_data
 
         if unsloth_max_input_length:
             # skip if prompt is too long
@@ -235,82 +235,100 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
                 print(f'Prompt is too long, skipping...')
                 continue
 
-        code, hp, tr, full_out = chat_bot.chat(prompt, engineer_prompt=False, max_new_tokens=max_new_tokens)
-        if save_llm_output: create_file(model_dir, new_out_file, full_out)
-        makedirs(model_dir, exist_ok=True)
-        
-        # Apply delta if delta mode is enabled
-        if use_delta and origdf is not None:
-            try:
-                from ab.gpt.util.DeltaUtil import apply_delta, validate_delta
-                from ab.gpt.util.Util import extract_delta
-                
-                delta = extract_delta(full_out)
-                if delta:
-                    # Validate delta format before attempting to apply
-                    if not validate_delta(delta):
-                        print(f'[WARNING] Invalid delta format for model B{idx}, using extracted code as fallback')
-                        # code already extracted above, keep it
-                    else:
-                        baseline_code = origdf.get('nn_code', '')
-                        if baseline_code:
-                            applied_code = apply_delta(baseline_code, delta)
-                            if applied_code:
-                                code = applied_code
-                                print(f'[INFO] Successfully applied delta to baseline code for model B{idx}')
-                            else:
-                                print(f'[WARNING] Failed to apply delta for model B{idx} (delta application returned None), using extracted code as fallback')
-                                # code already extracted above, keep it
+        pending.append((idx, prompt, origdf))
+
+    if prompt_batch < 1:
+        prompt_batch = 1
+    if prompt_batch > 1:
+        print(f'[INFO] Batch generation enabled: prompt_batch={prompt_batch}')
+
+    for start in range(0, len(pending), prompt_batch):
+        batch = pending[start:start + prompt_batch]
+        batch_prompts = [item[1] for item in batch]
+        if prompt_batch > 1 and hasattr(chat_bot, 'chat_batch'):
+            batch_outputs = chat_bot.chat_batch(batch_prompts, engineer_prompt=False, max_new_tokens=max_new_tokens)
+        else:
+            batch_outputs = [chat_bot.chat(p, engineer_prompt=False, max_new_tokens=max_new_tokens) for p in batch_prompts]
+
+        for (idx, prompt, origdf), output in zip(batch, batch_outputs):
+            model_dir = models_dir / f'B{idx}'
+            code, hp, tr, full_out = output
+            if save_llm_output:
+                create_file(model_dir, new_out_file, full_out)
+            makedirs(model_dir, exist_ok=True)
+            
+            # Apply delta if delta mode is enabled
+            if use_delta and origdf is not None:
+                try:
+                    from ab.gpt.util.DeltaUtil import apply_delta, validate_delta
+                    from ab.gpt.util.Util import extract_delta
+                    
+                    delta = extract_delta(full_out)
+                    if delta:
+                        # Validate delta format before attempting to apply
+                        if not validate_delta(delta):
+                            print(f'[WARNING] Invalid delta format for model B{idx}, using extracted code as fallback')
+                            # code already extracted above, keep it
                         else:
-                            print(f'[WARNING] No baseline code found in origdf for model B{idx}, using extracted code')
+                            baseline_code = origdf.get('nn_code', '')
+                            if baseline_code:
+                                applied_code = apply_delta(baseline_code, delta)
+                                if applied_code:
+                                    code = applied_code
+                                    print(f'[INFO] Successfully applied delta to baseline code for model B{idx}')
+                                else:
+                                    print(f'[WARNING] Failed to apply delta for model B{idx} (delta application returned None), using extracted code as fallback')
+                                    # code already extracted above, keep it
+                            else:
+                                print(f'[WARNING] No baseline code found in origdf for model B{idx}, using extracted code')
+                    else:
+                        print(f'[WARNING] No delta found in LLM output for model B{idx}, using extracted code as fallback')
+                except ImportError as e:
+                    print(f'[ERROR] Failed to import delta utilities for model B{idx}: {e}. Using extracted code as fallback.')
+                except Exception as e:
+                    print(f'[WARNING] Unexpected error applying delta for model B{idx}: {e}. Using extracted code as fallback.')
+                    # code already extracted above, keep it
+            # Save hyperparameters (optional - don't fail if missing)
+            try:
+                print(f'Generated params: {hp}')
+                if hp is not None and hp.strip():  # Check if hp exists and is not empty
+                    hp = json.loads(hp.replace("'", '"'))
+                    with open(model_dir / hp_file, 'w+') as f:
+                        json.dump(hp, f)
                 else:
-                    print(f'[WARNING] No delta found in LLM output for model B{idx}, using extracted code as fallback')
-            except ImportError as e:
-                print(f'[ERROR] Failed to import delta utilities for model B{idx}: {e}. Using extracted code as fallback.')
+                    print('[WARNING] No hyperparameters generated, skipping hp file')
             except Exception as e:
-                print(f'[WARNING] Unexpected error applying delta for model B{idx}: {e}. Using extracted code as fallback.')
-                # code already extracted above, keep it
-        # Save hyperparameters (optional - don't fail if missing)
-        try:
-            print(f'Generated params: {hp}')
-            if hp is not None and hp.strip():  # Check if hp exists and is not empty
-                hp = json.loads(hp.replace("'", '"'))
-                with open(model_dir / hp_file, 'w+') as f:
-                    json.dump(hp, f)
+                print(f'[WARNING] Error processing hyperparameters: {e}')
+                # Don't continue here - let it save the code even if hp fails
+            
+            # Save transformer (optional - don't fail if missing)
+            try:
+                print(f'Generated transformer:\n\n{tr}\n----\n')
+                if tr is not None and tr.strip():  # Check if tr exists and is not empty
+                    create_file(model_dir, transformer_file, tr)
+                else:
+                    print('[WARNING] No transformer code generated')
+            except Exception as e:
+                print(f'[WARNING] Error saving transformer: {e}')
+                # Don't continue here either - let it save the code
+            
+            # ALWAYS save code (critical - only skip if completely missing)
+            if code is not None and code.strip():
+                create_file(model_dir, new_nn_file, code)
+                print(f'[INFO] Saved code to {model_dir / new_nn_file}')
             else:
-                print('[WARNING] No hyperparameters generated, skipping hp file')
-        except Exception as e:
-            print(f'[WARNING] Error processing hyperparameters: {e}')
-            # Don't continue here - let it save the code even if hp fails
-        
-        # Save transformer (optional - don't fail if missing)
-        try:
-            print(f'Generated transformer:\n\n{tr}\n----\n')
-            if tr is not None and tr.strip():  # Check if tr exists and is not empty
-                create_file(model_dir, transformer_file, tr)
+                print(f'[ERROR] No code generated for model B{idx}')
+                continue  # Only skip if no code at all
+            create_file(model_dir, new_out_file, full_out)
+            df_file = model_dir / 'dataframe.df'
+            if origdf is None:
+                if isfile(df_file):  # Clean up dataframe.df, if no additional information generated this time.
+                    os.remove(df_file)
+                    print(f'[DEBUG]Removed unmatched file: {df_file}')
             else:
-                print('[WARNING] No transformer code generated')
-        except Exception as e:
-            print(f'[WARNING] Error saving transformer: {e}')
-            # Don't continue here either - let it save the code
-        
-        # ALWAYS save code (critical - only skip if completely missing)
-        if code is not None and code.strip():
-            create_file(model_dir, new_nn_file, code)
-            print(f'[INFO] Saved code to {model_dir / new_nn_file}')
-        else:
-            print(f'[ERROR] No code generated for model B{idx}')
-            continue  # Only skip if no code at all
-        create_file(model_dir, new_out_file, full_out)
-        df_file = model_dir / 'dataframe.df'
-        if origdf is None:
-            if isfile(df_file):  # Clean up dataframe.df, if no additional information generated this time.
-                os.remove(df_file)
-                print(f'[DEBUG]Removed unmatched file: {df_file}')
-        else:
-            create_file(model_dir, f"original_{origdf['nn']}.py", origdf['nn_code'])
-            # Store DataFrame information, mainly for passing parameters to evaluator.
-            origdf.to_pickle(df_file)
+                create_file(model_dir, f"original_{origdf['nn']}.py", origdf['nn_code'])
+                # Store DataFrame information, mainly for passing parameters to evaluator.
+                origdf.to_pickle(df_file)
     print('[DEBUG] Release memory.')
     release_memory()
     # evaluate produced CV models
