@@ -68,8 +68,12 @@ def flatten_chunks(data):
 
 def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf, training_args, peft_config,
          max_prompts=None, save_llm_output=True, max_new_tokens=16 * 1024, nn_name_prefix=None, temperature=1.0, top_k=50, top_p=0.9, test_metric=None,
-         onnx_run=False, trans_mode=False, prompt_batch=1):
-    
+         onnx_run=False, trans_mode=False, prompt_batch=1,
+         use_agents=False, use_predictor=False):
+    """
+    Main tuning pipeline. When use_agents=True, runs LangGraph multi-agent workflow
+    using the same loaded model, chat_bot, and config as the classic path.
+    """
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
     with open(conf_llm_dir / llm_conf) as f:
@@ -139,6 +143,125 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
     # loop train and eval cycles
     chat_bot = ChatBot(model, tokenizer, temperature=temperature, top_k=top_k, top_p=top_p) # Only initialize ONCE
 
+    # ============================================================
+    # AGENT WORKFLOW (inside tune() - uses same loaded resources)
+    # Same loop as classic: generate -> finetune per epoch.
+    # ============================================================
+    if use_agents:
+        try:
+            from langgraph.graph import StateGraph, END
+            from ab.gpt.agents.state import AgentState
+            from ab.gpt.agents.manager import manager_node
+            from ab.gpt.agents.generator import generator_node
+            from ab.gpt.agents.finetuner import finetuner_node
+
+            if use_predictor:
+                from ab.gpt.agents.predictor import predictor_node
+
+            print("=" * 60)
+            print("🚀 Starting LangGraph Multi-Agent Workflow (inside tune)")
+            print("=" * 60)
+            print(f"  use_predictor: {use_predictor}")
+            print(f"  epochs: {llm_tune_epochs}, skip until: {skip_epoch}")
+            print("=" * 60)
+
+            workflow = StateGraph(AgentState)
+            workflow.add_node("manager", manager_node)
+            workflow.add_node("generator", generator_node)
+            workflow.add_node("finetuner", finetuner_node)
+            if use_predictor:
+                workflow.add_node("predictor", predictor_node)
+
+            workflow.set_entry_point("manager")
+
+            def should_continue(state: AgentState) -> str:
+                return state.get('next_action', 'end')
+
+            edges = {"generate": "generator", "finetune": "finetuner", "end": END}
+            if use_predictor:
+                edges["predict"] = "predictor"
+
+            workflow.add_conditional_edges("manager", should_continue, edges)
+            workflow.add_edge("generator", "manager")
+            workflow.add_edge("finetuner", "manager")
+            if use_predictor:
+                workflow.add_edge("predictor", "manager")
+            
+            app = workflow.compile()
+
+            shutil.rmtree(epoch_dir(), ignore_errors=True)
+
+            # Pass loaded resources so generator/finetuner use tune()'s chat_bot, model, etc.
+            initial_state: AgentState = {
+                "experiment_id": nn_name_prefix or 'exp_default',
+                "base_out_dir": str(nngpt_dir),
+                "num_train_epochs": training_args.num_train_epochs if hasattr(training_args, 'num_train_epochs') else 3,
+                "nn_train_epochs": nn_train_epochs,
+                "nn_gen_conf_id": conf_keys[0] if conf_keys else 'improve_classification_only',
+                "temperature": temperature,
+                "top_k": int(top_k) if isinstance(top_k, (int, str)) else top_k,
+                "top_p": float(top_p) if isinstance(top_p, (int, str, float)) else top_p,
+                "max_new_tokens": max_new_tokens,
+                "save_llm_output": save_llm_output,
+                "llm_conf": llm_conf,
+                "nn_gen_conf": nn_gen_conf,
+                "use_predictor": use_predictor,
+                "gpu_available": True,
+                "next_action": "generate",
+                "status": "pending",
+                "current_epoch": 0,
+                "llm_tune_epochs": llm_tune_epochs,
+                "skip_epoch": skip_epoch,
+                "max_prompts": max_prompts,
+                "context_length": context_length,
+                "use_unsloth": use_unsloth,
+                # Pre-loaded resources from tune() setup
+                "chat_bot": chat_bot,
+                "prompt_dict": prompt_dict,
+                "conf_keys": conf_keys,
+                "test_nn": test_nn,
+                "unsloth_max_input_length": unsloth_max_input_length,
+                "prompt_batch": prompt_batch,
+                "train_config_path": str(train_config_path),
+                "base_model_name": base_model_name,
+                "only_best_accuracy": only_best_accuracy,
+                "trans_mode": trans_mode,
+                "model": model,
+                "tokenizer": tokenizer,
+                "model_loader": model_loader,
+                "lora_tuner": lora_tuner,
+            }
+            
+            print("\n🔄 Executing LangGraph workflow...\n")
+            final_state = app.invoke(initial_state)
+            
+            print("\n" + "=" * 60)
+            print("✅ LangGraph Workflow Completed!")
+            print("=" * 60)
+            print(f"  Status: {final_state.get('status', 'unknown')}")
+            if final_state.get('model_code'):
+                print(f"  Model generated: {final_state.get('nn_name', 'N/A')}")
+                print(f"  Accuracy: {final_state.get('accuracy', 'N/A')}")
+            if final_state.get('predicted_best_accuracy'):
+                print(f"  Predicted accuracy: {final_state.get('predicted_best_accuracy', 'N/A')}")
+                print(f"  Predicted epoch: {final_state.get('predicted_best_epoch', 'N/A')}")
+            print("=" * 60)
+            
+            return final_state
+            
+        except ImportError as e:
+            print(f"❌ Error: LangGraph not available. Install with: pip install langgraph")
+            print(f"   Details: {e}")
+            raise
+        except Exception as e:
+            print(f"❌ Error in LangGraph workflow: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+    # ============================================================
+    # CLASSIC PIPELINE (no agents)
+    # ============================================================
     shutil.rmtree(epoch_dir(), ignore_errors=True)
     for epoch in range(llm_tune_epochs):
         print(f'[INFO]Start Epoch {epoch}')
