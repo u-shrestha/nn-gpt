@@ -57,23 +57,23 @@ class Net(nn.Module):
         n_classes = out_shape[0] if out_shape else 10
 
         self.entry = nn.Sequential(
-            nn.Conv2d(c_in, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
+            nn.Conv2d(c_in, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True)
         )
-        self.block1 = FractalBlock(3, 32, 0.0)
+        self.block1 = FractalBlock(2, 64, 0.0)
         self.pool1 = nn.MaxPool2d(2)
 
         self.trans = nn.Sequential(
-            nn.Conv2d(32, 32*2, kernel_size=1),
-            nn.BatchNorm2d(32*2),
+            nn.Conv2d(64, 64*2, kernel_size=1),
+            nn.BatchNorm2d(64*2),
             nn.ReLU(inplace=True)
         )
-        self.block2 = FractalBlock(3, 32*2, 0.0)
+        self.block2 = FractalBlock(2, 64*2, 0.0)
         self.pool2 = nn.MaxPool2d(2)
 
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(32*2, n_classes)
+        self.fc = nn.Linear(64*2, n_classes)
         self.to(device)
 
     def forward(self, x):
