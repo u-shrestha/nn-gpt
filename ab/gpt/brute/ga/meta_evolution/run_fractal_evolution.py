@@ -80,6 +80,16 @@ def fitness_function(chromosome: dict) -> float:
             'epoch': 1, # Short epochs for Meta-Evaluation
             'transform': "norm_256_flip" 
         }
+
+        # --- FIX: Delete stale training_summary.json before eval so it
+        # cannot be picked up and mistaken for the current model's stats.
+        summary_path = os.path.join(os.getcwd(), 'out', 'training_summary.json')
+        if os.path.exists(summary_path):
+            try:
+                os.remove(summary_path)
+                print(f"  - Cleared stale training_summary.json before eval")
+            except Exception as e:
+                print(f"  - Warning: could not remove stale summary: {e}")
         
         # We don't need `Eval` to make its own subfolder if we want a flat JSON
         evaluator = Eval(
@@ -95,17 +105,52 @@ def fitness_function(chromosome: dict) -> float:
         
         result = evaluator.evaluate(filepath)
         
-        # Fetch the most comprehensive stats from training_summary.json
-        summary_path = os.path.join(os.getcwd(), 'out', 'training_summary.json')
+        # Fetch stats from the freshly-written training_summary.json.
+        # Only trust it if it was actually written by THIS evaluation
+        # (guard: the file must exist AND belong to the current model checksum).
         full_res = {}
         if os.path.exists(summary_path):
             try:
                 with open(summary_path, 'r') as f:
-                    full_res = json.load(f)
+                    candidate = json.load(f)
+                # Verify this file was produced for the current architecture.
+                # The uid field is set by the library; if absent we also accept
+                # a dict result and stamp our own checksum.
+                file_uid = candidate.get('uid', model_checksum)
+                if file_uid == model_checksum:
+                    full_res = candidate
+                    print(f"  - Loaded fresh training_summary.json (uid match)")
+                else:
+                    print(f"  - Warning: training_summary.json uid mismatch "
+                          f"({file_uid[:8]} vs {model_checksum[:8]}), ignoring stale file")
             except Exception as e:
-                print(f"Failed to read training summary: {e}")
-        elif isinstance(result, dict):
-            full_res = result
+                print(f"  - Failed to read training summary: {e}")
+
+        # Fall back to the direct result object if summary was absent/mismatched
+        if not full_res:
+            if isinstance(result, dict):
+                full_res = result
+            else:
+                # Construct a minimal stats dict from the scalar result
+                acc_val = 0.0
+                if isinstance(result, tuple) and len(result) >= 2:
+                    acc_val = float(result[1])
+                elif isinstance(result, (int, float)) and result is not None:
+                    acc_val = float(result)
+                full_res = {
+                    'config': {
+                        'task': 'img-classification',
+                        'dataset': 'cifar-10',
+                        'metric': 'acc',
+                        'model': model_name
+                    },
+                    'hyperparameters': eval_prm,
+                    'training_summary': {
+                        'total_epochs': eval_prm.get('epoch', 1),
+                        'best_accuracy': acc_val,
+                        'final_accuracy': acc_val,
+                    }
+                }
 
         # Ensure uid is exactly the checksum
         full_res['uid'] = model_checksum
