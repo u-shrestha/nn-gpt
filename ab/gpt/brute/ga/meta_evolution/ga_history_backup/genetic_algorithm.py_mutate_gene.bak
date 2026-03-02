@@ -111,6 +111,6 @@ class GeneticAlgorithm:
                 next_gen.append({'chromosome': child, 'fitness': None})
             
             self.population = next_gen
-            self._save_checkpoint(gen + 1)
+            # self._save_checkpoint(gen + 1)
             
         return best_overall, fitness_history

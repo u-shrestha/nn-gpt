@@ -46,22 +46,7 @@ class GeneticAlgorithm:
 
     # --- START LLM: MUTATION ---
     def mutate_gene(self, current_value, possible_values):
-        """
-        Return a new gene value.
-        """
-        if not isinstance(possible_values, list):
-            raise ValueError('possible_values should be a list')
-        if not possible_values:
-            return
-        if len(possible_values) == 1:
-            return possible_values[0]
-        min_value = min(possible_values)
-        max_value = max(possible_values)
-        shift = random.randint(-1 * current_value % max_value, current_value % max_value)
-        new_value = (current_value + shift) % max_value
-        while new_value < min_value:
-            new_value += max_value
-        return new_value
+        return mutate_gene(self, current_value, possible_values)
     def _mutate(self, chromosome):
         mutated_chromo = chromosome.copy()
         for gene in self.search_space.keys():
@@ -114,6 +99,6 @@ class GeneticAlgorithm:
                 next_gen.append({'chromosome': child, 'fitness': None})
             
             self.population = next_gen
-            self._save_checkpoint(gen + 1)
+            # self._save_checkpoint(gen + 1)
             
         return best_overall, fitness_history

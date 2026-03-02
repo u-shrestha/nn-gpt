@@ -110,21 +110,36 @@ def fitness_function(chromosome: dict) -> float:
         # Ensure uid is exactly the checksum
         full_res['uid'] = model_checksum
         
-        # Extract the correct epoch size to use for the file name (e.g. 1.json, 2.json...)
-        max_epochs = eval_prm.get('epoch', 1)
-        if 'epoch_max' in full_res:
-            max_epochs = full_res['epoch_max']
-        elif 'training_summary' in full_res and 'total_epochs' in full_res['training_summary']:
-            max_epochs = full_res['training_summary']['total_epochs']
-            
         # Save exact requested stats format to a JSON folder structure
+        # One JSON file per epoch: 1.json, 2.json, ..., N.json
         model_stats_dir_name = f"img-classification_cifar_FractalNet-{model_checksum}"
         model_stats_dir_path = os.path.join(STATS_DIR, model_stats_dir_name)
         os.makedirs(model_stats_dir_path, exist_ok=True)
-        
-        stat_file = os.path.join(model_stats_dir_path, f"{max_epochs}.json")
-        with open(stat_file, 'w') as sf:
-            json.dump(full_res, sf, indent=4)
+
+        epoch_details = full_res.get('epoch_details', [])
+        if epoch_details:
+            # Save a separate JSON for each epoch
+            for ep_data in epoch_details:
+                ep_num = ep_data.get('epoch', len(epoch_details))
+                # Build a per-epoch snapshot of the full result
+                ep_res = dict(full_res)
+                ep_res['current_epoch'] = ep_num
+                ep_res['uid'] = model_checksum
+                stat_file = os.path.join(model_stats_dir_path, f"{ep_num}.json")
+                with open(stat_file, 'w') as sf:
+                    json.dump(ep_res, sf, indent=4)
+            print(f"  - Saved {len(epoch_details)} epoch JSON file(s) to: {model_stats_dir_path}")
+        else:
+            # Fallback: save single file named after total epochs
+            max_epochs = eval_prm.get('epoch', 1)
+            if 'epoch_max' in full_res:
+                max_epochs = full_res['epoch_max']
+            elif 'training_summary' in full_res and 'total_epochs' in full_res['training_summary']:
+                max_epochs = full_res['training_summary']['total_epochs']
+            stat_file = os.path.join(model_stats_dir_path, f"{max_epochs}.json")
+            with open(stat_file, 'w') as sf:
+                json.dump(full_res, sf, indent=4)
+            print(f"  - Saved stats (fallback) to: {stat_file}")
 
         final_accuracy = 0.0
         if 'accuracy' in full_res:
@@ -141,7 +156,9 @@ def fitness_function(chromosome: dict) -> float:
             except:
                 pass
 
-        print(f"  - Eval result: {final_accuracy:.2f}%")
+        print(f"\n  {'='*40}")
+        print(f"  >>> FITNESS SCORE: {final_accuracy:.2f}%  (checksum: {model_checksum})")
+        print(f"  {'='*40}\n")
         seen_checksums.add(model_checksum)
         
         chromosome['accuracy'] = float(final_accuracy)

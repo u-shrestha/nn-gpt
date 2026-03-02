@@ -122,3 +122,37 @@ ls /shared/ssd/home/b-a-singh/Thesis/nn-gpt/ab/gpt/brute/ga/meta_evolution/ga_fr
 ```
 
 There is no workaround for this without changing the cluster node configuration. Do not attempt to use `/home/...` as the volume path — it will cause `ContainerCreating`.
+
+---
+
+## 7. When to Restart the Kubernetes Job After Code Changes
+
+Since the pod mounts `/shared/ssd/home/b-a-singh/Thesis/nn-gpt` directly, **any file you edit locally is immediately visible inside the pod**. But whether the running process picks it up depends on how that file is loaded:
+
+### ✅ No restart needed — changes take effect on the next benchmark cycle
+
+These files are invoked as a **fresh subprocess** on every benchmark call (via `subprocess.Popen` in `meta_evolver.py`), so Python re-reads them from disk each time:
+
+| File | Reason |
+|------|--------|
+| `run_fractal_evolution.py` | Spawned as a new subprocess per benchmark |
+| `FractalNet_evolvable.py` | Imported inside the subprocess |
+| `genetic_algorithm.py` | Imported inside the subprocess |
+| Any helper imported only by `run_fractal_evolution.py` | Same subprocess scope |
+
+### 🔄 Restart IS required
+
+These files are **imported once at job startup** by the main `meta_evolver.py` process and cached in memory for the entire job lifetime:
+
+| File | Reason |
+|------|--------|
+| `meta_evolver.py` | The main process itself — already running |
+| `llm_loader.py` | Imported at startup by `meta_evolver.py` |
+| `rl_rewards.py` | Imported at startup by `meta_evolver.py` |
+
+**Rule of thumb**: If the file is used by the **top-level `meta_evolver.py` process**, restart required. If it's only used inside the **`run_fractal_evolution.py` subprocess**, no restart needed.
+
+To restart the job cleanly:
+```bash
+kubectl replace --force -f meta_evol_tune_nngpt.json
+```
