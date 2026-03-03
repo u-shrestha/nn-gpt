@@ -273,9 +273,12 @@ unsloth_opt={unsloth_opt},  trans_mode={trans_mode}''')
          temperature=temperature, top_k=top_k, top_p=top_p, onnx_run=onnx_run, trans_mode=trans_mode)
 
     if enable_merge:
-        from ab.gpt.util.MergeLLM import merge_from_adapter
-        print("[MERGE] Auto-merge enabled.")
-        merge_from_adapter()
+        print("\n[PIPELINE] Auto decision + merge enabled\n")
+        import subprocess
+        subprocess.run(
+            ["python", "-m", "ab.gpt.util.Mergedecision"],
+            check=True
+        )
 
     # Show warmup based on what was actually used
     if evaluation_strategy is not None:

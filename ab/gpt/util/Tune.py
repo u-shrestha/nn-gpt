@@ -24,6 +24,10 @@ from ab.gpt.util.prompt.NNGenPrompt import NNGenPrompt
 from ab.gpt.brute.trans.TransformEval import run_eval
 from ab.gpt.util.prompt.TransformGenPrompt import TransformGenPrompt, load_data_from_folders
 
+# --- Evolution override ---
+from pathlib import Path
+from ab.gpt.util.Const import nngpt_upload
+
 # from datasets import load_from_disk
 
 
@@ -78,6 +82,14 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
 
     token_from_file = config['token_from_file']
     base_model_name = config['base_model_name']
+    merged_candidate = nngpt_upload / Path(base_model_name).name
+
+    if merged_candidate.exists():
+        print(f"[EVOLUTION] Using merged model: {merged_candidate}")
+        base_model_name = str(merged_candidate)
+    else:
+        print(f"[EVOLUTION] Using base model from config: {base_model_name}")
+    # ---------------------------
     llm_tune_epochs = int(config['num_epochs'])
     use_deepspeed = config['use_deepspeed']
     only_best_accuracy = config['only_best_accuracy']
