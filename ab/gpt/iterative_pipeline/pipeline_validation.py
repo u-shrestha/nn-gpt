@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 import logging
 
+from ab.nn.util.Const import ab_root_path
+
 # Setup logging
 # Logging will be configured by the main script to use the output directory
 # Do not create log files here to avoid creating files in iterative_pipeline directory
@@ -137,9 +139,9 @@ class PipelineValidator:
         """Check if all required infrastructure files exist."""
         # Pipeline files are in ab/gpt/iterative_pipeline/
         # iterative_finetune.py is at ab/gpt/iterative_finetune.py (one level up)
-        pipeline_dir = Path("ab/gpt/iterative_pipeline")
-        gpt_dir = Path("ab/gpt")
-        
+        gpt_dir = ab_root_path / 'ab' / 'gpt'
+        pipeline_dir = gpt_dir / 'iterative_pipeline'
+
         # Files in the pipeline directory
         pipeline_files = [
             "novelty_checker.py",
