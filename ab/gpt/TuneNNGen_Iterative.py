@@ -12,7 +12,6 @@ def main():
     TuneNNGen.main(
         llm_conf='ds_coder_1.3b_instruct.json',
         run_iterative_pipeline=True,
-        base_data_dir='curation_output/chat_data',
         cycles=28,
         models_per_cycle=20,
         resume_from_cycle=None,

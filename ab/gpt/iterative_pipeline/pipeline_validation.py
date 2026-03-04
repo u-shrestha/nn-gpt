@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 import logging
 
-from ab.nn.util.Const import ab_root_path
+from ab.nn.util.Const import ab_root_path, out_dir
 
 # Setup logging
 # Logging will be configured by the main script to use the output directory
@@ -404,8 +404,8 @@ if __name__ == "__main__":
     # Test validation
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base_data_dir", type=str, default="curation_output/chat_data")
-    parser.add_argument("--llm_conf", type=str, default="ab/gpt/conf/llm/ds_coder_7b_instruct.json")
+    parser.add_argument("--base_data_dir", type=str, default=out_dir / "curation_output/chat_data")
+    parser.add_argument("--llm_conf", type=str, default=ab_root_path / "ab/gpt/conf/llm/ds_coder_7b_instruct.json")
     
     args = parser.parse_args()
     
