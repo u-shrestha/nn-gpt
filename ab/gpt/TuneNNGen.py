@@ -120,7 +120,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          evaluation_strategy=None, eval_steps=None, save_strategy=None, save_steps=None, 
          save_total_limit=None, load_best_model_at_end=False, metric_for_best_model=None, warmup_steps=None, weight_decay=None,
          per_device_eval_batch_size=None, onnx_run=ONNX_RUN, unsloth_opt=UNSLOTH_OPT, trans_mode=TRANS_MODE,
-         prompt_batch=PROMPT_BATCH,
+         prompt_batch=PROMPT_BATCH,enable_merge=False,
          # --- Pipeline Hyperparameters ---
          run_iterative_pipeline=False, cycles=5, models_per_cycle=150, samples_per_prompt=1, accuracy_threshold=0.40,
          min_selected_k=15, fallback_threshold=0.35, adaptive_threshold=False,
@@ -300,7 +300,21 @@ unsloth_opt={unsloth_opt},  trans_mode={trans_mode},  prompt_batch={prompt_batch
     tune(test_nn, nn_train_epochs, skip_epoches, peft, llm_tune_conf, nn_gen_conf, nn_gen_conf_id, llm_conf, training_args, peft_config,
          max_prompts=max_prompts, save_llm_output=save_llm_output, max_new_tokens=max_new_tokens, nn_name_prefix=nn_name_prefix, 
          temperature=temperature, top_k=top_k, top_p=top_p, onnx_run=onnx_run, trans_mode=trans_mode, prompt_batch=prompt_batch)
-    
+    # --- Optional post-training merge step ---
+    if enable_merge:
+        print("\n[MERGE] Running auto-merge decision module...\n")
+        import subprocess
+
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "ab.gpt.util.Mergedecision"],
+                check=True
+            )
+            print("[MERGE] Completed successfully.\n")
+        except subprocess.CalledProcessError as e:
+            print(f"[MERGE] Failed with exit code {e.returncode}")
+            raise
+
     print("\n" + "="*70)
     print("FINE-TUNING CONFIGURATION SUMMARY")
     print("="*70)
@@ -467,6 +481,7 @@ if __name__ == '__main__':
                         help=f"Run model generation step with LLM in ONNX format (default: {ONNX_RUN}).")
     parser.add_argument('--unsloth_opt', action='store_true',
                         help=f"Use Unsloth optimizations (default: {UNSLOTH_OPT}).")
+    parser.add_argument("--enable_merge",action="store_true",default=False,help="Enable automatic merge decision after fine-tuning.")
     parser.add_argument('--prompt_batch', type=int, default=PROMPT_BATCH,
                         help=f"Batch size for prompts – Number of prompts processed simultaneously (default: {PROMPT_BATCH}).")
 

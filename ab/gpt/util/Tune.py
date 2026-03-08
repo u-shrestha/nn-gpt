@@ -5,7 +5,7 @@ import json
 from os import makedirs
 from os.path import isfile
 import glob
-
+from pathlib import Path
 import numpy as np
 import torch
 import ab.nn.api as lemur
@@ -23,7 +23,7 @@ from ab.gpt.util.LoRA import LoRA
 from ab.gpt.util.Util import exists, extract_delta, extract_code, extract_hyperparam, extract_transform
 from ab.gpt.util.prompt.NNGenPrompt import NNGenPrompt
 from ab.gpt.util.DeltaUtil import apply_delta, validate_delta, repair_code
-
+from ab.gpt.util.Const import nngpt_upload
 from ab.gpt.brute.trans.TransformEval import run_eval
 from ab.gpt.util.prompt.TransformGenPrompt import TransformGenPrompt, load_data_from_folders
 
@@ -75,7 +75,6 @@ def flatten_chunks(data):
 def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf, training_args, peft_config,
          max_prompts=None, save_llm_output=True, max_new_tokens=16 * 1024, nn_name_prefix=None, temperature=1.0, top_k=50, top_p=0.9, test_metric=None,
          onnx_run=False, trans_mode=False, prompt_batch=1):
-    
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
     with open(conf_llm_dir / llm_conf) as f:
@@ -84,6 +83,15 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
 
     token_from_file = config['token_from_file']
     base_model_name = config['base_model_name']
+    merged_candidate = nngpt_upload / Path(base_model_name).name
+
+    if merged_candidate.exists():
+        print(f"[EVOLUTION] Using merged model: {merged_candidate}")
+        base_model_name = str(merged_candidate)
+    else:
+        print(f"[EVOLUTION] Using base model from config: {base_model_name}")
+
+
     llm_tune_epochs = int(config['num_epochs'])
     use_deepspeed = config['use_deepspeed']
     only_best_accuracy = config['only_best_accuracy']
