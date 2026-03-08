@@ -6,6 +6,7 @@ from typing import Literal
 
 import torch
 from ab.gpt.util.Const import nngpt_dir, new_out_file, NN_TRAIN_EPOCHS
+from ab.nn.util.Const import out_dir
 
 # --- Default Evaluation Parameters ---
 # These will be used as defaults for argparse arguments
@@ -119,22 +120,17 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          evaluation_strategy=None, eval_steps=None, save_strategy=None, save_steps=None, 
          save_total_limit=None, load_best_model_at_end=False, metric_for_best_model=None, warmup_steps=None, weight_decay=None,
          per_device_eval_batch_size=None, onnx_run=ONNX_RUN, unsloth_opt=UNSLOTH_OPT, trans_mode=TRANS_MODE,
-         prompt_batch=PROMPT_BATCH,
+         prompt_batch=PROMPT_BATCH,enable_merge=False,
          # --- Pipeline Hyperparameters ---
-         run_iterative_pipeline=False, base_data_dir=None, output_dir="out/iterative_cycles",
-         cycles=5, models_per_cycle=150, samples_per_prompt=1, accuracy_threshold=0.40,
-         min_selected_k=15, fallback_threshold=0.35, adaptive_threshold=False,enable_merge=False,
+         run_iterative_pipeline=False, cycles=5, models_per_cycle=150, samples_per_prompt=1, accuracy_threshold=0.40,
+         min_selected_k=15, fallback_threshold=0.35, adaptive_threshold=False,
          novelty_check=True, resume_from_cycle=None, max_retries=3, use_optimized_training=True):
 
     # --- Pipeline mode intercept ---
     if run_iterative_pipeline:
         print("--- Initiating Iterative Fine-Tuning Pipeline ---")
         from ab.gpt.iterative_finetune import IterativeFinetuner
-        if base_data_dir is None:
-            raise ValueError("base_data_dir is required when run_iterative_pipeline=True")
         pipeline = IterativeFinetuner(
-            base_data_dir=base_data_dir,
-            output_dir=output_dir,
             llm_conf=llm_conf,
             cycles=cycles,
             models_per_cycle=models_per_cycle,
@@ -354,10 +350,6 @@ if __name__ == '__main__':
                         help='Run the full iterative fine-tuning pipeline instead of standalone fine-tuning')
     
     # Iterative pipeline-specific arguments (only used when --run_iterative_pipeline is set)
-    parser.add_argument("--base_data_dir", type=str, default=None,
-                        help="[Pipeline] Path to original chat_data directory (required when --run_iterative_pipeline is set)")
-    parser.add_argument("--output_dir", type=str, default="out/iterative_cycles",
-                        help="[Pipeline] Output directory for all cycle results (default: out/iterative_cycles)")
     parser.add_argument("--cycles", type=int, default=5,
                         help="[Pipeline] Number of fine-tuning cycles to run (default: 5)")
     parser.add_argument("--models_per_cycle", type=int, default=150,
