@@ -89,9 +89,20 @@ This experiment demonstrates the automated LR scheduler generation system implem
 3. **Generates hp.txt files** with architecture-specific defaults
 4. **Supports 30 architectures × 25 schedulers × 7 weight decay values** = 5,250 possible model variants
 
-### Code Location
-- **Generator:** `ab/gpt/brute/lr/schedulers.py` (728 lines)
-- **Statistics:** `ab/gpt/brute/lr/stats.py` (236 lines)
+### Code Reference
+
+The LR scheduler generation system is already merged in the main repository:
+
+- **Generator Code:** [ab/gpt/brute/lr/schedulers.py](https://github.com/ABrain-One/nn-gpt/blob/main/ab/gpt/brute/lr/schedulers.py) (728 lines)
+  - Source code injection engine
+  - Architecture-specific hyperparameter generation
+  - 25 scheduler variants with configurable parameters
+  
+- **Statistics Module:** [ab/gpt/brute/lr/stats.py](https://github.com/ABrain-One/nn-gpt/blob/main/ab/gpt/brute/lr/stats.py) (236 lines)
+  - Post-evaluation analysis
+  - Performance metrics aggregation
+
+- **Merged via:** PR #87 and PR #100
 - **Repository:** https://github.com/ABrain-One/nn-gpt
 
 ## Recommendations
