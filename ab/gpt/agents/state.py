@@ -1,49 +1,68 @@
 """
 Shared state for LangGraph agents.
-All fields are optional - agents add/update as needed.
+Contains runtime resources + loop control.
+Business logic reads from here.
 """
-from typing import TypedDict, Any, Optional
+
+from typing import TypedDict, Any, Optional, Tuple
 
 
 class AgentState(TypedDict, total=False):
-    experiment_id: str
-    base_out_dir: str
-    num_train_epochs: int
-    nn_train_epochs: int
-    nn_gen_conf_id: str
-    temperature: float
-    top_k: int
-    top_p: float
-    max_new_tokens: int
-    save_llm_output: bool
-    llm_conf: str
-    nn_gen_conf: str
-    use_predictor: bool
-    gpu_available: bool
+    # ---- Loop Control ----
+    current_epoch: int
+    llm_tune_epochs: int
+    skip_epoch: int
     next_action: str
     status: str
-    chat_bot: Any
+    use_predictor: bool
+
+    # ---- Generation Inputs ----
+    experiment_id: str
+    nn_name_prefix: Optional[str]
+    nn_train_epochs: int
+    conf_keys: Tuple
     prompt_dict: dict
-    conf_keys: tuple
     test_nn: int
-    unsloth_max_input_length: Optional[int]
+    max_new_tokens: int
+    save_llm_output: bool
     prompt_batch: int
+
+    # ---- Finetune Config ----
     train_config_path: str
     base_model_name: str
     only_best_accuracy: bool
+    max_prompts: Optional[int]
     trans_mode: bool
+    context_length: Optional[int]
+    use_unsloth: bool
+    unsloth_max_input_length: Optional[int]
+
+    # ---- Sampling ----
+    temperature: float
+    top_k: int
+    top_p: float
+
+    # ---- Runtime Resources (built once in tune()) ----
     model: Any
     tokenizer: Any
     model_loader: Any
     lora_tuner: Any
-    model_code: str
-    nn_name: str
+    chat_bot: Any
+
+    # ---- Optional outputs (predictor / metrics) ----
     accuracy: float
     predicted_best_accuracy: float
     predicted_best_epoch: int
     epoch_1_accuracy: float
     epoch_2_accuracy: float
     error_message: str
-    eval_results: Any
-    eval_args: Any
-    cli_args: Any
+
+    # ---- Predictor inputs (collected by evaluate_step, names match LEMUR DB columns) ----
+    nn_code: str
+    prm: dict
+    task: str
+    dataset: str
+    metric: str
+    transform_code: str
+    nn: str
+    max_epoch: int

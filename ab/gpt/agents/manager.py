@@ -1,99 +1,46 @@
 """
-Manager Agent - Routes workflow between Generator, Finetuner, and Predictor.
-Orchestrates the full tune() loop: generate -> finetune -> ... for each epoch.
+Manager Agent - Controls the execution flow of the pipeline.
+
+Responsible for routing:
+finetune → generate → evaluate → (predict?) → finetune → ...
 """
+
 from typing import Dict, Any
 from ab.gpt.agents.state import AgentState
 
 
 def manager_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Route: generate -> generator, finetune -> finetuner, predict -> predictor, end -> done.
-    Implements same multi-epoch loop as classic tune(): generate then finetune, repeat.
-    """
-    print("🎛️ Manager: Coordinating workflow...")
+    """Decide which step should run next."""
 
-    if state.get('status') == 'error':
-        print("❌ Manager: Error detected → Ending")
-        return {"next_action": "end", "gpu_available": True}
+    epoch = state.get("current_epoch", 0)
+    total_epochs = state.get("llm_tune_epochs", 1)
+    next_action = state.get("next_action", "generate")
 
-    next_action = state.get('next_action', 'generate')
-    current_epoch = state.get('current_epoch', 0)
-    llm_tune_epochs = state.get('llm_tune_epochs', 3)
-    skip_epoch = state.get('skip_epoch', 1)
-    use_predictor = state.get('use_predictor', False)
-    gpu_available = state.get('gpu_available', True)
+    # Stop condition
+    if epoch >= total_epochs:
+        print(f"[MANAGER] All {total_epochs} epochs complete. Ending.")
+        return {"next_action": "end"}
 
-    # --- From finetuner: continue to next epoch or end ---
-    if next_action == 'continue':
-        if current_epoch >= llm_tune_epochs:
-            # All epochs done - optional predictor or end
-            if use_predictor:
-                has_epoch_data = (
-                    state.get('epoch_1_accuracy') is not None
-                    and state.get('epoch_2_accuracy') is not None
-                )
-                if has_epoch_data:
-                    print("✅ Manager → Predictor (all epochs done)")
-                    return {"next_action": "predict", "gpu_available": False}
-            print("✅ Manager → End (all epochs done)")
-            return {"next_action": "end", "gpu_available": True}
-        # Next epoch
-        if current_epoch < skip_epoch:
-            print(f"✅ Manager → Finetuner (epoch {current_epoch} < skip, skip generate)")
-            return {"next_action": "finetune", "current_epoch": current_epoch}
-        print(f"✅ Manager → Generator (epoch {current_epoch})")
-        return {"next_action": "generate", "current_epoch": current_epoch}
+    # Generation
+    if next_action == "generate":
+        print(f"[MANAGER] Epoch {epoch}: starting generation")
+        return {"next_action": "generate"}
 
-    # --- From generator: always go to finetune ---
-    if next_action == 'finetune':
-        print("✅ Manager → Finetuner")
+    # Evaluation (always follows generation via direct edge — manager handles it only on skip)
+    if next_action == "evaluate":
+        print(f"[MANAGER] Epoch {epoch}: evaluating generated models")
+        return {"next_action": "evaluate"}
+
+    # Predictor
+    if next_action == "predict":
+        print(f"[MANAGER] Epoch {epoch}: evaluator done → predictor running (CPU)")
+        return {"next_action": "predict"}
+
+    # Finetuning
+    if next_action == "finetune":
+        print(f"[MANAGER] Epoch {epoch}: finetuner gets GPU")
         return {"next_action": "finetune"}
 
-    # --- Predictor path (optional) ---
-    has_model = (
-        state.get('model_code') is not None
-        and str(state.get('model_code', '')).strip() != ''
-        and state.get('status') != 'error'
-    )
-    has_prediction = (
-        state.get('predicted_best_accuracy') is not None
-        and state.get('predicted_best_epoch') is not None
-    )
-    has_epoch_data = (
-        state.get('epoch_1_accuracy') is not None
-        and state.get('epoch_2_accuracy') is not None
-    )
-    predictor_error = str(state.get('error_message', ''))
-    predictor_tried = (
-        state.get('status') == 'partial_success'
-        and predictor_error
-        and ('model not available' in predictor_error.lower()
-             or 'TuneAccPrediction' in predictor_error
-             or 'not yet implemented' in predictor_error.lower())
-    )
-
-    if next_action == 'predict':
-        if predictor_tried:
-            print("⚠️ Manager: Predictor already tried → Ending")
-            return {"next_action": "end", "gpu_available": True}
-        if not has_epoch_data and use_predictor:
-            print("⚠️ Manager: Predictor needs epoch data → Ending")
-            return {"next_action": "end", "gpu_available": True}
-        if has_model and use_predictor and not has_prediction and gpu_available:
-            print("✅ Manager → Predictor")
-            return {"next_action": "predict", "gpu_available": False}
-
-    # --- Initial or generate: start of epoch ---
-    if next_action == 'generate' or next_action == 'end':
-        if next_action == 'end':
-            print("✅ Manager → End")
-            return {"next_action": "end", "gpu_available": True}
-        if current_epoch < skip_epoch:
-            print(f"✅ Manager → Finetuner (epoch {current_epoch} < skip)")
-            return {"next_action": "finetune", "current_epoch": current_epoch}
-        print(f"✅ Manager → Generator (epoch {current_epoch})")
-        return {"next_action": "generate", "current_epoch": current_epoch}
-
-    print("✅ Manager → End")
-    return {"next_action": "end", "gpu_available": True}
+    # Fallback
+    print(f"[MANAGER] Unknown next_action '{next_action}', defaulting to generate")
+    return {"next_action": "generate"}

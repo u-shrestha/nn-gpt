@@ -1,7 +1,7 @@
 from ab.nn.util.Const import base_module, ab_root_path, out_dir
 import json
 
-NN_TRAIN_EPOCHS = 1  # How many epochs to train the altered NN for evaluation
+NN_TRAIN_EPOCHS = 1# How many epochs to train the altered NN for evaluation
 
 new_nn_file = 'new_nn.py'
 hp_file = 'hp.txt'
@@ -9,7 +9,7 @@ transformer_file = 'tr.py'
 new_out_file = 'full_output.txt'
 
 gpt = 'gpt'
-gpt_dir = ab_root_path if (ab_root_path.name == 'gpt' and ab_root_path.parent.name == 'ab') else ab_root_path / base_module / gpt
+gpt_dir = ab_root_path / base_module / gpt
 conf_dir = gpt_dir / 'conf'
 conf_prompt_dir = conf_dir / 'prompt'
 conf_test_dir = conf_prompt_dir / 'test'

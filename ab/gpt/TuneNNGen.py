@@ -18,21 +18,22 @@ TARGET_MODULES = ('q_proj', 'k_proj', 'v_proj', 'o_proj', 'up_proj', 'down_proj'
 TASK_TYPE = 'CAUSAL_LM'
 BiasType = Literal['none', 'all', 'lora_only']
 BIAS: BiasType = 'none'
+LEARNING_RATE = 1e-6  # Conservative default for standalone
+MAX_GRAD_NORM = 1.0  # Gradient clipping
 
-LEARNING_RATE = 1e-6
-MAX_GRAD_NORM = 1.0
 PEFT = None
 SKIP_EPOCHES = -1
-NUM_TRAIN_EPOCHS = 3
-LR_SCHEDULER = 'cosine'
+
+NUM_TRAIN_EPOCHS = 3  # Standalone default
+LR_SCHEDULER = 'cosine'  # Learning rate scheduler
 PER_DEVICE_TRAIN_BATCH_SIZE = 1
-GRADIENT_ACCUMULATION_STEPS = 8
-WARMUP_RATIO = 0.05
+GRADIENT_ACCUMULATION_STEPS = 8  # Increased for better stability
+WARMUP_RATIO = 0.05  # Warmup as ratio of total steps
 TEST_NN = 10
-LOGGING_STEPS = 96
+LOGGING_STEPS = 96  # Less frequent logging
 OPTIMIZER = 'paged_adamw_8bit'
-LLM_TUNE_CONF = 'NN_gen.json'
-NN_GEN_CONF = 'NN_gen.json'
+LLM_TUNE_CONF = 'NN_gen.json'   #'Transform_gen.json' for transform fine-tune
+NN_GEN_CONF = 'NN_gen.json'     #'Transform_gen.json'
 NN_GEN_CONF_ID = 'improve_classification_only'
 LLM_CONF = 'ds_coder_7b_olympic.json'
 MAX_PROMPTS = 4 * 1024
@@ -43,34 +44,34 @@ NN_NAME_PREFIX = None
 TEMPERATURE = 0.8
 TOP_K = 70
 TOP_P = 0.9
-TEST_METRIC = None
+TEST_METRIC = None  # 'bleu' or other metric for evaluation
 ONNX_RUN = False
 UNSLOTH_OPT = False
-TRANS_MODE = False
+TRANS_MODE = False  # only transform fine-tuning
 PROMPT_BATCH = 2
 
 # --- LangGraph Agent Defaults ---
 USE_AGENTS = False
 USE_PREDICTOR = False
 
-# --- Pipeline-Optimized Defaults ---
-PIPELINE_LEARNING_RATE = 1e-5
-PIPELINE_WEIGHT_DECAY = 0.01
-PIPELINE_WARMUP_STEPS = 20
-PIPELINE_NUM_TRAIN_EPOCHS = 5
-PIPELINE_LOGGING_STEPS = 10
-PIPELINE_TARGET_MODULES = ('q_proj', 'k_proj', 'v_proj', 'o_proj', 'up_proj', 'down_proj', 'gate_proj')
-PIPELINE_MAX_NEW_TOKENS = 8192
-PIPELINE_TEMPERATURE = 0.2
-PIPELINE_TOP_K = 50
-PIPELINE_EVAL_STEPS = 100
-PIPELINE_SAVE_STEPS = 100
-PIPELINE_SAVE_TOTAL_LIMIT = 3
-PIPELINE_PER_DEVICE_EVAL_BATCH_SIZE = 1
+# --- Pipeline-Optimized Defaults (for iterative_finetune.py) ---
+# These defaults are optimized for multi-cycle iterative fine-tuning
+PIPELINE_LEARNING_RATE = 1e-5  # Conservative for stability (vs standalone 1e-6)
+PIPELINE_WEIGHT_DECAY = 0.01  # Regularization
+PIPELINE_WARMUP_STEPS = 20  # ~2% of samples for stable start
+PIPELINE_NUM_TRAIN_EPOCHS = 5  # More epochs per cycle (vs standalone 3)
+PIPELINE_LOGGING_STEPS = 10  # More frequent logging (vs standalone 96)
+PIPELINE_TARGET_MODULES = ('q_proj', 'k_proj', 'v_proj', 'o_proj', 'up_proj', 'down_proj', 'gate_proj')  # Extended to include MLP
+PIPELINE_MAX_NEW_TOKENS = 8192  # Balanced length (vs standalone 16*1024)
+PIPELINE_TEMPERATURE = 0.2  # More deterministic (vs standalone 0.8)
+PIPELINE_TOP_K = 50  # Less randomness (vs standalone 70)
+PIPELINE_EVAL_STEPS = 100  # Less frequent evaluation to reduce memory spikes
+PIPELINE_SAVE_STEPS = 100  # Match eval_steps for consistency
+PIPELINE_SAVE_TOTAL_LIMIT = 3  # Keep last 3 checkpoints
+PIPELINE_PER_DEVICE_EVAL_BATCH_SIZE = 1  # Reduce eval batch size to save memory
 PIPELINE_EVALUATION_STRATEGY = 'steps'
 PIPELINE_LOAD_BEST_MODEL_AT_END = True
 PIPELINE_METRIC_FOR_BEST_MODEL = 'eval_loss'
-
 def get_pipeline_defaults():
     return {
         'learning_rate': PIPELINE_LEARNING_RATE,
@@ -237,17 +238,11 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
     else:
         conf_keys = nn_gen_conf_id
 
-    if use_agents:
-        result = tune(test_nn, nn_train_epochs, skip_epoches, peft, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf, training_args, peft_config,
-                     max_prompts=max_prompts, save_llm_output=save_llm_output, max_new_tokens=max_new_tokens, nn_name_prefix=nn_name_prefix,
-                     temperature=temperature, top_k=top_k, top_p=top_p, onnx_run=onnx_run, trans_mode=trans_mode, prompt_batch=prompt_batch,
-                     use_agents=True, use_predictor=use_predictor)
-        return result
 
     tune(test_nn, nn_train_epochs, skip_epoches, peft, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf, training_args, peft_config,
          max_prompts=max_prompts, save_llm_output=save_llm_output, max_new_tokens=max_new_tokens, nn_name_prefix=nn_name_prefix,
          temperature=temperature, top_k=top_k, top_p=top_p, onnx_run=onnx_run, trans_mode=trans_mode, prompt_batch=prompt_batch,
-         use_agents=False, use_predictor=False)
+         use_agents=use_agents, use_predictor=use_predictor)
 
     print("\n" + "="*70)
     print("FINE-TUNING CONFIGURATION SUMMARY")
