@@ -1,9 +1,18 @@
+# TuneNNGen_20B_oss.py 的顶部
+
 # Unsloth conditional import
 try:
     from unsloth import FastModel
     UNSLOTH_AVAILABLE = True
+    
+    # ================= Dynamic injection of FastModel into LLM module =================
+    import ab.gpt.util.LLM
+    ab.gpt.util.LLM.FastModel = FastModel
+    # ================================================
+
 except ImportError:
     UNSLOTH_AVAILABLE = False
+
     
 import argparse
 import ab.gpt.TuneNNGen as TuneNNGen
