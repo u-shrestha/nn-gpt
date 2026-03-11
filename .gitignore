@@ -32,3 +32,13 @@ ab/gpt/brute/ga/modular/FracStats/
 ab/gpt/brute/ga/modular/Fractals/
 ab/gpt/util/Testing.py
 .cache/*
+ab/nn/**
+.gitignore
+k8s-merge-model.json
+merge_model.py
+md.md
+perfect_hybrid_analysis.png
+test_rl_pipeline.py
+rl_backbone_model/*
+grpo_backbone_outputs/*
+rl_output/*
