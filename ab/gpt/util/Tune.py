@@ -454,7 +454,7 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
     print('[DEBUG] Release memory.')
     release_memory()
     if exists(models_dir):
-        NNEval.main(nn_name_prefix, nn_train_epochs, epoch, dataset='cifar-10')
+        NNEval.main(nn_name_prefix, nn_train_epochs, epoch)
         print('[DEBUG] Release_memory.')
         release_memory()
     print('Clear LEMUR query cache.')

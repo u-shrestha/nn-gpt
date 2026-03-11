@@ -103,27 +103,31 @@ class Net(nn.Module):
         self.use_amp = prm.get("use_amp", False)
         dropout_prob = float(prm.get('dropout', 0.1))
 
+        if len(in_shape) == 4:
+            c_in, h_in, w_in = in_shape[1], in_shape[2], in_shape[3]
+        else:
+            c_in, h_in, w_in = in_shape[0], in_shape[1], in_shape[2]
+        self._input_spec = (c_in, h_in, w_in)
         # --- Filled by Generator ---
-        self.backbone_a = TorchVision(?bb_a, in_channels=?CH_A_IN).to(device)
+        self.backbone_a = TorchVision(?bb_a, in_channels=c_in).to(device)
+        self.backbone_b = TorchVision(?bb_b, in_channels=c_in).to(device)
 
         self.features = nn.Sequential()
-        curr_ch = ?CH_F_IN
+        curr_ch = c_in
         channels = [64 * (2 ** i) for i in range(?N)]
         for i, out_ch in enumerate(channels):
             self.features.add_module(f"unit{i+1}", FractalUnit(curr_ch, out_ch, ?COLS, 0.15, dropout_prob))
             curr_ch = out_ch
 
-        self.backbone_b = TorchVision(?bb_b, in_channels=?CH_B_IN).to(device)
-
-        self.infer_dimensions_dynamically(in_shape, out_shape[0])
+        self.infer_dimensions_dynamically(out_shape[0])
         self._scaler = GradScaler("cuda", enabled=self.use_amp)
 
-    def infer_dimensions_dynamically(self, in_shape, num_classes):
+    def infer_dimensions_dynamically(self, num_classes):
         self.to(self.device)
         self.eval()
         with torch.no_grad():
-            C = in_shape[1] if len(in_shape)==4 else in_shape[0]
-            dummy = torch.zeros(1, C, 224, 224).to(self.device)
+            c, h, w = self._input_spec
+            dummy = torch.zeros(1, c, h, w).to(self.device)
             output_feat = self.forward(dummy, is_probing=True)
             dim_fused = output_feat.shape[1]
 

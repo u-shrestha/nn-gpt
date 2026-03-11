@@ -133,7 +133,7 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
                             # and also add any other model-specific hyperparameters from the original model.
                             prm.update(original_prm_from_df)
 
-                        prefix_for_db = origdf.get('nn', prefix_for_db).split('-')[0]
+                        prefix_for_db = nn_name_prefix or (origdf.get('nn', 'unknown').split('-')[0] if 'nn' in origdf else prefix_for_db)
                         print(f"  Loaded metadata from dataframe.df: task={task}, dataset={dataset}, metric={metric}")
                     except Exception as e:
                         print(f"  Error loading dataframe.df from {df_file_path}: {e}. Using command-line/default parameters for task, dataset, metric, and prm structure.")
@@ -158,7 +158,7 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
                         dataset=dataset,
                         metric=metric,
                         prm=prm,  # Pass the constructed prm
-                        save_to_db=False,
+                        save_to_db=save_to_db,
                         prefix=prefix_for_db,
                         save_path=model_dir_path
                     )

@@ -28,9 +28,9 @@ class SFTGenPrompt(Prompt):
         # Hardcoding params based on SFT.py logic
         df = lemur.data(
             task='img-classification',
-            dataset='cifar-10',
-            metric='acc',
-            nn_prefixes=("rl-bb-init",)
+            # dataset='cifar-10',
+            # metric='acc',
+            nn_prefixes=("rl-bb-test1",)
         )
         print(f"extracted {len(df)} samples.")
         
@@ -58,7 +58,8 @@ class SFTGenPrompt(Prompt):
                 text = self.tokenizer.apply_chat_template(
                     messages, 
                     tokenize=False, 
-                    add_generation_prompt=False
+                    add_generation_prompt=False,
+                    add_special_tokens=False
                 )
                 formatted_data.append({"text": text})
             else:
