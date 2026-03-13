@@ -14,6 +14,7 @@ import json
 from os import makedirs
 from os.path import isfile
 import glob
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -39,7 +40,7 @@ from ab.gpt.util.Util import (
 )
 from ab.gpt.util.prompt.NNGenPrompt import NNGenPrompt
 from ab.gpt.util.DeltaUtil import apply_delta, validate_delta, repair_code
-
+from ab.gpt.util.Const import nngpt_upload
 from ab.gpt.brute.trans.TransformEval import run_eval
 from ab.gpt.util.prompt.TransformGenPrompt import TransformGenPrompt, load_data_from_folders
 from ab.gpt.agents.state import AgentState
@@ -49,6 +50,7 @@ ds_conf = conf_dir / "DeepSpeed.json"
 TRANSFORM_OUT_DIR = trans_dir / "dataset_epoch1"
 TRANSFORM_RES_DIR = trans_dir / "result_epoch1"
 
+# Delta mode constants
 _MAX_DELTA_RETRIES = 2
 
 
@@ -97,6 +99,7 @@ def nn_gen(
     nn_name_prefix,
     unsloth_max_input_length,
     prompt_batch,
+    use_backbone=False,
 ):
     print("Preparing prompts for generation, this might take a while...")
 
@@ -284,6 +287,29 @@ def nn_gen(
                 if save_llm_output:
                     create_file(model_dir, new_out_file, full_out)
 
+                if use_backbone:
+                    from ab.gpt.util.Util import extract_str
+                    from ab.gpt.util.SFTUtil import skeleton_code
+                    import textwrap
+
+                    block_code = extract_str(full_out, '<block>', '</block>')
+                    init_code = extract_str(full_out, '<init>', '</init>')
+                    forward_code = extract_str(full_out, '<forward>', '</forward>')
+
+                    if block_code and init_code and forward_code:
+                        code = skeleton_code
+
+                        sig_block = "def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):"
+                        code = code.replace(sig_block, textwrap.dedent(block_code))
+
+                        sig_init = "    def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:"
+                        code = code.replace(sig_init, textwrap.indent(textwrap.dedent(init_code), "    "))
+
+                        sig_forward = "    def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:"
+                        code = code.replace(sig_forward, textwrap.indent(textwrap.dedent(forward_code), "    "))
+                    else:
+                        code = extract_code(full_out)
+
                 try:
                     print(f'Generated params: {hp}')
                     if hp and hp.strip():
@@ -414,6 +440,8 @@ def _has_generated_nn_code(out_path) -> bool:
         if isfile(os.path.join(bdir, new_nn_file)):
             return True
     return False
+
+
 def generate_step(state: AgentState) -> dict:
     epoch = state["current_epoch"]
     skip_epoch = state.get("skip_epoch", 0)
@@ -603,6 +631,7 @@ def _finetune_epoch(
     train_config_path, only_best_accuracy, max_prompts,
     max_new_tokens, base_model_name, trans_mode,
     temperature=1.0, top_k=50, top_p=0.9,
+    use_backbone=False,
 ):
     """
     Single source of truth for one finetune epoch.
@@ -616,6 +645,12 @@ def _finetune_epoch(
             train_config_path,
             TRANSFORM_OUT_DIR,
             TRANSFORM_RES_DIR,
+        )
+    elif use_backbone:
+        from ab.gpt.util.prompt.SFTGenPrompt import SFTGenPrompt
+        data_processor = SFTGenPrompt(
+            context_length if context_length else model_loader.get_max_length(),
+            tokenizer
         )
     else:
         length = (
@@ -657,6 +692,7 @@ def finetune_step(state: AgentState) -> dict:
         state.get("max_prompts"), state["max_new_tokens"],
         state["base_model_name"], state.get("trans_mode", False),
         state.get("temperature", 1.0), state.get("top_k", 50), state.get("top_p", 0.9),
+        state.get("use_backbone", False),
     )
 
     return {
@@ -695,6 +731,7 @@ def tune(
     prompt_batch=1,
     use_agents=False,
     use_predictor=False,
+    use_backbone=False,
 ):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
@@ -705,6 +742,14 @@ def tune(
 
     token_from_file = config["token_from_file"]
     base_model_name = config["base_model_name"]
+    merged_candidate = nngpt_upload / Path(base_model_name).name
+
+    if merged_candidate.exists():
+        print(f"[EVOLUTION] Using merged model: {merged_candidate}")
+        base_model_name = str(merged_candidate)
+    else:
+        print(f"[EVOLUTION] Using base model from config: {base_model_name}")
+
     llm_tune_epochs = int(config["num_epochs"])
     use_deepspeed = config["use_deepspeed"]
     only_best_accuracy = config["only_best_accuracy"]
@@ -713,6 +758,7 @@ def tune(
     use_unsloth = config.get("use_unsloth", False)
     unsloth_load_in_4bit = config.get("load_in_4bit", True)
     max_new_tokens = config.get("max_new_tokens", max_new_tokens)
+    use_backbone = config.get("backbone", use_backbone)
 
     access_token = None
     if token_from_file:
@@ -801,6 +847,7 @@ def tune(
         "top_p": top_p,
 
         "use_predictor": use_predictor,
+        "use_backbone": use_backbone,
     }
 
     shutil.rmtree(epoch_dir(), ignore_errors=True)
@@ -818,7 +865,7 @@ def tune(
             if trans_mode:
                 trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix)
             else:
-                nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix, unsloth_max_input_length, prompt_batch)
+                nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix, unsloth_max_input_length, prompt_batch, use_backbone=use_backbone)
 
             _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode)
 
@@ -829,4 +876,5 @@ def tune(
             train_config_path, only_best_accuracy, max_prompts,
             max_new_tokens, base_model_name, trans_mode,
             temperature, top_k, top_p,
+            use_backbone=use_backbone,
         )
