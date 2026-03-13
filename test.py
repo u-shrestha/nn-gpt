@@ -5,6 +5,7 @@ import sys
 import time
 import statistics
 from typing import Sequence
+import unittest
 
 import ab.nn.api as lemur
 from ab.nn.api import JoinConf
@@ -16,6 +17,7 @@ Verification:
   (requires nn_minhash table populated via json_nn_to_db)
 """
 
+
 # ---------------------- Helpers ----------------------
 
 def measure_time(func):
@@ -26,6 +28,7 @@ def measure_time(func):
         end = time.perf_counter()
         print(f"{func.__name__} took {end - start:.4f} seconds")
         return result
+
     return wrapper
 
 
@@ -83,7 +86,7 @@ THRESH_VARN = float(os.getenv("LEMUR_THRESH_VARN", "30"))
 
 # for anchor-band tests
 BAND_N = int(os.getenv("LEMUR_BAND_N", "10"))
-#BANDS_TO_TEST = os.getenv("LEMUR_BANDS", "high,medium,low,very_low").split(",")
+# BANDS_TO_TEST = os.getenv("LEMUR_BANDS", "high,medium,low,very_low").split(",")
 EXTENDED = os.getenv("LEMUR_EXTENDED", "0") == "1"
 BANDS_TO_TEST = os.getenv("LEMUR_BANDS", "high,medium,low,very_low" if EXTENDED else "high").split(",")
 
@@ -255,26 +258,10 @@ def test_sql_variable_n_performance_smoke():
         raise AssertionError(f"SQL variable-N query unexpectedly slow: median {median_s:.2f}s > {THRESH_VARN:.2f}s")
 
 
-def main() -> int:
+if __name__ == '__main__':
     print("LEMUR / NNGPT integration tests")
     print(f"[SCOPE] task={TASK} dataset={DATASET} metric={METRIC}")
     print(f"[BENCH CFG] repeats={REPEATS} warmup={WARMUP} legacy_rows={LEGACY_ROWS} varN={VAR_N} varN_rows={VAR_N_ROWS}")
     print(f"[THRESH] legacy<{THRESH_LEGACY}s varN<{THRESH_VARN}s")
     print(f"[ANCHOR-BAND] N={BAND_N} bands={BANDS_TO_TEST}")
-
-    t0 = time.perf_counter()
-    test_legacy_pairwise_schema()
-    test_sql_variable_n_correctness()
-    test_anchor_band_correctness_all_bands()
-    dt = time.perf_counter() - t0
-    print(f"[INFO] correctness suite took {dt:.2f}s")
-
-    test_legacy_performance_smoke()
-    test_sql_variable_n_performance_smoke()
-
-    print("\nALL TESTS PASSED")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    unittest.main()
