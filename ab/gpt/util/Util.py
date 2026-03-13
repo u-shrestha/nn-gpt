@@ -83,15 +83,16 @@ def read_py_file_as_string(file_path):
 
 def extract_str(s: str, start: str, end: str):
     try:
-        if start in s and end in s:
+        if end in s:
             s = s[:s.rindex(end)]
-            spl = s.split(start)
-            if len(spl) >= 1:
-                s = spl[-1]
-                spl = s.split(end)
+            if start in s:
+                spl = s.split(start)
                 if len(spl) >= 1:
-                    s = spl[0]
-                return s.strip()
+                    s = spl[-1]
+                    spl = s.split(end)
+                    if len(spl) >= 1:
+                        s = spl[0]
+                    return s.strip()
     except:
         pass
     return None
