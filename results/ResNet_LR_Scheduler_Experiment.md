@@ -33,6 +33,18 @@ This experiment evaluates 10 ResNet models with different learning rate schedule
 | - | PR_0003 | ConstantLR_f03 | N/A | ❌ Failed (checksum duplicate) |
 | - | PR_0008 | PolynomialLR_p2 | N/A | ❌ Failed (disk full crash) |
 
+## PR Review Artifacts (Code + Standard Pipeline Outputs)
+
+To make review complete, this PR includes the generated model code and evaluation artifacts directly in the repository:
+
+- **Artifact root:** `ab/gpt/brute/lr/pr_models_artifacts/`
+- **Per model folders:** `PR_0001` ... `PR_0010`
+- **Included code/config files per model:** `new_nn.py`, `hp.txt`, `model_meta.txt`
+- **Included pipeline outputs per completed model:** `eval_info.json`, `1.json`, `2.json`, `3.json`, `4.json`, `5.json`, `error.txt`
+- **Global summaries:** `ab/gpt/brute/lr/pr_models_artifacts/summary.json` and `ab/gpt/brute/lr/pr_models_artifacts/summary.csv`
+
+This keeps all generated code and NNGPT standard-pipeline statistics visible in a single PR for direct inspection.
+
 ## Key Findings
 
 ### 1. Cyclic Schedulers Excel
