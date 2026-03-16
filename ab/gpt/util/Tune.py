@@ -119,6 +119,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
     from ab.gpt.util.LLM import LLM
 
     # Load model and tokenizer
+    print(f"[EVOLUTION] Final model path used: {base_model_name}")
     model_loader = LLM(
         base_model_name,
         quantization_config_4bit,
@@ -453,10 +454,23 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
 
     print('[DEBUG] Release memory.')
     release_memory()
+
     if exists(models_dir):
         NNEval.main(nn_name_prefix, nn_train_epochs, epoch)
+
+        # --- Run merge decision after evaluation ---
+        try:
+            from ab.gpt.util.Mergedecision import main as merge
+
+            print(f"[MERGE] Running merge decision for epoch {epoch}")
+            merge()
+
+        except Exception as e:
+            print(f"[MERGE] Merge decision failed: {e}")
+
         print('[DEBUG] Release_memory.')
         release_memory()
+
     print('Clear LEMUR query cache.')
     lemur.data.cache_clear()
     print('The cache has been cleared.')
