@@ -166,6 +166,25 @@ def nn_gen(
             baseline_code = origdf.get("nn_code", "") if origdf is not None else ""
 
             _, hp, tr, full_out = chat_bot.chat(prompt_text, engineer_prompt=False, max_new_tokens=max_new_tokens)
+
+            if use_backbone:
+                from ab.gpt.util.SFTUtil import skeleton_code
+                from ab.gpt.util.Util import extract_str
+                import textwrap
+                block_code = extract_str(full_out, '<block>', '</block>')
+                init_code = extract_str(full_out, '<init>', '</init>')
+                forward_code = extract_str(full_out, '<forward>', '</forward>')
+                if block_code and init_code and forward_code:
+                    code = skeleton_code
+                    sig_block = "def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):"
+                    code = code.replace(sig_block, textwrap.dedent(block_code))
+                    sig_init = "    def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:"
+                    code = code.replace(sig_init, textwrap.indent(textwrap.dedent(init_code), "    "))
+                    sig_forward = "    def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:"
+                    code = code.replace(sig_forward, textwrap.indent(textwrap.dedent(forward_code), "    "))
+                else:
+                    code = extract_code(full_out)
+
             makedirs(model_dir, exist_ok=True)
             if save_llm_output:
                 create_file(model_dir, new_out_file, full_out)
@@ -403,9 +422,9 @@ def trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict
 
         code, hp, tr, full_out = chat_bot.chat(prompt_text, engineer_prompt=False, max_new_tokens=max_new_tokens)
 
+        makedirs(model_dir, exist_ok=True)
         if save_llm_output:
             create_file(model_dir, new_out_file, full_out)
-        makedirs(model_dir, exist_ok=True)
 
         if tr and tr.strip():
             print(f'Generated transformer:\n\n{tr}\n----\n')
@@ -602,10 +621,20 @@ def evaluate_step(state: AgentState) -> dict:
 
     updates = {}
 
-    # Store accuracy by epoch number so predictor can read it
+    # Count actual evaluations that produced results (not epoch numbers)
+    # epoch_1_accuracy = first real evaluation, epoch_2_accuracy = second real evaluation
+    # This works correctly with skip_epoch — epoch 0 skips generation so produces no accuracy
+    has_epoch1_in_state = state.get("epoch_1_accuracy") is not None
+    has_epoch2_in_state = state.get("epoch_2_accuracy") is not None
+
     acc_key = f"epoch_{epoch + 1}_accuracy"
-    if acc_key in results:
-        updates[acc_key] = results[acc_key]
+    best_acc = results.get(acc_key)
+
+    if best_acc is not None:
+        if not has_epoch1_in_state:
+            updates["epoch_1_accuracy"] = best_acc
+        elif not has_epoch2_in_state:
+            updates["epoch_2_accuracy"] = best_acc
 
     # Pass all predictor inputs to state — names match exact DB column names
     for field in ["nn_code", "prm", "task", "dataset", "metric", "transform_code", "nn"]:
@@ -614,8 +643,8 @@ def evaluate_step(state: AgentState) -> dict:
 
     # Route to predictor only if enabled AND we have at least 2 epochs of results
     use_predictor = state.get("use_predictor", False)
-    has_epoch1 = state.get("epoch_1_accuracy") is not None or "epoch_1_accuracy" in updates
-    has_epoch2 = state.get("epoch_2_accuracy") is not None or "epoch_2_accuracy" in updates
+    has_epoch1 = has_epoch1_in_state or "epoch_1_accuracy" in updates
+    has_epoch2 = has_epoch2_in_state or "epoch_2_accuracy" in updates
 
     if use_predictor and has_epoch1 and has_epoch2:
         updates["next_action"] = "predict"

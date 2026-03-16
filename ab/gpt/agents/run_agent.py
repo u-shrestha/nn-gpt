@@ -1,5 +1,4 @@
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
 from ab.gpt.agents.state import AgentState
 from ab.gpt.agents.manager import manager_node
 from ab.gpt.util.Tune import generate_step, evaluate_step, finetune_step
@@ -58,19 +57,10 @@ def run_agent_controller(initial_state: dict):
     if use_predictor:
         workflow.add_edge("predictor", "manager")
 
-    # Checkpointing: saves state after every node.
-    # If the pipeline crashes (e.g. GPU OOM at epoch 3), re-run with the
-    # same experiment_id and it resumes from the last completed node.
-    # The classic for-loop has no crash recovery — this is the agent advantage.
-    checkpointer = MemorySaver()
-    app = workflow.compile(checkpointer=checkpointer)
-
-    # thread_id ties this run to its checkpoint history
-    experiment_id = initial_state.get("experiment_id", "nngpt_run")
-    config = {"configurable": {"thread_id": experiment_id}}
+    app = workflow.compile()
+    config = {}
 
     print("[CONTROLLER] LangGraph pipeline starting...")
-    print(f"[CONTROLLER] Checkpoint thread_id: '{experiment_id}' (resume by re-running with same experiment_id)")
     final_state = app.invoke(initial_state, config)
     print("[CONTROLLER] Pipeline complete.")
     return final_state
