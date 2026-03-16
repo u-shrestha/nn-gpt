@@ -3,7 +3,14 @@ import textwrap
 
 available_backbones = ['convnext_tiny', 'densenet121', 'densenet161', 'densenet169', 'densenet201', 'efficientnet_b0', 'efficientnet_b1', 'efficientnet_b2', 'efficientnet_b3', 'efficientnet_b4', 'efficientnet_v2_s', 'googlenet', 'inception_v3', 'mnasnet0_5', 'mnasnet0_75', 'mnasnet1_0', 'mnasnet1_3', 'mobilenet_v2', 'mobilenet_v3_large', 'mobilenet_v3_small', 'resnet18', 'resnet34', 'resnet50', 'resnext50_32x4d', 'shufflenet_v2_x0_5', 'shufflenet_v2_x1_0', 'shufflenet_v2_x1_5', 'shufflenet_v2_x2_0', 'squeezenet1_0', 'squeezenet1_1', 'swin_t', 'swin_v2_t']
 
-available_patterns = ['Parallel_Triple', 'Ensemble_Backbones_to_Fractal', 'Split_A_Parallel_BF']
+available_patterns = [
+    'Parallel_Triple', 
+    'Backbone_A_to_Fractal', 
+    'Backbone_B_to_Fractal', 
+    'Dual_Backbone_Fuse_Then_Fractal',
+    'Fractal_Then_Dual_Backbone',
+    'Split_Stem_Parallel_Fuse'
+]
 
 skeleton_code = """import torch
 import torch.nn as nn
@@ -162,27 +169,48 @@ prompt_template="""
 You are a Senior AI Architect. Your task is to implement a **specific** model instance based on a strict skeleton to achieve an accuracy of {accuracy}. 
 
 ### Task Overview
-Complete the three missing components. **DO NOT** write generic code. You must make concrete architectural decisions (hardcoding) based on the requirements. Each implementation MUST include its full function or method signature.
+Complete the three missing components. **DO NOT** write generic code. You must implement the architecture using the target design pattern provided.
 
 [CODE SKELETON START]
 {skeleton_code}
 [CODE SKELETON END]
 
-### Technical Specifications (STRICT DECISION REQUIRED)
+### Technical Specifications (MANDATORY REQUIREMENTS)
 
-1. **Component: `drop_conv3x3_block`**
-   - Implement the FULL function starting with `def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):`.
-   - Return an `nn.Sequential` block containing a valid chain of Conv2d, BatchNorm, Activations (e.g., ReLU/SiLU), and Dropout.
+1. **Target Pattern: `{target_pattern}`**
+   - YOU MUST explicitly set `self.pattern = '{target_pattern}'` inside `__init__`.
+   - YOU MUST implement the logic for this specific pattern throughout the code.
+   - **CRITICAL REQUIREMENT**: DO NOT just blindly copy the standard Parallel_Triple structure. You MUST be highly creative and design a truly unique structural flow in `forward`. Vary your module usage and connection topology!
 
-2. **Component: `Net.__init__`**
-   - Implement the FULL method starting with `def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:`.
-   - **Pattern Selection**: Use pattern: 'Parallel_Triple', 
-   - **Backbone Selection**: Choose **EXACTLY TWO** specific model names from [{available_backbones}] (e.g., 'resnet18' and 'efficientnet_b0'). DO NOT list all backbones in your code.
-   - **Initialization**: Initialize `self.backbone_a`, `self.backbone_b` using TorchVision(model='...', in_channels=in_shape[1]), the in_channels MUST be mapped directly from in_shape. Initialize `self.features` (1-2 `FractalUnit` layers). Call `self.infer_dimensions_dynamically(in_shape, out_shape[0])` and initialize `self._scaler`.
+2. **Component: `drop_conv3x3_block`**
+   - Implement starting with `def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):`.
+   - Return an `nn.Sequential` block (Conv2d -> BatchNorm2d -> Activation -> Dropout2d).
 
-3. **Component: `Net.forward`**
-   - Implement the FULL method starting with `def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:`.
-   - **Specific Flow**: Implement the pattern 'Parallel_Triple', the input enters three modules in parallel and the outputs are concatenated. DO NOT use `if self.pattern == ...`.
+3. **Component: `Net.__init__`**
+   - Implement starting with `def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:`.
+   - **MANDATORY**: `self.pattern = '{target_pattern}'`
+   - **Backbone Selection**: Choose EXACTLY TWO models from [{available_backbones}].
+   - **Initialization**: 
+     - Initialize `self.backbone_a` and `self.backbone_b` using `TorchVision(model='...', in_channels=...)`.
+     - Initialize `self.features` (1-2 `FractalUnit` layers).
+     - Call `self.infer_dimensions_dynamically(in_shape, out_shape[0])`.
+   - **Example Implementation Fragment**:
+     ```python
+     self.pattern = '{target_pattern}'
+     self.backbone_a = TorchVision(model='resnet18', in_channels=in_shape[1]).to(device)
+     ...
+     ```
+
+4. **Component: `Net.forward`**
+   - Implement starting with `def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:`.
+   - **Flow Control**: Implement the data flow for `{target_pattern}`. Use `adaptive_pool_flatten` for module outputs before fusion.
+   - **Fusion Patterns Logic Blueprint**:
+     * `Parallel_Triple`: `Result = Concat(backbone_a(x), backbone_b(x), features(x))`
+     * `Backbone_A_to_Fractal`: `Result = features(backbone_a(x))` (Sequential flow)
+     * `Split_Stem_Parallel_Fuse`: `stem_out = STEM(x); Result = Concat(backbone_a(stem_out), backbone_b(stem_out))`
+   - **CRITICAL - NO GHOSTING**: You MUST use ALL defined components in the `forward` pass.
+   - **CRITICAL RESTRICTION**: You MUST build the computational graph directly without using ANY `if self.pattern == ...` control flow or dynamic loops (like `getattr`/`hasattr`) inside `forward`.
+   - **PARAM REMINDER**: Always pass `in_channels=...` when creating `TorchVision` models.
 
 ### Output Requirement (STRICT)
 Output ONLY the implementation within the XML tags. Each tag MUST contain the complete function/method definition (signature and body). No markdown, no conversation.

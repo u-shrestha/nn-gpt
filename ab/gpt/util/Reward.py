@@ -1,6 +1,7 @@
 from typing import Optional, Dict, Tuple, Callable, Any
 from dataclasses import dataclass
 import time
+import gc
 
 import torch
 import torch.nn as nn
@@ -251,114 +252,140 @@ def evaluate_and_reward(
 
     # 1) Build or use provided model
     mdl = model
-    if mdl is None and build_fn is not None:
-        try:
-            mdl = build_fn()
-        except Exception:
-            mdl = None
-    if mdl is not None and isinstance(mdl, nn.Module):
-        try:
-            mdl.to(device)
-            params_m = _count_params_m(mdl)
-            built_ok = True
-        except Exception:
-            built_ok = False
-            mdl = None
+    local_train_loader = None
+    local_val_loader = None
 
-    # If build failed, compute minimal reward and return
-    if not built_ok or mdl is None:
+    try:
+        if mdl is None and build_fn is not None:
+            try:
+                mdl = build_fn()
+            except Exception:
+                mdl = None
+        if mdl is not None and isinstance(mdl, nn.Module):
+            try:
+                mdl.to(device)
+                params_m = _count_params_m(mdl)
+                built_ok = True
+            except Exception:
+                built_ok = False
+                mdl = None
+
+        # If build failed, compute minimal reward and return
+        if not built_ok or mdl is None:
+            components = compute_cv_reward_simple(
+                built_ok=False,
+                forward_ok=False,
+                trained_step_ok=False,
+                val_metric=None,
+                val_metric_baseline=val_metric_baseline,
+                latency_ms=None,
+                params_m=None,
+                flops_g=None,
+                critic_score=None,
+                kl_div=cfg.kl_div,
+                weights=cfg.weights
+            )
+            return {
+                "reward": components["reward"],
+                "components": components,
+                "val_metric": None,
+                "built_ok": False,
+                "forward_ok": False,
+                "trained_step_ok": False,
+                "latency_ms": None,
+                "params_m": None,
+            }
+
+        # 2) Forward sanity (and optional latency)
+        if cfg.measure_latency:
+            forward_ok, latency_ms = _quick_forward(mdl, cfg.input_shape, device=device)
+        else:
+            forward_ok, _ = _quick_forward(mdl, cfg.input_shape, device=device)
+
+        # 3) Mini training steps
+        if train_loader is None:
+            local_train_loader = _toy_loader(
+                n=128,
+                input_shape=cfg.input_shape,
+                n_classes=cfg.n_classes,
+                device=device,
+                batch_size=max(2, cfg.input_shape[0])
+            )
+            used_train_loader = local_train_loader
+        else:
+            used_train_loader = train_loader
+        trained_step_ok = _train_steps(mdl, used_train_loader, steps=cfg.train_steps, device=device)
+
+        # 4) Quick validation (accuracy)
+        if val_loader is None:
+            local_val_loader = _toy_loader(
+                n=128,
+                input_shape=cfg.input_shape,
+                n_classes=cfg.n_classes,
+                device=device,
+                batch_size=max(2, cfg.input_shape[0])
+            )
+            used_val_loader = local_val_loader
+        else:
+            used_val_loader = val_loader
+        val_metric = _quick_validate_acc(mdl, used_val_loader, device=device, max_batches=cfg.max_val_batches)
+
+        # 5) Optional critic score
+        if cfg.critic_fn is not None:
+            try:
+                critic_score = float(cfg.critic_fn(mdl, {
+                    "built_ok": built_ok,
+                    "forward_ok": forward_ok,
+                    "trained_step_ok": trained_step_ok,
+                    "val_metric": val_metric,
+                    "params_m": params_m,
+                    "latency_ms": latency_ms
+                }))
+                critic_score = max(0.0, min(1.0, critic_score))
+            except Exception:
+                critic_score = None
+
+        # 6) Compute reward
         components = compute_cv_reward_simple(
-            built_ok=False,
-            forward_ok=False,
-            trained_step_ok=False,
-            val_metric=None,
+            built_ok=built_ok,
+            forward_ok=forward_ok,
+            trained_step_ok=trained_step_ok,
+            val_metric=val_metric,
             val_metric_baseline=val_metric_baseline,
-            latency_ms=None,
-            params_m=None,
-            flops_g=None,
-            critic_score=None,
+            latency_ms=latency_ms,
+            params_m=params_m,
+            flops_g=None,                 # flops left as None (optional to integrate)
+            critic_score=critic_score,
             kl_div=cfg.kl_div,
             weights=cfg.weights
         )
+
         return {
             "reward": components["reward"],
             "components": components,
-            "val_metric": None,
-            "built_ok": False,
-            "forward_ok": False,
-            "trained_step_ok": False,
-            "latency_ms": None,
-            "params_m": None,
+            "val_metric": val_metric,
+            "built_ok": built_ok,
+            "forward_ok": forward_ok,
+            "trained_step_ok": trained_step_ok,
+            "latency_ms": latency_ms,
+            "params_m": params_m,
         }
 
-    # 2) Forward sanity (and optional latency)
-    if cfg.measure_latency:
-        forward_ok, latency_ms = _quick_forward(mdl, cfg.input_shape, device=device)
-    else:
-        forward_ok, _ = _quick_forward(mdl, cfg.input_shape, device=device)
-
-    # 3) Mini training steps
-    if train_loader is None:
-        train_loader = _toy_loader(
-            n=128,
-            input_shape=cfg.input_shape,
-            n_classes=cfg.n_classes,
-            device=device,
-            batch_size=max(2, cfg.input_shape[0])
-        )
-    trained_step_ok = _train_steps(mdl, train_loader, steps=cfg.train_steps, device=device)
-
-    # 4) Quick validation (accuracy)
-    if val_loader is None:
-        val_loader = _toy_loader(
-            n=128,
-            input_shape=cfg.input_shape,
-            n_classes=cfg.n_classes,
-            device=device,
-            batch_size=max(2, cfg.input_shape[0])
-        )
-    val_metric = _quick_validate_acc(mdl, val_loader, device=device, max_batches=cfg.max_val_batches)
-
-    # 5) Optional critic score
-    if cfg.critic_fn is not None:
-        try:
-            critic_score = float(cfg.critic_fn(mdl, {
-                "built_ok": built_ok,
-                "forward_ok": forward_ok,
-                "trained_step_ok": trained_step_ok,
-                "val_metric": val_metric,
-                "params_m": params_m,
-                "latency_ms": latency_ms
-            }))
-            critic_score = max(0.0, min(1.0, critic_score))
-        except Exception:
-            critic_score = None
-
-    # 6) Compute reward
-    components = compute_cv_reward_simple(
-        built_ok=built_ok,
-        forward_ok=forward_ok,
-        trained_step_ok=trained_step_ok,
-        val_metric=val_metric,
-        val_metric_baseline=val_metric_baseline,
-        latency_ms=latency_ms,
-        params_m=params_m,
-        flops_g=None,                 # flops left as None (optional to integrate)
-        critic_score=critic_score,
-        kl_div=cfg.kl_div,
-        weights=cfg.weights
-    )
-
-    return {
-        "reward": components["reward"],
-        "components": components,
-        "val_metric": val_metric,
-        "built_ok": built_ok,
-        "forward_ok": forward_ok,
-        "trained_step_ok": trained_step_ok,
-        "latency_ms": latency_ms,
-        "params_m": params_m,
-    }
+    finally:
+        # Clean up memory explicitly and GUARANTEED
+        if mdl is not None:
+            try:
+                mdl.to("cpu")
+            except Exception:
+                pass
+            del mdl
+        if local_train_loader is not None:
+            del local_train_loader
+        if local_val_loader is not None:
+            del local_val_loader
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
 
 
 def _safe_exec_code(code: str) -> Dict[str, Any]:
@@ -404,14 +431,71 @@ def evaluate_code_and_reward(
     cfg: Optional[EvalConfig] = None,
 ) -> Dict[str, Any]:
     """
-    High-level entry: take code string, build Net, and run evaluate_and_reward to get a scalar reward.
+    Subprocess Wrapper for evaluation to prevent memory leaks from exec() and class definitions.
+    """
+    import multiprocessing as mp
+    
+    # Simple result holder in a shared list/queue
+    ctx = mp.get_context("spawn")
+    queue = ctx.Queue()
+
+    p = ctx.Process(
+        target=_eval_subprocess_worker, 
+        args=(queue, code, in_shape, out_shape, prm, device, val_metric_baseline, cfg)
+    )
+    
+    try:
+        p.start()
+        # Wait for result with a generous timeout (e.g., 5 minutes)
+        res = queue.get(timeout=300)
+        p.join()
+        return res
+    except Exception as e:
+        print(f"[Reward Subprocess] Critical Error or Timeout: {e}")
+        if p.is_alive():
+            p.terminate()
+            p.join()
+        return {
+            "reward": -1.0, # Penalty for crashing evaluation
+            "components": {"reward": -1.0, "r_build": 0.0, "r_forward": 0.0,
+                           "r_trainstep": 0.0, "r_metric": 0.0, "r_eff": 0.0,
+                           "r_critic": 0.0, "r_kl": 0.0},
+            "val_metric": None, "built_ok": False, "forward_ok": False, "trained_step_ok": False,
+            "latency_ms": None, "params_m": None, "error": str(e)
+        }
+
+def _eval_subprocess_worker(queue, code, in_shape, out_shape, prm, device, val_metric_baseline, cfg):
+    """Worker function running in a fresh process."""
+    try:
+        # Import inside worker to ensure clean state if needed
+        import torch
+        # Execute the original direct evaluation logic
+        result = _evaluate_code_and_reward_direct(
+            code, in_shape=in_shape, out_shape=out_shape, 
+            prm=prm, device=device, val_metric_baseline=val_metric_baseline, cfg=cfg
+        )
+        queue.put(result)
+    except Exception as e:
+        queue.put({"error": str(e), "reward": -1.0})
+
+def _evaluate_code_and_reward_direct(
+    code: str,
+    *,
+    in_shape: Tuple[int, int, int, int] = (8, 3, 32, 32),
+    out_shape: Tuple[int, ...] = (10,),
+    prm: Dict[str, Any] = None,
+    device: str = "cpu",
+    val_metric_baseline: Optional[float] = None,
+    cfg: Optional[EvalConfig] = None,
+) -> Dict[str, Any]:
+    """
+    The original evaluation logic (renamed).
     """
     if prm is None:
         prm = {"lr": 1e-2, "momentum": 0.9}
     defaults = {"lr": 1e-2, "momentum": 0.9, "batch": 32, "epoch": 1, "transform": None}
     prm = {**defaults, **prm} 
     if cfg is None:
-        # make sure n_classes matches out_shape[0], and B,C,H,W from in_shape
         cfg = EvalConfig(
             device=device,
             input_shape=in_shape,
@@ -427,7 +511,6 @@ def evaluate_code_and_reward(
     try:
         builder = build_fn_from_code(code, in_shape, out_shape, prm, device)
     except Exception as e:
-        print("Building function from code failed.", e)
         return {
             "reward": 0.0,
             "components": {"reward": 0.0, "r_build": 0.0, "r_forward": 0.0,
@@ -448,8 +531,7 @@ def evaluate_code_and_reward(
         if res["reward"] == 0.0:
             res["reward"] = -1.0
         return res
-    except Exception as e:
-        print("Evaluation failed for provided code. Exception:", e)
+    except Exception:
         return {
             "reward": 0.0,
             "components": {"reward": 0.0, "r_build": 0.0, "r_forward": 0.0,

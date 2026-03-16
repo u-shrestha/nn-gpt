@@ -15,7 +15,6 @@ class SimpleCodeLogger:
         
         self.total_count = 0
         self.success_count = 0
-        self.success_cases = []
         self.start_time = time.time()
         
         os.makedirs(self.output_dir, exist_ok=True)
@@ -36,19 +35,6 @@ class SimpleCodeLogger:
         
         if (reward > 0) and (api_result is not None):
             self.success_count += 1
-            
-            success_case = {
-                'id': self.success_count,
-                'timestamp': datetime.now().isoformat(),
-                'prompt': prompt,
-                'completion': completion,
-                'reward': reward,
-                'api_result': api_result,
-                'code_length': len(completion)
-            }
-            
-            self.success_cases.append(success_case)
-            
             self.log_to_file(f"Success case #{self.success_count}: Reward={reward:.4f}, code length={len(completion)}")
             self.log_to_file(f"   API result: {api_result}")
         else:
@@ -66,8 +52,7 @@ class SimpleCodeLogger:
                 'success_rate': (self.success_count / self.total_count) if self.total_count > 0 else 0,
                 'start_time': self.start_time,
                 'duration_minutes': (time.time() - self.start_time) / 60
-            },
-            'success_cases': self.success_cases
+            }
         }
         
         with open(self.log_file, 'w', encoding='utf-8') as f:
