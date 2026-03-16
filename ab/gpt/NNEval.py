@@ -220,8 +220,7 @@ def main(nn_name_prefix=NN_NAME_PREFIX, nn_train_epochs=NN_TRAIN_EPOCHS, only_ep
             cycle_results_path = base_nngpt_path / "cycle_results.json"
             #create backup
             if cycle_results_path.exists():
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                backup_path = base_nngpt_path / f"cycle_results_{timestamp}.json"
+                backup_path = base_nngpt_path / f"cycle_results_{i}.json"
                 shutil.copy2(cycle_results_path, backup_path)
                 print(f"Backup saved → {backup_path}")
             save_cycle_results(cycle_results, cycle_results_path)
