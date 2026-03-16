@@ -1,9 +1,16 @@
 import ast
 import textwrap
 
-available_backbones = ['convnext_tiny', 'densenet121', 'densenet161', 'densenet169', 'densenet201', 'efficientnet_b0', 'efficientnet_b1', 'efficientnet_b2', 'efficientnet_b3', 'efficientnet_b4', 'efficientnet_v2_s', 'googlenet', 'inception_v3', 'mnasnet0_5', 'mnasnet0_75', 'mnasnet1_0', 'mnasnet1_3', 'mobilenet_v2', 'mobilenet_v3_large', 'mobilenet_v3_small', 'regnet_x_1_6gf', 'regnet_x_3_2gf', 'regnet_x_400mf', 'regnet_x_800mf', 'regnet_y_1_6gf', 'regnet_y_3_2gf', 'regnet_y_400mf', 'regnet_y_800mf', 'resnet18', 'resnet34', 'resnet50', 'resnext50_32x4d', 'shufflenet_v2_x0_5', 'shufflenet_v2_x1_0', 'shufflenet_v2_x1_5', 'shufflenet_v2_x2_0', 'squeezenet1_0', 'squeezenet1_1', 'swin_t', 'swin_v2_t']
+available_backbones = ['convnext_tiny', 'densenet121', 'densenet161', 'densenet169', 'densenet201', 'efficientnet_b0', 'efficientnet_b1', 'efficientnet_b2', 'efficientnet_b3', 'efficientnet_b4', 'efficientnet_v2_s', 'googlenet', 'inception_v3', 'mnasnet0_5', 'mnasnet0_75', 'mnasnet1_0', 'mnasnet1_3', 'mobilenet_v2', 'mobilenet_v3_large', 'mobilenet_v3_small', 'resnet18', 'resnet34', 'resnet50', 'resnext50_32x4d', 'shufflenet_v2_x0_5', 'shufflenet_v2_x1_0', 'shufflenet_v2_x1_5', 'shufflenet_v2_x2_0', 'squeezenet1_0', 'squeezenet1_1', 'swin_t', 'swin_v2_t']
 
-available_patterns = ['Parallel_Triple', 'Ensemble_Backbones_to_Fractal', 'Split_A_Parallel_BF']
+available_patterns = [
+    'Parallel_Triple', 
+    'Backbone_A_to_Fractal', 
+    'Backbone_B_to_Fractal', 
+    'Dual_Backbone_Fuse_Then_Fractal',
+    'Fractal_Then_Dual_Backbone',
+    'Split_Stem_Parallel_Fuse'
+]
 
 skeleton_code = """import torch
 import torch.nn as nn
@@ -101,12 +108,12 @@ class Net(nn.Module):
     def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:
         
 
-    def infer_dimensions_dynamically(self, in_shape, num_classes):
+    def infer_dimensions_dynamically(self, num_classes):
         self.to(self.device)
         self.eval()
         with torch.no_grad():
-            C = in_shape[1] if len(in_shape)==4 else in_shape[0]
-            dummy = torch.zeros(1, C, 224, 224).to(self.device)
+            c, h, w = self._input_spec
+            dummy = torch.zeros(1, c, h, w).to(self.device)
             output_feat = self.forward(dummy, is_probing=True)
             dim_fused = output_feat.shape[1]
         self.classifier = nn.Linear(dim_fused, num_classes)
@@ -157,75 +164,66 @@ class Net(nn.Module):
             gc.collect()
 """
 
-torchvision_skeleton_code = """
-class TorchVision(nn.Module):
-    def __init__(self, model: str, weights: str = "DEFAULT", unwrap: bool = True, truncate: int = 1, in_channels: int = 3):
-        super().__init__()
-        self.adapter = nn.Conv2d(in_channels, 3, kernel_size=1) if in_channels != 3 else nn.Identity()
-        kwargs = {"aux_logits": False} if "inception" in model.lower() else {}
-        try:
-            if hasattr(torchvision.models, "get_model"):
-                self.m = torchvision.models.get_model(model, weights=weights, **kwargs)
-            else:
-                self.m = torchvision.models.__dict__[model](pretrained=bool(weights), **kwargs)
-        except:
-            if hasattr(torchvision.models, "get_model"):
-                self.m = torchvision.models.get_model(model, weights=weights)
-            else:
-                self.m = torchvision.models.__dict__[model](pretrained=bool(weights))
-        
-        if unwrap:
-            layers = []
-            for name, module in self.m.named_children():
-                if "aux" in name.lower(): continue
-                layers.append(module)
-            self.m = nn.Sequential(*(layers[:-truncate] if truncate else layers))
-        else:
-            self.m.head = nn.Identity()
+prompt_template="""
+### Role & Context
+You are a Senior AI Architect. Your task is to implement a **specific** model instance based on a strict skeleton to achieve an accuracy of {accuracy}. 
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.dim() == 2:
-            x = x.unsqueeze(-1).unsqueeze(-1)
-        return self.m(self.adapter(x))
-"""
-
-prompt_template = """
-Role & Context
-You are an expert AI architect specialized in deep learning. Your task is to implement the missing components (`pass` blocks) of a strict PyTorch model skeleton achieves an accuracy of {accuracy}.
-
-Input Context
-The following code skeleton provides fixed infrastructure (Wrappers, AMP, Training Loop). You must keep all existing code intact and ONLY implement the missing logic.
+### Task Overview
+Complete the three missing components. **DO NOT** write generic code. You must implement the architecture using the target design pattern provided.
 
 [CODE SKELETON START]
 {skeleton_code}
 [CODE SKELETON END]
 
-Implementation Requirements
+### Technical Specifications (MANDATORY REQUIREMENTS)
 
-1. **Implement `drop_conv3x3_block`**:
-   - Return an `nn.Sequential` block containing a valid chain of Conv2d, BatchNorm, Activations (e.g., ReLU/SiLU), and Dropout.
+1. **Target Pattern: `{target_pattern}`**
+   - YOU MUST explicitly set `self.pattern = '{target_pattern}'` inside `__init__`.
+   - YOU MUST implement the logic for this specific pattern throughout the code.
+   - **CRITICAL REQUIREMENT**: DO NOT just blindly copy the standard Parallel_Triple structure. You MUST be highly creative and design a truly unique structural flow in `forward`. Vary your module usage and connection topology!
 
-2. **Implement `Net.__init__`**:
-   - select `self.pattern from "{available_patterns}"` 
-   - available_backbones is [{available_backbones}]
-   - Initialize `self.backbone_a` and `self.backbone_b` from `available_backbones` using the `TorchVision` wrapper, Use specific model names and correct `in_channels` as the parameter.
-   - Initialize `self.features` as an `nn.Sequential` of `FractalUnit` modules with growing channels, use only one or two layers of FractalUnit to avoid excessively small output.
-   - Call `self.infer_dimensions_dynamically(in_shape, out_shape[0])` and initialize `self._scaler`.
+2. **Component: `drop_conv3x3_block`**
+   - Implement starting with `def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):`.
+   - Return an `nn.Sequential` block (Conv2d -> BatchNorm2d -> Activation -> Dropout2d).
 
-3. **Implement `Net.forward` (CRITICAL)**:
-   - Implement the forward pass based on the selected `self.pattern`
-   - **Dimension Safety**: If the topology feeds the output of a Backbone/Vector into `self.features` (Fractal), you MUST reshape the vector to 4D (`unsqueeze`) and upscale it using `torch.nn.functional.interpolate` to at least `(14, 14)` before passing it to the fractal network.
-   - Example safety check for Vector inputs:
-     `if tensor.dim() == 2: tensor = tensor.unsqueeze(-1).unsqueeze(-1)`
-     `if tensor.shape[-1] < 14: tensor = F.interpolate(tensor, size=(14,14))`
+3. **Component: `Net.__init__`**
+   - Implement starting with `def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:`.
+   - **MANDATORY**: `self.pattern = '{target_pattern}'`
+   - **Backbone Selection**: Choose EXACTLY TWO models from [{available_backbones}].
+   - **Initialization**: 
+     - Initialize `self.backbone_a` and `self.backbone_b` using `TorchVision(model='...', in_channels=...)`.
+     - Initialize `self.features` (1-2 `FractalUnit` layers).
+     - Call `self.infer_dimensions_dynamically(in_shape, out_shape[0])`.
+   - **Example Implementation Fragment**:
+     ```python
+     self.pattern = '{target_pattern}'
+     self.backbone_a = TorchVision(model='resnet18', in_channels=in_shape[1]).to(device)
+     ...
+     ```
 
-Output Instructions:
-You must output ONLY the implementation of the three missing components, wrapped in the following XML tags:
-1. <block> ... code for drop_conv3x3_block ... </block>
-2. <init> ... code for Net.__init__ ... </init>
-3. <forward> ... code for Net.forward ... </forward>
+4. **Component: `Net.forward`**
+   - Implement starting with `def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:`.
+   - **Flow Control**: Implement the data flow for `{target_pattern}`. Use `adaptive_pool_flatten` for module outputs before fusion.
+   - **Fusion Patterns Logic Blueprint**:
+     * `Parallel_Triple`: `Result = Concat(backbone_a(x), backbone_b(x), features(x))`
+     * `Backbone_A_to_Fractal`: `Result = features(backbone_a(x))` (Sequential flow)
+     * `Split_Stem_Parallel_Fuse`: `stem_out = STEM(x); Result = Concat(backbone_a(stem_out), backbone_b(stem_out))`
+   - **CRITICAL - NO GHOSTING**: You MUST use ALL defined components in the `forward` pass.
+   - **CRITICAL RESTRICTION**: You MUST build the computational graph directly without using ANY `if self.pattern == ...` control flow or dynamic loops (like `getattr`/`hasattr`) inside `forward`.
+   - **PARAM REMINDER**: Always pass `in_channels=...` when creating `TorchVision` models.
 
-Do not output the full file. Do not output any markdown formatting (like ```python).
+### Output Requirement (STRICT)
+Output ONLY the implementation within the XML tags. Each tag MUST contain the complete function/method definition (signature and body). No markdown, no conversation.
+
+<block>
+# Full drop_conv3x3_block implementation
+</block>
+<init>
+# Full __init__ implementation
+</init>
+<forward>
+# Full forward implementation
+</forward>
 """
 
 def parse_nn_code(code_str):

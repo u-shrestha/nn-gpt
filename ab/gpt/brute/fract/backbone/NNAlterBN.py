@@ -12,7 +12,6 @@ from ab.gpt.util.Const import epoch_dir, new_nn_file, synth_dir, fract_dir
 FORWARD_PATTERNS = {
     "Parallel_Triple": """
     def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:
-        x = self._norm4d(x).to(self.device)
         x_f = adaptive_pool_flatten(self.features(x))
         x_a = adaptive_pool_flatten(self.backbone_a(x))
         x_b = adaptive_pool_flatten(self.backbone_b(x))
@@ -73,38 +72,37 @@ FORWARD_PATTERNS = {
     #     if is_probing: return fused
     #     return self.classifier(fused)
     # """,
-
-    "Ensemble_Backbones_to_Fractal": """
-    def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:
-        x = self._norm4d(x).to(self.device)
-        f_a = adaptive_pool_flatten(self.backbone_a(x))
-        f_b = adaptive_pool_flatten(self.backbone_b(x))
-        mid = torch.cat([f_a, f_b], dim=1)
-        mid_4d = mid.unsqueeze(-1).unsqueeze(-1)
-        mid_img = torch.nn.functional.interpolate(mid_4d, size=(14,14), mode='nearest')
+#     # "Ensemble_Backbones_to_Fractal": """
+#     # def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:
+#     #     x = self._norm4d(x).to(self.device)
+#     #     f_a = adaptive_pool_flatten(self.backbone_a(x))
+#     #     f_b = adaptive_pool_flatten(self.backbone_b(x))
+#     #     mid = torch.cat([f_a, f_b], dim=1)
+#     #     mid_4d = mid.unsqueeze(-1).unsqueeze(-1)
+#     #     mid_img = torch.nn.functional.interpolate(mid_4d, size=(14,14), mode='nearest')
         
-        fused = adaptive_pool_flatten(self.features(mid_img))
-        if is_probing: return fused
-        return self.classifier(fused)
-    """,
-
-    "Split_A_Parallel_BF": """
-    def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:
-        x = self._norm4d(x).to(self.device)
+#     #     fused = adaptive_pool_flatten(self.features(mid_img))
+#     #     if is_probing: return fused
+#     #     return self.classifier(fused)
+#     # """,
+# 
+#     # "Split_A_Parallel_BF": """
+#     # def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:
+#     #     x = self._norm4d(x).to(self.device)
         
-        f_a = adaptive_pool_flatten(self.backbone_a(x))
+#     #     f_a = adaptive_pool_flatten(self.backbone_a(x))
         
-        x_bf = self.backbone_b(x)
-        if x_bf.dim() == 2:
-            x_bf = x_bf.unsqueeze(-1).unsqueeze(-1)
-        if x_bf.shape[-1] < 14:
-            x_bf = torch.nn.functional.interpolate(x_bf, size=(14,14), mode='nearest')
+#     #     x_bf = self.backbone_b(x)
+#     #     if x_bf.dim() == 2:
+#     #         x_bf = x_bf.unsqueeze(-1).unsqueeze(-1)
+#     #     if x_bf.shape[-1] < 14:
+#     #         x_bf = torch.nn.functional.interpolate(x_bf, size=(14,14), mode='nearest')
             
-        f_bf = adaptive_pool_flatten(self.features(x_bf))
-        fused = torch.cat([f_a, f_bf], dim=1)
-        if is_probing: return fused
-        return self.classifier(fused)
-    """,
+#     #     f_bf = adaptive_pool_flatten(self.features(x_bf))
+#     #     fused = torch.cat([f_a, f_bf], dim=1)
+#     #     if is_probing: return fused
+#     #     return self.classifier(fused)
+#     # """,
 
     # "Split_Fractal_Parallel_AB": """
     # def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:
@@ -159,7 +157,7 @@ def probe_model_output_channels(model_name):
     except:
         return 512
 
-def filter_backbones_by_size(max_params_millions=30):
+def filter_backbones_by_size(max_params_millions=50):
     print(f"Filtering backbones with < {max_params_millions}M parameters...")
     candidates = [name for name in dir(torchvision.models)
                   if not name.startswith("_")
@@ -173,9 +171,19 @@ def filter_backbones_by_size(max_params_millions=30):
             model = torchvision.models.get_model(name, weights=None)
             param_count = sum(p.numel() for p in model.parameters())
             if (param_count / 1e6) < max_params_millions:
-                safe_list.append(name)
+                import time
+                start = time.time()
+                model.cuda()
+                for i in range(5):
+                    x = torch.randn(2, 3, 224, 224).cuda()
+                    y = model(x)
+                    y.mean().backward()
+                elapsed = time.time() - start
+                if elapsed < 0.2:
+                    safe_list.append(name)
             del model
-        except:
+        except Exception as e:
+            print(f"Failed to test {name}: {e}")
             continue
     gc.collect()
     return safe_list
@@ -223,7 +231,7 @@ def alter(epochs, test_conf, llm_name, gguf_file=None):
     for bb in available_backbones:
         probe_model_output_channels(bb)
 
-    max_variants = 400
+    max_variants = 50
 
     for epoch in range(epochs):
         out_path = epoch_dir(epoch)
