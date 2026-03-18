@@ -52,7 +52,7 @@ class NNGenPrompt(Prompt):
                 only_best_accuracy=only_best_accuracy,
                 task=key_dict.get('task'),
                 nn_prefixes=tuple(key_dict.get('nn_prefixes')),
-                max_rows=None if use_join else n_training_prompts,
+                max_rows=n_training_prompts,
                 sql=None if not use_join else JoinConf(
                     num_joint_nns=num_joint_nns,
                     same_columns=tuple(key_dict.get('keep_same', [])),
@@ -60,9 +60,6 @@ class NNGenPrompt(Prompt):
                     enhance_nn=key_dict.get('improve', False)
                 )
             )
-            # Slice after JOIN - to avoid pre-join LIMIT performance issue
-            if use_join and n_training_prompts:
-                data = data.head(n_training_prompts)
 
             print('Data acquisition complete', flush=True)
 
