@@ -500,6 +500,7 @@ def generate_step(state: AgentState) -> dict:
             state.get("nn_name_prefix"),
             state.get("unsloth_max_input_length"),
             state.get("prompt_batch", 1),
+            use_backbone=state.get("use_backbone",False),
         )
 
     if not _has_generated_nn_code(out_path):
