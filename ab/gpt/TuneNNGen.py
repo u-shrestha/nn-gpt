@@ -87,7 +87,7 @@ TRANS_MODE = False  # only transform fine-tuning
 PROMPT_BATCH = 2
 
 # --- LangGraph Agent Defaults ---
-USE_AGENTS = False
+USE_AGENTS = True
 USE_PREDICTOR = False
 
 # --- Pipeline-Optimized Defaults (for iterative_finetune.py) ---
@@ -522,7 +522,7 @@ if __name__ == '__main__':
     parser.add_argument("--enable_merge", action="store_true", default=False, help="Enable automatic merge decision after fine-tuning.")
     parser.add_argument('--prompt_batch', type=int, default=PROMPT_BATCH,
                         help=f"Prompt batch size (default: {PROMPT_BATCH}).")
-    parser.add_argument('--use_agents', action='store_true', default=USE_AGENTS,
+    parser.add_argument('--use_agents', action='store_false', default=USE_AGENTS,
                         help='Enable LangGraph multi-agent workflow (default: False).')
     parser.add_argument('--use_predictor', action='store_true', default=USE_PREDICTOR,
                         help='Enable predictor agent (requires --use_agents) (default: False).')
