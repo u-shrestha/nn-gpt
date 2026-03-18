@@ -47,10 +47,10 @@ def persist_llm_conf(llm_conf):
 START_LAYER = 0
 END_LAYER = 24
 TUNE_LAYERS = range(START_LAYER, END_LAYER)
-R = 32
-LORA_ALPHA = 32
-LORA_DROPOUT = 0.05
-TARGET_MODULES = ('q_proj', 'k_proj', 'v_proj', 'o_proj', 'up_proj', 'down_proj', 'gate_proj')
+R = 32  # dimension of the updated matrices
+LORA_ALPHA = 32  # parameter for scaling
+LORA_DROPOUT = 0.05  # dropout probability for layers
+TARGET_MODULES = ('q_proj', 'k_proj', 'v_proj', 'o_proj', 'up_proj', 'down_proj', 'gate_proj')  # , 'lm_head'
 TASK_TYPE = 'CAUSAL_LM'
 BiasType = Literal['none', 'all', 'lora_only']
 BIAS: BiasType = 'none'
@@ -117,15 +117,15 @@ def get_pipeline_defaults():
         'warmup_steps': PIPELINE_WARMUP_STEPS,
         'num_train_epochs': PIPELINE_NUM_TRAIN_EPOCHS,
         'logging_steps': PIPELINE_LOGGING_STEPS,
-        'max_grad_norm': MAX_GRAD_NORM,
-        'target_modules': ','.join(PIPELINE_TARGET_MODULES),
+        'max_grad_norm': MAX_GRAD_NORM,  # Same as standalone
+        'target_modules': ','.join(PIPELINE_TARGET_MODULES),  # Convert tuple to comma-separated string
         'max_new_tokens': PIPELINE_MAX_NEW_TOKENS,
         'temperature': PIPELINE_TEMPERATURE,
         'top_k': PIPELINE_TOP_K,
         'evaluation_strategy': PIPELINE_EVALUATION_STRATEGY,
         'eval_steps': PIPELINE_EVAL_STEPS,
         'per_device_eval_batch_size': PIPELINE_PER_DEVICE_EVAL_BATCH_SIZE,
-        'save_strategy': PIPELINE_EVALUATION_STRATEGY,
+        'save_strategy': PIPELINE_EVALUATION_STRATEGY,  # Same as evaluation_strategy
         'save_steps': PIPELINE_SAVE_STEPS,
         'save_total_limit': PIPELINE_SAVE_TOTAL_LIMIT,
         'load_best_model_at_end': PIPELINE_LOAD_BEST_MODEL_AT_END,
@@ -227,7 +227,7 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
             'per_device_train_batch_size': per_device_train_batch_size,
             'gradient_accumulation_steps': gradient_accumulation_steps,
             'learning_rate': learning_rate,
-            'bf16': True,
+            'bf16': True,  # Use bf16 to match Unsloth's bfloat16 compute dtype
             'logging_steps': logging_steps,
             'output_dir': nngpt_dir / 'outputs',
             'optim': optimizer,
@@ -274,7 +274,7 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
             'gradient_accumulation_steps': gradient_accumulation_steps,
             'warmup_ratio': warmup_ratio,
             'learning_rate': learning_rate,
-            'bf16': True,
+            'bf16': True,  # Use bf16 to match Unsloth's bfloat16 compute dtype
             'logging_steps': logging_steps,
             'output_dir': nngpt_dir / 'outputs',
             'optim': optimizer,
@@ -522,8 +522,6 @@ if __name__ == '__main__':
     parser.add_argument("--enable_merge", action="store_true", default=False, help="Enable automatic merge decision after fine-tuning.")
     parser.add_argument('--prompt_batch', type=int, default=PROMPT_BATCH,
                         help=f"Prompt batch size (default: {PROMPT_BATCH}).")
-
-    # --- LangGraph Agent Flags ---
     parser.add_argument('--use_agents', action='store_true', default=USE_AGENTS,
                         help='Enable LangGraph multi-agent workflow (default: False).')
     parser.add_argument('--use_predictor', action='store_true', default=USE_PREDICTOR,
@@ -531,84 +529,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    if args.run_iterative_pipeline:
-        if args.base_data_dir is None:
-            parser.error("--base_data_dir is required when --run_iterative_pipeline is set")
-        if args.llm_conf is None:
-            parser.error("--llm_conf is required when --run_iterative_pipeline is set")
-        if args.resume_from_cycle is not None:
-            if args.resume_from_cycle < 1 or args.resume_from_cycle > args.cycles:
-                parser.error(f"--resume_from_cycle must be between 1 and {args.cycles}, got {args.resume_from_cycle}")
+    # Convert start_layer/end_layer → tune_layers (main() expects a range, not two ints)
+    kwargs = vars(args)
+    kwargs['tune_layers'] = range(kwargs.pop('start_layer'), kwargs.pop('end_layer'))
 
-        from ab.gpt.iterative_finetune import IterativeFinetuner
-        pipeline = IterativeFinetuner(
-            base_data_dir=args.base_data_dir,
-            output_dir=args.output_dir,
-            llm_conf=args.llm_conf,
-            cycles=args.cycles,
-            models_per_cycle=args.models_per_cycle,
-            samples_per_prompt=args.samples_per_prompt,
-            accuracy_threshold=args.accuracy_threshold,
-            min_selected_k=args.min_selected_k,
-            fallback_threshold=args.fallback_threshold,
-            adaptive_threshold=args.adaptive_threshold,
-            novelty_check=args.novelty_check,
-            resume_from_cycle=args.resume_from_cycle,
-            max_retries=args.max_retries,
-            use_optimized_training=args.use_optimized_training,
-            num_train_epochs=args.num_train_epochs,
-        )
-        pipeline.run()
-        import sys
-        sys.exit(0)
-
-    main(num_train_epochs=args.num_train_epochs,
-         lr_scheduler=args.lr_scheduler,
-         max_grad_norm=args.max_grad_norm,
-         tune_layers=range(args.start_layer, args.end_layer),
-         r=args.r,
-         lora_alpha=args.lora_alpha,
-         lora_dropout=args.lora_dropout,
-         task_type=args.task_type,
-         bias=args.bias,
-         target_modules=args.target_modules,
-         learning_rate=args.learning_rate,
-         llm_tune_conf=args.llm_tune_conf,
-         nn_gen_conf=args.nn_gen_conf,
-         nn_gen_conf_id=args.nn_gen_conf_id,
-         llm_conf=args.llm_conf,
-         test_nn=args.test_nn,
-         per_device_train_batch_size=args.per_device_train_batch_size,
-         gradient_accumulation_steps=args.gradient_accumulation_steps,
-         warmup_ratio=args.warmup_ratio,
-         logging_steps=args.logging_steps,
-         optimizer=args.optimizer,
-         peft=args.peft,
-         skip_epoches=args.skip_epoches,
-         max_prompts=args.max_prompts,
-         max_new_tokens=args.max_new_tokens,
-         use_deepspeed=args.use_deepspeed,
-         nn_name_prefix=args.nn_name_prefix,
-         nn_train_epochs=args.nn_train_epochs,
-         temperature=args.temperature,
-         top_k=args.top_k,
-         top_p=args.top_p,
-         test_metric=args.test_metric,
-         data_dir=args.data_dir,
-         evaluation_strategy=args.evaluation_strategy,
-         eval_steps=args.eval_steps,
-         per_device_eval_batch_size=args.per_device_eval_batch_size,
-         save_strategy=args.save_strategy,
-         save_steps=args.save_steps,
-         save_total_limit=args.save_total_limit,
-         load_best_model_at_end=args.load_best_model_at_end,
-         metric_for_best_model=args.metric_for_best_model,
-         warmup_steps=args.warmup_steps,
-         weight_decay=args.weight_decay,
-         onnx_run=args.onnx_run,
-         unsloth_opt=args.unsloth_opt,
-         trans_mode=args.trans_mode,
-         prompt_batch=args.prompt_batch,
-         enable_merge=args.enable_merge,
-         use_agents=args.use_agents,
-         use_predictor=args.use_predictor)
+    main(**kwargs)

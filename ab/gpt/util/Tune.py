@@ -21,7 +21,6 @@ import pandas as pd
 import torch
 import ab.nn.api as lemur
 import deepspeed
-from ab.nn.util.Const import out_dir
 from ab.nn.util.Util import release_memory, create_file
 from peft import PeftModel
 from tqdm import tqdm
@@ -46,18 +45,18 @@ from ab.gpt.brute.trans.TransformEval import run_eval
 from ab.gpt.util.prompt.TransformGenPrompt import TransformGenPrompt, load_data_from_folders
 from ab.gpt.agents.state import AgentState
 
-ds_conf = conf_dir / "DeepSpeed.json"
+ds_conf = conf_dir / 'DeepSpeed.json'
+TRANSFORM_OUT_DIR = trans_dir / 'dataset_epoch1'
+TRANSFORM_RES_DIR = trans_dir / 'result_epoch1'
 
-TRANSFORM_OUT_DIR = trans_dir / "dataset_epoch1"
-TRANSFORM_RES_DIR = trans_dir / "result_epoch1"
 
 # Delta mode constants
 _MAX_DELTA_RETRIES = 2
 
 
 def apply_sliding_window(example, max_length, stride, tokenizer):
-    input_ids = example["input_ids"]
-    attention_mask = example["attention_mask"]
+    input_ids = example['input_ids']
+    attention_mask = example['attention_mask']
 
     chunks = []
     for i in range(0, len(input_ids), stride):
@@ -76,7 +75,7 @@ def apply_sliding_window(example, max_length, stride, tokenizer):
 
 
 def flatten_chunks(data):
-    all_chunks = sum(data["chunks"], [])
+    all_chunks = sum(data["chunks"], [])  # flatten batched list
     return {
         "input_ids": [chunk["input_ids"] for chunk in all_chunks],
         "attention_mask": [chunk["attention_mask"] for chunk in all_chunks],
@@ -159,12 +158,12 @@ def nn_gen(
             if unsloth_max_input_length:
                 in_text = [{"role": "user", "content": prompt_text}]
                 token_len = len(chat_bot.tokenizer.apply_chat_template(in_text, add_generation_prompt=True))
-                print(f"Sample prompt length: {token_len}, max_input_length: {unsloth_max_input_length}")
+                print(f'Sample prompt length: {token_len}, max_input_length: {unsloth_max_input_length}')
                 if token_len > unsloth_max_input_length:
-                    print("Prompt is too long, skipping...")
+                    print(f'Prompt is too long, skipping...')
                     continue
 
-            baseline_code = origdf.get("nn_code", "") if origdf is not None else ""
+            baseline_code = origdf.get('nn_code', '') if origdf is not None else ''
 
             _, hp, tr, full_out = chat_bot.chat(prompt_text, engineer_prompt=False, max_new_tokens=max_new_tokens)
 
@@ -208,33 +207,34 @@ def nn_gen(
 
                 delta = extract_delta(current_out)
                 if not delta:
-                    error_msg = "No <delta>...</delta> block found in output."
+                    error_msg = 'No <delta>...</delta> block found in output.'
                 elif not validate_delta(delta):
-                    error_msg = "Delta format is invalid (must be unified diff with --- / +++ headers and @@ hunks)."
+                    error_msg = 'Delta format is invalid (must be unified diff with --- / +++ headers and @@ hunks).'
                 else:
                     applied = apply_delta(baseline_code, delta) if baseline_code else None
                     if applied:
                         code = applied
-                        print(f"[INFO] Applied delta for B{idx} (attempt {attempt + 1})")
+                        print(f'[INFO] Applied delta for B{idx} (attempt {attempt + 1})')
                         break
-                    error_msg = "Delta patch failed to apply to the baseline code."
+                    else:
+                        error_msg = 'Delta patch failed to apply to the baseline code.'
 
                 if attempt < _MAX_DELTA_RETRIES:
-                    print(f"[WARNING] Delta attempt {attempt + 1} failed for B{idx}: {error_msg} Retrying...")
+                    print(f'[WARNING] Delta attempt {attempt + 1} failed for B{idx}: {error_msg} Retrying with feedback...')
                     current_prompt = (
                         prompt_text
-                        + f"\n\n[SYSTEM FEEDBACK - Attempt {attempt + 1} failed]: {error_msg}"
-                        + "\nPlease correct the delta and output it again."
+                        + f'\n\n[SYSTEM FEEDBACK - Attempt {attempt + 1} failed]: {error_msg}'
+                        + '\nPlease correct the delta and output it again.'
                     )
 
             if code is None:
-                print(f"[WARNING] All delta attempts failed for B{idx}. Trying syntax repair fallback...")
+                print(f'[WARNING] All delta attempts failed for B{idx}. Trying syntax repair on extracted code.')
                 raw_code = extract_code(full_out)
                 if raw_code:
                     repaired = repair_code(raw_code)
                     if repaired:
                         code = repaired
-                        print(f"[INFO] Used syntax-repaired fallback for B{idx}")
+                        print(f'[INFO] Used syntax-repaired code fallback for B{idx}')
 
             hp_str = extract_hyperparam(full_out)
             tr_str = extract_transform(full_out)
@@ -243,7 +243,7 @@ def nn_gen(
                 print(f'Generated params: {hp_str}')
                 if hp_str and hp_str.strip():
                     hp_obj = json.loads(hp_str.replace("'", '"'))
-                    with open(model_dir / hp_file, "w+") as f:
+                    with open(model_dir / hp_file, 'w+') as f:
                         json.dump(hp_obj, f)
                 else:
                     print('[WARNING] No hyperparameters generated, skipping hp file')
@@ -257,24 +257,23 @@ def nn_gen(
                 else:
                     print('[WARNING] No transformer code generated')
             except Exception as e:
-                print(f"[WARNING] Error saving transformer: {e}")
+                print(f'[WARNING] Error saving transformer: {e}')
 
             if code and code.strip():
                 create_file(model_dir, new_nn_file, code)
                 print(f'[INFO] Saved code to {model_dir / new_nn_file}')
             else:
-                print(f"[ERROR] No code generated for model B{idx}")
+                print(f'[ERROR] No code generated for model B{idx}')
                 continue
 
             create_file(model_dir, new_out_file, full_out)
-
-            df_file = model_dir / "dataframe.df"
+            df_file = model_dir / 'dataframe.df'
             if origdf is None:
                 if isfile(df_file):
                     os.remove(df_file)
                     print(f'[DEBUG]Removed unmatched file: {df_file}')
             else:
-                create_file(model_dir, f"original_{origdf['nn']}.py", origdf["nn_code"])
+                create_file(model_dir, f"original_{origdf['nn']}.py", origdf['nn_code'])
                 origdf.to_pickle(df_file)
 
     else:
@@ -285,8 +284,9 @@ def nn_gen(
             if unsloth_max_input_length:
                 in_text = [{"role": "user", "content": prompt_text}]
                 output = chat_bot.tokenizer.apply_chat_template(in_text, add_generation_prompt=True)
+                print(f'Sample prompt length: {len(output)}, max_input_length: {unsloth_max_input_length}')
                 if len(output) > unsloth_max_input_length:
-                    print("Prompt is too long, skipping...")
+                    print(f'Prompt is too long, skipping...')
                     continue
 
             pending.append((idx, prompt_text, origdf))
@@ -294,13 +294,13 @@ def nn_gen(
         if prompt_batch < 1:
             prompt_batch = 1
         if prompt_batch > 1:
-            print(f"[INFO] Batch generation enabled: prompt_batch={prompt_batch}")
+            print(f'[INFO] Batch generation enabled: prompt_batch={prompt_batch}')
 
         for start in range(0, len(pending), prompt_batch):
             batch = pending[start : start + prompt_batch]
             batch_prompts = [item[1] for item in batch]
 
-            if prompt_batch > 1 and hasattr(chat_bot, "chat_batch"):
+            if prompt_batch > 1 and hasattr(chat_bot, 'chat_batch'):
                 batch_outputs = chat_bot.chat_batch(batch_prompts, engineer_prompt=False, max_new_tokens=max_new_tokens)
             else:
                 batch_outputs = [chat_bot.chat(p, engineer_prompt=False, max_new_tokens=max_new_tokens) for p in batch_prompts]
@@ -313,39 +313,16 @@ def nn_gen(
                 if save_llm_output:
                     create_file(model_dir, new_out_file, full_out)
 
-                if use_backbone:
-                    from ab.gpt.util.Util import extract_str
-                    from ab.gpt.util.SFTUtil import skeleton_code
-                    import textwrap
-
-                    block_code = extract_str(full_out, '<block>', '</block>')
-                    init_code = extract_str(full_out, '<init>', '</init>')
-                    forward_code = extract_str(full_out, '<forward>', '</forward>')
-
-                    if block_code and init_code and forward_code:
-                        code = skeleton_code
-
-                        sig_block = "def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):"
-                        code = code.replace(sig_block, textwrap.dedent(block_code))
-
-                        sig_init = "    def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:"
-                        code = code.replace(sig_init, textwrap.indent(textwrap.dedent(init_code), "    "))
-
-                        sig_forward = "    def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:"
-                        code = code.replace(sig_forward, textwrap.indent(textwrap.dedent(forward_code), "    "))
-                    else:
-                        code = extract_code(full_out)
-
                 try:
                     print(f'Generated params: {hp}')
                     if hp and hp.strip():
                         hp = json.loads(hp.replace("'", '"'))
-                        with open(model_dir / hp_file, "w+") as f:
+                        with open(model_dir / hp_file, 'w+') as f:
                             json.dump(hp, f)
                     else:
                         print('[WARNING] No hyperparameters generated, skipping hp file')
                 except Exception as e:
-                    print(f"[WARNING] Error processing hyperparameters: {e}")
+                    print(f'[WARNING] Error processing hyperparameters: {e}')
 
                 try:
                     print(f'Generated transformer:\n\n{tr}\n----\n')
@@ -354,24 +331,23 @@ def nn_gen(
                     else:
                         print('[WARNING] No transformer code generated')
                 except Exception as e:
-                    print(f"[WARNING] Error saving transformer: {e}")
+                    print(f'[WARNING] Error saving transformer: {e}')
 
                 if code and code.strip():
                     create_file(model_dir, new_nn_file, code)
                     print(f'[INFO] Saved code to {model_dir / new_nn_file}')
                 else:
-                    print(f"[ERROR] No code generated for model B{idx}")
+                    print(f'[ERROR] No code generated for model B{idx}')
                     continue
 
                 create_file(model_dir, new_out_file, full_out)
-
-                df_file = model_dir / "dataframe.df"
+                df_file = model_dir / 'dataframe.df'
                 if origdf is None:
                     if isfile(df_file):
                         os.remove(df_file)
                         print(f'[DEBUG]Removed unmatched file: {df_file}')
                 else:
-                    create_file(model_dir, f"original_{origdf['nn']}.py", origdf["nn_code"])
+                    create_file(model_dir, f"original_{origdf['nn']}.py", origdf['nn_code'])
                     origdf.to_pickle(df_file)
 
     print('[DEBUG] Release memory.')
@@ -396,9 +372,9 @@ def trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict
 
     for key in conf_keys:
         prompt_config = prompt_dict_global[key]
-        prompt = ""
-        for pr in prompt_config["prompt"]:
-            prompt += pr + "\n"
+        prompt = ''
+        for pr in prompt_config['prompt']:
+            prompt += pr + '\n'
 
         if len(all_data) < test_nn:
             print(f"Warning: Requested {test_nn} samples, but only {len(all_data)} available. Using all.", flush=True)
@@ -418,9 +394,9 @@ def trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict
             filtered_addon_data = addon_data.loc[addon_data.id_name != row['id_name']]
             if len(filtered_addon_data) > 0:
                 addon_row = filtered_addon_data.sample(n=1).iloc[0].to_dict()
-                if prompt_config.get("addon_list"):
-                    for it in prompt_config["addon_list"]:
-                        para_dict[it["para"]] = addon_row.get(it["value"])
+                if prompt_config.get('addon_list'):
+                    for it in prompt_config['addon_list']:
+                        para_dict[it['para']] = addon_row.get(it['value'])
                 prompts.append((prompt.format(**para_dict), row))
             else:
                 print(f"Warning: Could not find addon data for {row['id_name']}. Skipping prompt.", flush=True)
@@ -428,7 +404,7 @@ def trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict
     models_dir = synth_dir(out_path)
 
     for idx, prompt_data in tqdm(enumerate(prompts)):
-        model_dir = models_dir / f"B{idx}"
+        model_dir = models_dir / f'B{idx}'
         prompt_text, origdf = prompt_data
 
         code, hp, tr, full_out = chat_bot.chat(prompt_text, engineer_prompt=False, max_new_tokens=max_new_tokens)
@@ -444,12 +420,12 @@ def trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict
             print(f"[ERROR] No code generated for model B{idx}")
             continue
 
-        df_file = model_dir / "dataframe.df"
+        df_file = model_dir / 'dataframe.df'
         if origdf is None:
             if isfile(df_file):
                 os.remove(df_file)
         else:
-            create_file(model_dir, f"original_{origdf['id_name']}.py", origdf["transform_code"])
+            create_file(model_dir, f"original_{origdf['id_name']}.py", origdf['transform_code'])
             origdf.to_pickle(df_file)
 
     print('[DEBUG] Release memory.')
