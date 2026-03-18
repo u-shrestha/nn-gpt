@@ -2,11 +2,13 @@ import json
 import subprocess
 from pathlib import Path
 
-NNGPT_DIR = Path("out/nngpt")
+from ab.nn.util.Const import out_dir, ab_root_path
+
+NNGPT_DIR = out_dir /  'nngpt'
 LINEAGE_FILE = NNGPT_DIR / "accepted_adapters.json"
 IMPROVEMENT_EPS = 1e-4
-RUN_META = Path("out/nngpt/run_config.json")
-CONF_LLM_DIR = Path("ab/gpt/conf/llm")
+RUN_META = NNGPT_DIR / 'run_config.json'
+CONF_LLM_DIR = ab_root_path / "ab/gpt/conf/llm"
 
 
 def infer_base_model():
@@ -182,7 +184,7 @@ def main():
         if current_epoch not in accepted_epochs:
             lineage["adapters"].append({
                 "epoch": current_epoch,
-                "path": f"out/nngpt/llm/epoch/A{current_epoch}"
+                "path": str(NNGPT_DIR /'llm' / f"epoch/A{current_epoch}")
             })
             accepted_epochs.append(current_epoch)
             print(f"Adapter A{current_epoch} ACCEPTED")

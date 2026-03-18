@@ -10,14 +10,12 @@ from pathlib import Path
 import json
 from ab.gpt.util.Const import conf_llm_dir
 
-RUN_META = Path("out/nngpt/run_config.json")
+RUN_META = out_dir / 'nngpt' / 'run_config.json'
 
 
 def persist_llm_conf(llm_conf):
     """Save run configuration including llm_conf and base_model_name."""
 
-
-    RUN_META = Path("out/nngpt/run_config.json")
 
     if RUN_META.exists():
         return

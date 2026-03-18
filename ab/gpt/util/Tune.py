@@ -21,6 +21,7 @@ import pandas as pd
 import torch
 import ab.nn.api as lemur
 import deepspeed
+from ab.nn.util.Const import out_dir
 from ab.nn.util.Util import release_memory, create_file
 from peft import PeftModel
 from tqdm import tqdm
@@ -184,6 +185,12 @@ def nn_gen(
                     code = code.replace(sig_forward, textwrap.indent(textwrap.dedent(forward_code), "    "))
                 else:
                     code = extract_code(full_out)
+
+
+            if code is None:
+                print(f'[ERROR] No code generated for model B{idx}')
+                continue  # Skip if no code is generated at all
+
 
             makedirs(model_dir, exist_ok=True)
             if save_llm_output:
@@ -372,7 +379,10 @@ def nn_gen(
 
 
 def trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict_global, test_nn, max_new_tokens, save_llm_output, nn_name_prefix):
-    print("Running Transform Generation...")
+    """
+    Transform Script Generation
+    """
+    print('Running Transform Generation...')
 
     out_gen_dir = str(TRANSFORM_OUT_DIR)
     result_gen_dir = str(TRANSFORM_RES_DIR)
@@ -401,10 +411,11 @@ def trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict
         for _, row in data_sample.iterrows():
             para_dict = {}
             row_dict = row.to_dict()
-            for it in prompt_config["input_list"]:
-                para_dict[it["para"]] = row_dict.get(it["value"])
+            for it in prompt_config['input_list']:
+                para_dict[it['para']] = row_dict.get(it['value'])
 
-            filtered_addon_data = addon_data.loc[addon_data.id_name != row["id_name"]]
+            # Avoid sampling the same transform
+            filtered_addon_data = addon_data.loc[addon_data.id_name != row['id_name']]
             if len(filtered_addon_data) > 0:
                 addon_row = filtered_addon_data.sample(n=1).iloc[0].to_dict()
                 if prompt_config.get("addon_list"):
@@ -908,4 +919,3 @@ def tune(
             temperature, top_k, top_p,
             use_backbone=use_backbone,
         )
-
