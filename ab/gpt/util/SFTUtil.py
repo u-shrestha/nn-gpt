@@ -1,7 +1,7 @@
 import ast
 import textwrap
 
-available_backbones = ['convnext_tiny', 'densenet121', 'densenet161', 'densenet169', 'densenet201', 'efficientnet_b0', 'efficientnet_b1', 'efficientnet_b2', 'efficientnet_b3', 'efficientnet_b4', 'efficientnet_v2_s', 'googlenet', 'inception_v3', 'mnasnet0_5', 'mnasnet0_75', 'mnasnet1_0', 'mnasnet1_3', 'mobilenet_v2', 'mobilenet_v3_large', 'mobilenet_v3_small', 'resnet18', 'resnet34', 'resnet50', 'resnext50_32x4d', 'shufflenet_v2_x0_5', 'shufflenet_v2_x1_0', 'shufflenet_v2_x1_5', 'shufflenet_v2_x2_0', 'squeezenet1_0', 'squeezenet1_1', 'swin_t', 'swin_v2_t']
+available_backbones = ['convnext_tiny', 'densenet121', 'densenet161', 'densenet169', 'densenet201', 'efficientnet_b0', 'efficientnet_b1', 'efficientnet_b2', 'efficientnet_b3', 'efficientnet_b4', 'efficientnet_v2_s', 'googlenet', 'inception_v3', 'mnasnet0_5', 'mnasnet0_75', 'mnasnet1_0', 'mnasnet1_3', 'mobilenet_v2', 'mobilenet_v3_large', 'mobilenet_v3_small', 'regnet_x_400mf', 'regnet_x_800mf', 'regnet_x_1_6gf', 'regnet_x_3_2gf', 'regnet_y_400mf', 'regnet_y_800mf', 'resnet18', 'resnet34', 'resnet50', 'resnext50_32x4d', 'shufflenet_v2_x0_5', 'shufflenet_v2_x1_0', 'shufflenet_v2_x1_5', 'shufflenet_v2_x2_0', 'squeezenet1_0', 'squeezenet1_1', 'swin_t', 'swin_v2_t']
 
 available_patterns = [
     'Parallel_Triple', 
@@ -11,6 +11,41 @@ available_patterns = [
     'Fractal_Then_Dual_Backbone',
     'Split_Stem_Parallel_Fuse'
 ]
+
+legacy_patterns = tuple(available_patterns)
+
+open_discovery_goal_profiles = (
+    {
+        "name": "StemProjectCascade",
+        "tags": ("stem", "project", "multi_stage"),
+        "brief": "Build a real learned stem before branching. Each major branch should pass through an explicit project or bridge module before a later-stage fusion. Avoid a single terminal concat of raw branch outputs.",
+        "module_hints": ("self.stem", "self.project_a", "self.project_b", "self.bridge", "self.fuse"),
+    },
+    {
+        "name": "DeepFractalProject",
+        "tags": ("fractal_deep", "project", "multi_stage"),
+        "brief": "Create one deeper path with at least two fractal-like stages or a fractal stage plus a projector before fusion. The deep path should be structurally different from a one-shot fractal branch.",
+        "module_hints": ("self.project", "self.bridge", "self.fractal_stage1", "self.fractal_stage2", "self.fuse"),
+    },
+    {
+        "name": "SplitStemWideFuse",
+        "tags": ("stem", "wide_fuse", "multi_stage"),
+        "brief": "Use a shared stem to feed asymmetric branches, then perform a staged wide fusion. One branch may stay lightweight while another becomes deeper, but they should not meet only once at the classifier input.",
+        "module_hints": ("self.stem", "self.branch_a", "self.branch_b", "self.project", "self.fuse"),
+    },
+    {
+        "name": "ProjectReuseMixer",
+        "tags": ("project", "branch_reuse", "multi_stage"),
+        "brief": "Let one branch condition or align another through a project, bridge, adapter, or mixer block before the final classifier. Use at least two graph merges or one explicit reuse stage plus a final fuse.",
+        "module_hints": ("self.project", "self.bridge", "self.adapter", "self.mixer", "self.fuse"),
+    },
+    {
+        "name": "StemProjectWide",
+        "tags": ("stem", "project", "wide_fuse"),
+        "brief": "Expose a visible stem and explicit projection modules, then use a wider fusion with three or more incoming branch features. The projected branches should remain visible in the computation graph.",
+        "module_hints": ("self.stem", "self.project_a", "self.project_b", "self.project_c", "self.fuse"),
+    },
+)
 
 skeleton_code = """import torch
 import torch.nn as nn
@@ -214,6 +249,84 @@ Complete the three missing components. **DO NOT** write generic code. You must i
 
 ### Output Requirement (STRICT)
 Output ONLY the implementation within the XML tags. Each tag MUST contain the complete function/method definition (signature and body). No markdown, no conversation.
+
+<block>
+# Full drop_conv3x3_block implementation
+</block>
+<init>
+# Full __init__ implementation
+</init>
+<forward>
+# Full forward implementation
+</forward>
+"""
+
+open_discovery_skeleton_code = skeleton_code
+
+open_discovery_prompt_template = """
+### Role & Context
+You are a Senior AI Architect exploring **new image-classification architectures**. Your job is to discover a motif that is structurally distinct from the common Parallel_Triple template while still compiling into the required XML code format.
+
+### Discovery Goal
+Produce one **novel, trainable architecture** that can reach an accuracy of {accuracy}. Novelty matters more than copying a known pattern name.
+
+### Discovery Track
+- Track Name: {goal_name}
+- Discovery Target Tags: {target_tags}
+- Design Brief: {design_brief}
+
+[CODE SKELETON START]
+{skeleton_code}
+[CODE SKELETON END]
+
+### Hard Requirements
+1. Keep the output format EXACTLY the same:
+   - Output ONLY `<block>`, `<init>`, `<forward>`
+   - Each tag must contain the full function/method definition
+   - No markdown, no explanation, no extra text
+
+2. `self.pattern` must be a **new motif name**
+   - Use a descriptive custom name such as `StemDualBackboneFuse_xxxxx`
+   - DO NOT use legacy names: {legacy_patterns}
+   - DO NOT leave `self.pattern` missing
+
+3. The architecture must be graph-level novel
+   - Plain ParallelTriple-like one-shot fusion receives non-positive reward
+   - DO NOT copy the plain `torch.cat([features(x), backbone_a(x), backbone_b(x)])` topology
+   - Introduce a real structural motif such as a learned stem, sequential backbone->fractal routing, cross-branch reuse, bridge/project blocks, gated fusion, or multi-stage fusion
+   - Use direct computation graph construction; no `if self.pattern == ...` in `forward`
+   - Satisfy the Discovery Target Tags above with actual code structure, not just naming
+
+4. Use the provided code ABI
+   - Implement `drop_conv3x3_block`
+   - Implement `Net.__init__`
+   - Implement `Net.forward`
+   - Call `self.infer_dimensions_dynamically(out_shape[0])` inside `__init__`
+   - Always define `self.device`, `self.use_amp`, and `self._input_spec`
+
+5. Component guidance
+   - You may use 1-3 backbones from [{available_backbones}]
+   - You may define optional modules such as `self.stem`, `self.bridge`, `self.project`, `self.mixer`, `self.fuse`, `self.backbone_c`
+   - You may use `TorchVision(...)`, `FractalUnit(...)`, `nn.Sequential(...)`, and standard `nn.*` layers inside `__init__`
+   - Use all major modules you define in `forward`
+   - To expose structure clearly, prefer semantic attribute names such as: {module_hints}
+   - Do not hide all learned routing logic inside a single generic name like `self.features`
+
+6. Shape safety and trainability
+   - Ensure `forward` returns classifier logits
+   - Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs when needed
+   - Avoid placeholder code, dead modules, duplicate assignments, and hardcoded broken dimensions
+
+### Preferred Discovery Directions
+- stem -> split -> asymmetric backbones -> bridge -> fuse
+- backbone -> fractal -> project -> dual fusion
+- split stem with one deep branch and one lightweight branch
+- staged fusion where one branch conditions another before classification
+- multi-hop feature routing that is still shape-safe
+- explicit `stem`, `project`, `bridge`, `adapter`, `mixer`, or `fuse` modules that are visibly used in `forward`
+
+### Output Requirement (STRICT)
+Output ONLY the implementation within the XML tags. Each tag MUST contain the complete function/method definition (signature and body).
 
 <block>
 # Full drop_conv3x3_block implementation
