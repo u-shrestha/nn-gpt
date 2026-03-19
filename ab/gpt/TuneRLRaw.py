@@ -38,6 +38,10 @@ import ab.gpt.util.SFTUtil as SFTUtil
 
 RAW_BASE_MODEL = "deepseek-ai/deepseek-coder-6.7b-instruct"
 RAW_MODEL_OUT = "rl_backbone_model_raw"
+REQUIRED_BACKBONE_NAMES = ("backbone_a", "backbone_b")
+BLOCK_SIGNATURE = "def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):"
+INIT_SIGNATURE = "def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:"
+FORWARD_SIGNATURE = "def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:"
 
 RAW_DISCOVERY_PROMPT_TEMPLATE = """
 You are writing one novel image-classification architecture.
@@ -58,8 +62,13 @@ Available runtime helpers already exist:
 - `adaptive_pool_flatten(x)`
 - `self.infer_dimensions_dynamically(out_shape[0])`
 
-Backbones are optional. Prefer direct CNN / FractalBlock modules unless a backbone is essential.
-If you explicitly use a backbone, choose 1-2 from:
+Backbone rules are mandatory.
+- Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b`
+- Initialize both with `TorchVision(model=..., in_channels=...)`
+- Both backbones must be used in `forward`
+- You may add stem / project / bridge / fractal / fuse modules around them, but never replace them
+
+Choose the two backbone models from:
 [{available_backbones}]
 
 Hard rules
@@ -74,48 +83,37 @@ Hard rules
 9. Do not define any new classes or helper methods besides the 3 required defs
 10. Keep `forward` as straight-line assignments plus a final return
 11. If unsure, still output the three XML blocks with best-effort valid Python
-12. Prefer modules named like `stem`, `project_a`, `project_b`, `bridge`, `fractal`, `fuse`
-13. Prefer plain CNN blocks or `FractalBlock`; avoid invented helper class names
-14. Do not emit `import ...` lines or `class ...` definitions in the completion
-15. Never define `DropConv3x3Block` or any wrapper class; write only the required defs
+12. `self.backbone_a` and `self.backbone_b` must both appear in `__init__` and `forward`
+13. Prefer modules named like `stem`, `project_a`, `project_b`, `bridge`, `fractal`, `fuse`
+14. Prefer `TorchVision`, plain CNN blocks, or `FractalBlock`; avoid invented helper class names
+15. Do not emit `import ...` lines or `class ...` definitions in the completion
+16. Never define `DropConv3x3Block` or any wrapper class; write only the required defs
+17. Do not omit either backbone, and do not add a third backbone
 
 Helpful module names:
 {module_hints}
 
 The assistant response is already prefixed with:
 `<block>`
-`def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):`
+`{block_signature}`
 Continue with the function body only, then close `</block>`, then emit `<init>...</init>` and `<forward>...</forward>`.
 
 Implement exactly these signatures:
 <block>
-def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):
+{block_signature}
     ...
 </block>
 <init>
-def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:
+{init_signature}
     ...
 </init>
 <forward>
-def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:
+{forward_signature}
     ...
 </forward>
 """
 
-ORIGINAL_EXTRACT_COMPLETION_BLOCKS = TuneRL.extract_completion_blocks
 ORIGINAL_REWARD_FN = TuneRL.reward_fn
-
-DEFAULT_BLOCK_CODE = """
-def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):
-    layers = [
-        nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias),
-        nn.BatchNorm2d(out_channels),
-        nn.ReLU(inplace=True),
-    ]
-    if dropout_prob and dropout_prob > 0:
-        layers.append(nn.Dropout2d(dropout_prob))
-    return nn.Sequential(*layers)
-""".strip()
 
 BLOCKED_ATTRS = {
     "device",
@@ -148,18 +146,9 @@ PROJECT_NAME_POOL = [
     "adapter",
 ]
 
-FALLBACK_TEMPLATE_NAMES = (
-    "stem_pair_fuse",
-    "stem_bridge_wide_fuse",
-    "stem_reuse_fuse",
-    "project_fractal_merge",
-    "project_reuse_mixer",
-    "project_deep_cnn",
-)
-
 RAW_ASSISTANT_PREFIX = (
     "<block>\n"
-    "def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):\n"
+    f"{BLOCK_SIGNATURE}\n"
 )
 
 EXTRACTION_META_CACHE: Dict[str, Dict[str, object]] = {}
@@ -761,231 +750,131 @@ def _sanitize_expr_text(
     return "x"
 
 
-def _fallback_blueprint(template_name: str) -> Tuple[List[str], List[Tuple[str, str]]]:
-    if template_name == "stem_bridge_wide_fuse":
-        attrs = ["stem", "project_a", "project_b", "bridge", "fuse"]
-        return attrs, [
-            ("x0", "self.stem(x)"),
-            ("x1", "self.project_a(x0)"),
-            ("x2", "self.project_b(x0)"),
-            ("x3", "self.bridge(x1)"),
-            ("x4", "torch.cat([x1, x2, x3], dim=1)"),
-            ("x5", "self.fuse(x4)"),
-        ]
-    if template_name == "stem_reuse_fuse":
-        attrs = ["stem", "project_a", "bridge", "fuse"]
-        return attrs, [
-            ("x0", "self.stem(x)"),
-            ("x1", "self.project_a(x0)"),
-            ("x2", "self.bridge(x1)"),
-            ("x3", "self.fuse(torch.cat([x0, x2], dim=1))"),
-        ]
-    if template_name == "project_fractal_merge":
-        attrs = ["project_a", "bridge", "fractal", "fractal_aux", "fuse"]
-        return attrs, [
-            ("x0", "self.project_a(x)"),
-            ("x1", "self.bridge(x0)"),
-            ("x2", "self.fractal(x1)"),
-            ("x3", "self.fractal_aux(x2)"),
-            ("x4", "torch.cat([x0, x1, x2, x3], dim=1)"),
-            ("x5", "self.fuse(x4)"),
-        ]
-    if template_name == "project_reuse_mixer":
-        attrs = ["project_a", "bridge", "adapter", "fuse"]
-        return attrs, [
-            ("x0", "self.project_a(x)"),
-            ("x1", "self.bridge(x0)"),
-            ("x2", "self.adapter(x1)"),
-            ("x3", "torch.cat([x0, x2], dim=1)"),
-            ("x4", "self.fuse(x3)"),
-        ]
-    if template_name == "project_deep_cnn":
-        attrs = ["project_a", "bridge", "project_b", "project_c", "fuse"]
-        return attrs, [
-            ("x0", "self.project_a(x)"),
-            ("x1", "self.bridge(x0)"),
-            ("x2", "self.project_b(x1)"),
-            ("x3", "self.project_c(x2)"),
-            ("x4", "self.fuse(x3)"),
-        ]
-    attrs = ["stem", "project_a", "project_b", "fuse"]
-    return attrs, [
-        ("x0", "self.stem(x)"),
-        ("x1", "self.project_a(x0)"),
-        ("x2", "self.project_b(x0)"),
-        ("x3", "torch.cat([x1, x2], dim=1)"),
-        ("x4", "self.fuse(x3)"),
-    ]
+def _prepare_completion_for_xml(completion: str) -> str:
+    text = _strip_outer_code_fences(completion or "")
+    stripped = text.lstrip()
+    if "<block>" not in stripped and "</block>" in stripped and "<init>" in stripped:
+        return f"{RAW_ASSISTANT_PREFIX}{stripped}"
+    return stripped
 
 
-def _fallback_assignments(
-    attrs: Sequence[str],
-    seed_text: str,
-) -> Tuple[List[Tuple[str, str]], List[str], str]:
-    attrs = _normalize_attr_list(attrs)
-    roles = {_infer_attr_role(attr) for attr in attrs}
-    lowered = " ".join(attrs).lower()
+def _normalize_required_function(code: str, fn_name: str, signature: str) -> str:
+    code = _strip_outer_code_fences(code)
+    if not code:
+        return ""
+    code = textwrap.dedent(code).strip()
+    if not code:
+        return ""
 
-    if not _has_structural_attr(attrs):
-        options = list(FALLBACK_TEMPLATE_NAMES)
-    elif "fractal" in roles or "fractal" in lowered:
-        options = ["project_fractal_merge", "stem_reuse_fuse", "stem_bridge_wide_fuse"]
-    elif "stem" in roles:
-        options = ["stem_pair_fuse", "stem_bridge_wide_fuse", "stem_reuse_fuse"]
-    elif any(token in lowered for token in ("bridge", "adapter", "mixer")):
-        options = ["project_reuse_mixer", "project_deep_cnn", "project_fractal_merge"]
+    lines = code.splitlines()
+    if lines and re.match(rf"^\s*def {re.escape(fn_name)}\s*\(", lines[0]):
+        body_lines = lines[1:]
     else:
-        options = ["project_deep_cnn", "project_reuse_mixer", "stem_pair_fuse"]
+        body_lines = lines
 
-    template_name = _hash_pick(f"{seed_text}\n{'|'.join(attrs)}", options)
-    template_attrs, assignments = _fallback_blueprint(template_name)
-    return assignments, template_attrs, template_name
+    body_text = textwrap.dedent("\n".join(body_lines)).strip("\n")
+    if not body_text.strip():
+        return ""
 
-
-def _synthesize_forward_code(
-    forward_code: str,
-    *extra_texts: str,
-) -> Tuple[str, List[str], List[Tuple[str, str]], Dict[str, object]]:
-    candidate_lines = _candidate_body_lines(forward_code, "forward")
-    used_attrs: List[str] = []
-    known_vars = ["x"]
-    var_aliases: dict[str, str] = {"x": "x"}
-    assignments: List[Tuple[str, str]] = []
-    synth_meta: Dict[str, object] = {
-        "used_fallback": False,
-        "fallback_template": "",
-        "candidate_line_count": len(candidate_lines),
-        "parsed_assignment_count": 0,
-        "parsed_structural_attr_detected": False,
-    }
-
-    for raw_line in candidate_lines:
-        if "self.classifier" in raw_line:
-            continue
-
-        if raw_line.startswith("return "):
-            rendered = _sanitize_expr_text(raw_line[len("return "):], known_vars, used_attrs, var_aliases)
-            continue
-
-        match = re.match(r"^([A-Za-z_]\w*)\s*=\s*(.+)$", raw_line)
-        if not match:
-            continue
-        source_lhs, rhs = match.groups()
-        rendered = _sanitize_expr_text(rhs, known_vars, used_attrs, var_aliases)
-        if not rendered:
-            continue
-        target_name = f"x{len(assignments)}"
-        assignments.append((target_name, rendered))
-        known_vars.append(target_name)
-        var_aliases[source_lhs] = target_name
-
-    synth_meta["parsed_assignment_count"] = len(assignments)
-    synth_meta["parsed_structural_attr_detected"] = _has_structural_attr(used_attrs)
-    seed_text = "\n".join([forward_code, *extra_texts])
-    if not assignments or not _has_structural_attr(used_attrs):
-        attr_candidates = _collect_completion_attrs(forward_code, *extra_texts)
-        assignments, used_attrs, fallback_template = _fallback_assignments(attr_candidates, seed_text)
-        synth_meta["used_fallback"] = True
-        synth_meta["fallback_template"] = fallback_template
-    assignments, used_attrs = _canonicalize_assignments(assignments, used_attrs)
-    if not assignments:
-        fallback_attrs = ["stem", "project_a", "project_b", "fuse"]
-        assignments, used_attrs, fallback_template = _fallback_assignments(fallback_attrs, seed_text or "raw")
-        assignments, used_attrs = _canonicalize_assignments(assignments, used_attrs)
-        synth_meta["used_fallback"] = True
-        synth_meta["fallback_template"] = fallback_template
-    last_expr = assignments[-1][0]
-
-    forward_lines = [
-        "def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:",
-    ]
-    for lhs, expr in assignments:
-        forward_lines.append(f"    {lhs} = {expr}")
-    forward_lines.append(f"    feat = adaptive_pool_flatten({last_expr})")
-    forward_lines.append("    if is_probing:")
-    forward_lines.append("        return feat")
-    forward_lines.append("    return self.classifier(feat)")
-    synth_meta["final_assignment_count"] = len(assignments)
-    synth_meta["used_attrs"] = list(_dedupe_keep_order(used_attrs))
-    return "\n".join(forward_lines).strip(), _dedupe_keep_order(used_attrs), assignments, synth_meta
+    normalized_body = []
+    for line in body_text.splitlines():
+        normalized_body.append(f"    {line}" if line.strip() else "")
+    return f"{signature}\n" + "\n".join(normalized_body)
 
 
-def _synthesize_init_code(
-    attr_order: Sequence[str],
-    pattern_name: str,
-    assignments: Sequence[Tuple[str, str]],
-) -> str:
-    attrs = _normalize_attr_list(attr_order)
-    attr_inputs = _infer_attr_input_channels(assignments)
-    lines = [
-        "def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:",
-        "    super().__init__()",
-        f"    self.pattern = {pattern_name!r}",
-        "    self.device = device",
-        "    self.use_amp = torch.cuda.is_available()",
-        "    self._input_spec = tuple(in_shape[1:])",
-        "    dropout_prob = float(prm.get('dropout', prm.get('dropout_prob', 0.0)))",
-    ]
-    for attr_name in attrs:
-        if attr_name in BLOCKED_ATTRS:
-            continue
-        input_channels = attr_inputs.get(attr_name, "in_shape[1]" if attr_name == "stem" else "48")
-        lines.append(f"    self.{attr_name} = {_module_ctor_with_input(attr_name, input_channels)}")
-    lines.append("    self.infer_dimensions_dynamically(out_shape[0])")
-    return "\n".join(lines).strip()
+def _normalize_block_code(block_code: str) -> str:
+    return _normalize_required_function(block_code, "drop_conv3x3_block", BLOCK_SIGNATURE)
 
 
-def _normalize_block_code(_block_code: str) -> str:
-    return DEFAULT_BLOCK_CODE
+def _normalize_init_code(init_code: str) -> str:
+    return _normalize_required_function(init_code, "__init__", INIT_SIGNATURE)
+
+
+def _normalize_forward_code(forward_code: str) -> str:
+    return _normalize_required_function(forward_code, "forward", FORWARD_SIGNATURE)
+
+
+def _extract_defined_backbones(init_code: str) -> List[str]:
+    return _dedupe_keep_order(
+        re.findall(r"self\.(backbone_[A-Za-z]\w*)\s*=", init_code or "")
+    )
+
+
+def _extract_used_backbones(forward_code: str) -> List[str]:
+    return _dedupe_keep_order(
+        re.findall(r"self\.(backbone_[A-Za-z]\w*)\b", forward_code or "")
+    )
+
+
+def _count_xml_tags(text: str, tag: str) -> Tuple[int, int]:
+    return (
+        len(re.findall(rf"<{tag}>", text, re.IGNORECASE)),
+        len(re.findall(rf"</{tag}>", text, re.IGNORECASE)),
+    )
 
 
 def _build_extraction_meta(
     completion: str,
     candidate: str,
+    block_code: str,
     init_code: str,
     forward_code: str,
-    used_attrs: Sequence[str],
-    assignments: Sequence[Tuple[str, str]],
-    synth_meta: Dict[str, object],
 ) -> Dict[str, object]:
     text = completion or ""
-    xml_tag_count = sum(bool(_extract_xml_tag(text, tag)) for tag in ("block", "init", "forward"))
+    candidate = candidate or ""
+    xml_tag_count = sum(bool(code) for code in (block_code, init_code, forward_code))
+    xml_counts = {tag: _count_xml_tags(candidate, tag) for tag in ("block", "init", "forward")}
     class_count = len(re.findall(r"^\s*class\s+\w+", candidate, re.MULTILINE))
     import_count = len(re.findall(r"^\s*(?:from|import)\s+\w+", candidate, re.MULTILINE))
     bad_signature_count = len(re.findall(r"\)\s*-\s*:", candidate))
-    raw_attrs = _scan_raw_attrs(text, candidate, init_code, forward_code)
+    raw_attrs = _scan_raw_attrs(candidate, block_code, init_code, forward_code)
     structural_attr_detected = _has_structural_attr(raw_attrs)
+
+    defined_backbones = _extract_defined_backbones(init_code)
+    used_backbones = _extract_used_backbones(forward_code)
+    required_backbone_set = set(REQUIRED_BACKBONE_NAMES)
+    dual_backbone_init_ok = set(defined_backbones) == required_backbone_set and len(defined_backbones) == 2
+    dual_backbone_forward_ok = required_backbone_set.issubset(set(used_backbones)) and len(set(used_backbones)) == 2
+    dual_backbone_ok = dual_backbone_init_ok and dual_backbone_forward_ok
+
+    exact_xml = all(start_count == 1 and end_count == 1 for start_count, end_count in xml_counts.values())
+    exact_signatures = {
+        "block": block_code.startswith(BLOCK_SIGNATURE),
+        "init": init_code.startswith(INIT_SIGNATURE),
+        "forward": forward_code.startswith(FORWARD_SIGNATURE),
+    }
+
     quality_score = 0
-    quality_score += xml_tag_count
-    quality_score += 2 if structural_attr_detected else 0
-    quality_score += 1 if synth_meta.get("parsed_assignment_count", 0) >= 3 else 0
+    quality_score += 2 if exact_xml else 0
+    quality_score += sum(1 for ok in exact_signatures.values() if ok)
+    quality_score += 2 if dual_backbone_ok else 0
+    quality_score += 1 if structural_attr_detected else 0
     quality_score -= min(class_count, 2)
     quality_score -= min(import_count, 2)
     quality_score -= min(bad_signature_count, 2)
-    if synth_meta.get("used_fallback") and not structural_attr_detected:
-        quality_score -= 1
-    low_evidence_fallback = bool(
-        synth_meta.get("used_fallback") and not structural_attr_detected and quality_score <= 1
-    )
+
     return {
         "xml_tag_count": xml_tag_count,
+        "xml_tag_exact": exact_xml,
+        "xml_counts": xml_counts,
         "class_count": class_count,
         "import_count": import_count,
         "bad_signature_count": bad_signature_count,
         "structural_attr_detected": structural_attr_detected,
         "quality_score": quality_score,
-        "used_fallback": bool(synth_meta.get("used_fallback")),
-        "fallback_template": str(synth_meta.get("fallback_template") or ""),
-        "parsed_assignment_count": int(synth_meta.get("parsed_assignment_count") or 0),
-        "candidate_line_count": int(synth_meta.get("candidate_line_count") or 0),
-        "used_attrs": list(used_attrs),
-        "assignment_count": len(assignments),
-        "low_evidence_fallback": low_evidence_fallback,
+        "exact_block_signature": exact_signatures["block"],
+        "exact_init_signature": exact_signatures["init"],
+        "exact_forward_signature": exact_signatures["forward"],
+        "defined_backbones": defined_backbones,
+        "used_backbones": used_backbones,
+        "dual_backbone_init_ok": dual_backbone_init_ok,
+        "dual_backbone_forward_ok": dual_backbone_forward_ok,
+        "dual_backbone_ok": dual_backbone_ok,
+        "candidate_line_count": len(candidate.splitlines()),
     }
 
 
 def extract_completion_payload_tolerant(completion: str) -> Tuple[Tuple[str, str, str], Dict[str, object]]:
-    block_code, init_code, forward_code = ORIGINAL_EXTRACT_COMPLETION_BLOCKS(completion)
     text = completion or ""
     cache_key = _completion_cache_key(text)
     cached = EXTRACTION_META_CACHE.get(cache_key)
@@ -995,51 +884,25 @@ def extract_completion_payload_tolerant(completion: str) -> Tuple[Tuple[str, str
             dict(cached["meta"]),
         )
 
-    block_code = block_code or _extract_xml_tag(text, "block")
-    init_code = init_code or _extract_xml_tag(text, "init")
-    forward_code = forward_code or _extract_xml_tag(text, "forward")
+    candidate = _prepare_completion_for_xml(text)
+    block_code = _normalize_block_code(_extract_xml_tag(candidate, "block"))
+    init_code = _normalize_init_code(_extract_xml_tag(candidate, "init"))
+    forward_code = _normalize_forward_code(_extract_xml_tag(candidate, "forward"))
 
-    candidate = _strip_outer_code_fences(text)
-    if not (init_code and forward_code):
-        parsed_block, parsed_init, parsed_forward = SFTUtil.parse_nn_code(candidate)
-        block_code = block_code or TuneRL.clean_block(parsed_block or "")
-        init_code = init_code or TuneRL.clean_block(parsed_init or "")
-        forward_code = forward_code or TuneRL.clean_block(parsed_forward or "")
-
-    if not init_code:
-        init_code = TuneRL.clean_block(_extract_function_block(candidate, "__init__"))
-    if not forward_code:
-        forward_code = TuneRL.clean_block(_extract_function_block(candidate, "forward"))
-    if not block_code:
-        block_code = TuneRL.clean_block(_extract_function_block(candidate, "drop_conv3x3_block"))
-
-    init_source = init_code or candidate
-    forward_source = forward_code or candidate
-    extracted_pattern_name = _extract_pattern_name(init_code, forward_code, candidate)
-    synthesized_forward, used_attrs, assignments, synth_meta = _synthesize_forward_code(
-        forward_source,
-        init_source,
-        candidate,
-    )
-    pattern_name = extracted_pattern_name or _derive_pattern_name(used_attrs, assignments, candidate)
-    synthesized_init = _synthesize_init_code(used_attrs, pattern_name, assignments)
-    normalized_block = _normalize_block_code(block_code)
     meta = _build_extraction_meta(
         text,
         candidate,
-        init_source,
-        forward_source,
-        used_attrs,
-        assignments,
-        synth_meta,
+        block_code,
+        init_code,
+        forward_code,
     )
     EXTRACTION_META_CACHE[cache_key] = {
-        "block_code": normalized_block,
-        "init_code": synthesized_init,
-        "forward_code": synthesized_forward,
+        "block_code": block_code,
+        "init_code": init_code,
+        "forward_code": forward_code,
         "meta": meta,
     }
-    return ((normalized_block, synthesized_init, synthesized_forward), meta)
+    return ((block_code, init_code, forward_code), meta)
 
 
 def extract_completion_blocks_tolerant(completion: str) -> Tuple[str, str, str]:
@@ -1076,10 +939,23 @@ def raw_reward_fn(
 
     xml_tag_count = int(meta.get("xml_tag_count", 0))
     if xml_tag_count < 3:
-        raw_delta -= 0.18 * (3 - xml_tag_count)
+        raw_delta -= 0.45 * (3 - xml_tag_count)
+    if not meta.get("xml_tag_exact"):
+        raw_delta -= 1.20
+    if not meta.get("exact_block_signature"):
+        raw_delta -= 0.50
+    if not meta.get("exact_init_signature"):
+        raw_delta -= 0.60
+    if not meta.get("exact_forward_signature"):
+        raw_delta -= 0.60
 
-    if meta.get("used_fallback"):
-        raw_delta -= 0.20 if meta.get("structural_attr_detected") else 0.95
+    if meta.get("dual_backbone_ok"):
+        raw_delta += 0.45
+    else:
+        if not meta.get("dual_backbone_init_ok"):
+            raw_delta -= 1.75
+        if not meta.get("dual_backbone_forward_ok"):
+            raw_delta -= 1.75
 
     if graph_info and graph_info.parse_ok:
         same_graph_count = batch_graph_hashes.count(graph_info.graph_hash) if batch_graph_hashes else 0
@@ -1113,8 +989,18 @@ def raw_reward_fn(
             raw_delta -= 0.35
 
     res["reward"] = float(res.get("reward", -2.0)) + raw_delta
-    if meta.get("low_evidence_fallback"):
-        res["reward"] = min(float(res["reward"]), 0.0)
+    hard_format_violation = bool(
+        not meta.get("xml_tag_exact")
+        or not meta.get("exact_block_signature")
+        or not meta.get("exact_init_signature")
+        or not meta.get("exact_forward_signature")
+        or int(meta.get("class_count", 0)) > 0
+        or int(meta.get("import_count", 0)) > 0
+    )
+    if hard_format_violation:
+        res["reward"] = min(float(res["reward"]), -3.0)
+    if not meta.get("dual_backbone_ok"):
+        res["reward"] = min(float(res["reward"]), -3.5)
 
     res["raw_extraction"] = {
         **meta,
@@ -1138,6 +1024,11 @@ def load_rl_dataset_raw(tokenizer):
     for _, row in data.iterrows():
         accuracy = row.get("accuracy", 0.8)
         for profile in goal_profiles:
+            module_hints = (
+                "self.backbone_a",
+                "self.backbone_b",
+                *profile["module_hints"],
+            )
             user_prompt = RAW_DISCOVERY_PROMPT_TEMPLATE.format(
                 accuracy=accuracy,
                 skeleton_code=SFTUtil.open_discovery_skeleton_code,
@@ -1146,7 +1037,10 @@ def load_rl_dataset_raw(tokenizer):
                 goal_name=profile["name"],
                 target_tags=", ".join(profile["tags"]),
                 design_brief=profile["brief"],
-                module_hints=", ".join(profile["module_hints"]),
+                module_hints=", ".join(module_hints),
+                block_signature=BLOCK_SIGNATURE,
+                init_signature=INIT_SIGNATURE,
+                forward_signature=FORWARD_SIGNATURE,
             )
 
             messages = [
