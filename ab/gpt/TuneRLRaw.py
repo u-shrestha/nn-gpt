@@ -8,9 +8,10 @@ import textwrap
 from typing import Dict, List, Sequence, Tuple
 
 
-RAW_HF_HOME = "/media/xi/Data/hf-cache"
-RAW_HF_HUB_CACHE = "/media/xi/Data/hf-cache/hub"
-RAW_TRANSFORMERS_CACHE = "/media/xi/Data/hf-cache/transformers"
+# RAW_HF_HOME = "/media/xi/Data/hf-cache"
+# RAW_HF_HUB_CACHE = "/media/xi/Data/hf-cache/hub"
+# RAW_TRANSFORMERS_CACHE = "/media/xi/Data/hf-cache/transformers"
+RAW_TRANSFORMERS_CACHE = "out/llm"
 RAW_LOG_DIR = "rl_output/raw"
 RAW_EPOCH_ROOT = "out/nngpt/llm/epoch_raw"
 RAW_TRAINER_OUT = "grpo_backbone_outputs/raw"
@@ -20,9 +21,9 @@ RAW_NUM_GENERATIONS = "8"
 RAW_GRAD_ACCUM = "8"
 
 # Force the raw runtime to use the mounted Windows cache and stable raw output dirs.
-os.environ["HF_HOME"] = RAW_HF_HOME
-os.environ["HF_HUB_CACHE"] = RAW_HF_HUB_CACHE
-os.environ["HUGGINGFACE_HUB_CACHE"] = RAW_HF_HUB_CACHE
+# os.environ["HF_HOME"] = RAW_HF_HOME
+# os.environ["HF_HUB_CACHE"] = RAW_HF_HUB_CACHE
+# os.environ["HUGGINGFACE_HUB_CACHE"] = RAW_HF_HUB_CACHE
 os.environ["TRANSFORMERS_CACHE"] = RAW_TRANSFORMERS_CACHE
 os.environ["NNGPT_RL_LOG_DIR"] = RAW_LOG_DIR
 os.environ["NNGPT_RL_EPOCH_ROOT"] = RAW_EPOCH_ROOT
@@ -173,9 +174,9 @@ class RawCodeLogger(TuneRL.SimpleCodeLogger):
 
 def configure_raw_defaults() -> None:
     # Keep raw experiments isolated from the SFT trainer outputs with code-owned defaults.
-    os.environ["HF_HOME"] = RAW_HF_HOME
-    os.environ["HF_HUB_CACHE"] = RAW_HF_HUB_CACHE
-    os.environ["HUGGINGFACE_HUB_CACHE"] = RAW_HF_HUB_CACHE
+    # os.environ["HF_HOME"] = RAW_HF_HOME
+    # os.environ["HF_HUB_CACHE"] = RAW_HF_HUB_CACHE
+    # os.environ["HUGGINGFACE_HUB_CACHE"] = RAW_HF_HUB_CACHE
     os.environ["TRANSFORMERS_CACHE"] = RAW_TRANSFORMERS_CACHE
     os.environ["NNGPT_RL_LOG_DIR"] = RAW_LOG_DIR
     os.environ["NNGPT_RL_EPOCH_ROOT"] = RAW_EPOCH_ROOT
@@ -753,8 +754,21 @@ def _sanitize_expr_text(
 def _prepare_completion_for_xml(completion: str) -> str:
     text = _strip_outer_code_fences(completion or "")
     stripped = text.lstrip()
+    # Case 1: Model output has </block> but no <block> (prefix was pre-filled)
     if "<block>" not in stripped and "</block>" in stripped and "<init>" in stripped:
         return f"{RAW_ASSISTANT_PREFIX}{stripped}"
+    # Case 2: Model output has <init> and <forward> but no block tags at all
+    # (model skipped the block section entirely)
+    if "<block>" not in stripped and "</block>" not in stripped and "<init>" in stripped:
+        # Wrap everything before <init> as a block
+        init_pos = stripped.find("<init>")
+        pre_init = stripped[:init_pos].strip()
+        rest = stripped[init_pos:]
+        if pre_init:
+            return f"<block>\n{BLOCK_SIGNATURE}\n{pre_init}\n</block>\n{rest}"
+        else:
+            # No block code at all; use a minimal pass-through block
+            return f"<block>\n{BLOCK_SIGNATURE}\n    return nn.Sequential(nn.Conv2d(in_channels, out_channels, 3, stride, padding, bias=bias))\n</block>\n{rest}"
     return stripped
 
 
@@ -931,6 +945,7 @@ def raw_reward_fn(
         prompt_goal_tags=prompt_goal_tags,
     )
     meta = extract_completion_meta(completion)
+    built_ok = res.get("built_ok", False)
     raw_delta = 0.0
 
     raw_delta -= 0.35 * min(int(meta.get("class_count", 0)), 2)
@@ -957,21 +972,27 @@ def raw_reward_fn(
         if not meta.get("dual_backbone_forward_ok"):
             raw_delta -= 1.75
 
+    # --- Batch & archive diversity penalties ---
+    # When nothing builds yet, heavy diversity penalties are counterproductive:
+    # the model can only collapse to formats it knows, so penalizing that
+    # blocks learning. Scale down penalties by 0.3x when built_ok is False.
+    diversity_scale = 1.0 if built_ok else 0.3
+
     if graph_info and graph_info.parse_ok:
         same_graph_count = batch_graph_hashes.count(graph_info.graph_hash) if batch_graph_hashes else 0
         same_family_count = batch_family_hashes.count(graph_info.family_hash) if batch_family_hashes else 0
         archive_family_freq = TuneRL.family_hash_archive_counts.get(graph_info.family_hash, 0)
 
         if same_graph_count > 1:
-            raw_delta -= 0.75 * (same_graph_count - 1)
+            raw_delta -= 0.75 * (same_graph_count - 1) * diversity_scale
         if same_family_count > 1:
-            raw_delta -= 0.95 * (same_family_count - 1)
+            raw_delta -= 0.95 * (same_family_count - 1) * diversity_scale
         if same_family_count >= 4:
-            raw_delta -= 1.20
+            raw_delta -= 1.20 * diversity_scale
         if same_family_count >= 8:
-            raw_delta -= 2.00
+            raw_delta -= 2.00 * diversity_scale
         if archive_family_freq >= 1:
-            raw_delta -= 0.30 * archive_family_freq
+            raw_delta -= 0.30 * archive_family_freq * diversity_scale
 
         if graph_info.fractal_calls >= 2:
             raw_delta += 0.35
@@ -989,16 +1010,29 @@ def raw_reward_fn(
             raw_delta -= 0.35
 
     res["reward"] = float(res.get("reward", -2.0)) + raw_delta
-    hard_format_violation = bool(
+
+    # --- Tiered format violation clamps ---
+    # Core XML structure violations (strict)
+    core_format_violation = bool(
         not meta.get("xml_tag_exact")
         or not meta.get("exact_block_signature")
         or not meta.get("exact_init_signature")
         or not meta.get("exact_forward_signature")
-        or int(meta.get("class_count", 0)) > 0
-        or int(meta.get("import_count", 0)) > 0
     )
-    if hard_format_violation:
+    # Minor code hygiene violations (lenient)
+    class_count = int(meta.get("class_count", 0))
+    import_count = int(meta.get("import_count", 0))
+    minor_hygiene_violation = class_count > 0 or import_count > 0
+    severe_hygiene_violation = class_count > 2 or import_count > 2
+
+    if core_format_violation:
         res["reward"] = min(float(res["reward"]), -3.0)
+    elif severe_hygiene_violation:
+        res["reward"] = min(float(res["reward"]), -2.0)
+    elif minor_hygiene_violation:
+        # Small class/import count: softer clamp so near-correct code isn't destroyed
+        res["reward"] = min(float(res["reward"]), -1.5)
+
     if not meta.get("dual_backbone_ok"):
         res["reward"] = min(float(res["reward"]), -3.5)
 

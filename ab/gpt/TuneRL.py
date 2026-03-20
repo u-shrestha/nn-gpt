@@ -265,6 +265,26 @@ def reward_fn(
         val_metric_baseline=0.05,
     )
 
+    # --- Layered build-failure partial reward ---
+    # Provide gradient signal between "code doesn't parse" and "almost builds"
+    if not res.get('built_ok'):
+        error_str = str(res.get('error', ''))
+        build_partial = 0.0
+        if 'SyntaxError' in error_str:
+            build_partial = -0.3  # Code has syntax errors
+        elif 'NameError' in error_str or 'ImportError' in error_str:
+            build_partial = -0.2  # References undefined names
+        elif 'TypeError' in error_str:
+            build_partial = -0.1  # Wrong argument types (close to building)
+        elif 'RuntimeError' in error_str and 'shape' in error_str.lower():
+            build_partial = 0.05  # Shape mismatch — very close!
+        elif 'RuntimeError' in error_str:
+            build_partial = 0.0
+        elif error_str:  # Some other error but code was exec'd
+            build_partial = -0.15
+        # else: no error info, default 0.0
+        res['r_build_partial'] = build_partial
+
     macro_structure_ok = passes_macro_structure_gate(graph_info)
     shallow_one_shot = is_shallow_one_shot_fuse(graph_info)
     r_structure = 0.0
@@ -422,7 +442,10 @@ def reward_fn(
     if not graph_info.parse_ok:
         total_reward = min(total_reward, -0.25)
     if not res.get('built_ok'):
-        total_reward = min(total_reward, -1.0)
+        # Use layered clamp: allow better build-failures to score higher than worse ones
+        build_partial = float(res.get('r_build_partial', 0.0))
+        build_clamp = -0.8 + build_partial  # Range: [-1.1, -0.75] based on error type
+        total_reward = min(total_reward, build_clamp)
     elif not res.get('forward_ok'):
         total_reward = min(total_reward, -0.50)
     elif not res.get('trained_step_ok'):
