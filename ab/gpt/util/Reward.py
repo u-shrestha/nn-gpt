@@ -511,6 +511,9 @@ def _evaluate_code_and_reward_direct(
     try:
         builder = build_fn_from_code(code, in_shape, out_shape, prm, device)
     except Exception as e:
+        # Pass through error type so reward_fn can assign layered partial rewards
+        error_type = type(e).__name__
+        error_msg = f"{error_type}: {e}"
         return {
             "reward": 0.0,
             "components": {"reward": 0.0, "r_build": 0.0, "r_forward": 0.0,
@@ -519,6 +522,7 @@ def _evaluate_code_and_reward_direct(
             "val_metric": None,
             "built_ok": False, "forward_ok": False, "trained_step_ok": False,
             "latency_ms": None, "params_m": None,
+            "error": error_msg,
         }
     try: 
         res = evaluate_and_reward(
@@ -531,7 +535,9 @@ def _evaluate_code_and_reward_direct(
         if res["reward"] == 0.0:
             res["reward"] = -1.0
         return res
-    except Exception:
+    except Exception as e:
+        error_type = type(e).__name__
+        error_msg = f"{error_type}: {e}"
         return {
             "reward": 0.0,
             "components": {"reward": 0.0, "r_build": 0.0, "r_forward": 0.0,
@@ -540,6 +546,7 @@ def _evaluate_code_and_reward_direct(
             "val_metric": None,
             "built_ok": False, "forward_ok": False, "trained_step_ok": False,
             "latency_ms": None, "params_m": None,
+            "error": error_msg,
         }
 
 if __name__ == "__main__":
