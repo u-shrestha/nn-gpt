@@ -312,9 +312,6 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
     except Exception as e:
         print(f"[WARN] peft_config validation warning: {e}")
 
-    from pathlib import Path
-    import subprocess
-
     try:
         tune(
             test_nn, nn_train_epochs, skip_epoches, peft,
