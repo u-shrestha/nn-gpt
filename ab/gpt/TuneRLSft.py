@@ -1,7 +1,5 @@
-import math
 import os
 import shutil
-from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -31,6 +29,7 @@ SFT_EVAL_IMAGE_SIZE = 256
 SFT_EVAL_BATCH_SIZE = 32
 SFT_EVAL_TRAIN_SUBSET = 256
 SFT_EVAL_VAL_SUBSET = 128
+SFT_EVAL_TRAIN_STEPS = 8
 SFT_EVAL_VAL_BATCHES = 2
 SFT_EVAL_DATA_ROOT = "data_v2"
 SFT_EVAL_DOWNLOAD = True
@@ -54,15 +53,6 @@ import ab.gpt.TuneRL as TuneRL
 import ab.gpt.TuneRLRaw as TuneRLRaw
 import ab.gpt.util.Reward as RewardUtil
 import ab.gpt.util.SFTUtil as SFTUtil
-
-
-# ── Diversity state ───────────────────────────────────────────────────────
-goal_family_gen_counts: Dict[str, Counter] = {}
-global_total_gen_count: int = 0
-
-COLLAPSE_FREQ_THRESHOLD = 5
-COLLAPSE_PENALTY_SCALE = 0.5
-NOVEL_EXPLORE_BONUS = 0.3
 
 
 def _repo_model_dir(model_id: str) -> Path:
@@ -118,12 +108,6 @@ def resolve_sft_model_sources() -> tuple[str, str, str]:
         return SFT_BASE_MODEL_ID, str(repo_tokenizer_dir), "model-id+out/tokenizer"
 
     return SFT_BASE_MODEL_ID, SFT_BASE_MODEL_ID, "model-id"
-
-
-def get_goal_generation_counter(goal_key: str) -> Counter:
-    if goal_key not in goal_family_gen_counts:
-        goal_family_gen_counts[goal_key] = Counter()
-    return goal_family_gen_counts[goal_key]
 
 
 def _build_cifar10_eval_loaders(batch_size: int):
@@ -195,6 +179,9 @@ def _cifar_eval_error(error: Exception) -> Dict[str, Any]:
         "components": {
             "reward": 0.0,
             "r_build": 0.0,
+            "r_forward_shape": 0.0,
+            "r_backward": 0.0,
+            "r_loss_drop": 0.0,
             "r_forward": 0.0,
             "r_trainstep": 0.0,
             "r_metric": 0.0,
@@ -205,7 +192,13 @@ def _cifar_eval_error(error: Exception) -> Dict[str, Any]:
         "val_metric": None,
         "built_ok": False,
         "forward_ok": False,
+        "forward_shape_ok": False,
         "trained_step_ok": False,
+        "backward_ok": False,
+        "loss_start": None,
+        "loss_end": None,
+        "loss_drop": None,
+        "loss_drop_ok": False,
         "latency_ms": None,
         "params_m": None,
         "error": error_msg,
@@ -232,7 +225,7 @@ def _evaluate_code_and_reward_cifar_direct(
             device=device,
             input_shape=in_shape,
             n_classes=int(out_shape[0]),
-            train_steps=1,
+            train_steps=SFT_EVAL_TRAIN_STEPS,
             max_val_batches=SFT_EVAL_VAL_BATCHES,
             measure_latency=True,
             kl_div=None,
@@ -322,6 +315,9 @@ def evaluate_code_and_reward_cifar(
             "components": {
                 "reward": -1.0,
                 "r_build": 0.0,
+                "r_forward_shape": 0.0,
+                "r_backward": 0.0,
+                "r_loss_drop": 0.0,
                 "r_forward": 0.0,
                 "r_trainstep": 0.0,
                 "r_metric": 0.0,
@@ -332,7 +328,13 @@ def evaluate_code_and_reward_cifar(
             "val_metric": None,
             "built_ok": False,
             "forward_ok": False,
+            "forward_shape_ok": False,
             "trained_step_ok": False,
+            "backward_ok": False,
+            "loss_start": None,
+            "loss_end": None,
+            "loss_drop": None,
+            "loss_drop_ok": False,
             "latency_ms": None,
             "params_m": None,
             "error": str(exc),
@@ -347,28 +349,27 @@ def _is_trainable_architecture(res: Dict[str, Any], graph_info) -> bool:
     return bool(
         parse_ok
         and res.get("built_ok")
-        and res.get("forward_ok")
-        and res.get("trained_step_ok")
+        and res.get("forward_shape_ok")
+        and res.get("backward_ok")
+        and res.get("loss_drop_ok")
     )
 
 
 def _reapply_trainability_clamp(res: Dict[str, Any], reward_value: float, graph_info) -> float:
     discovery_meta = res.get("open_discovery", {})
     parse_ok = bool(getattr(graph_info, "parse_ok", False) or discovery_meta.get("parse_ok", False))
-    macro_structure_ok = bool(discovery_meta.get("macro_structure_ok", False))
 
     if not parse_ok:
         reward_value = min(reward_value, -0.25)
     if not res.get("built_ok"):
         build_partial = float(res.get("r_build_partial", 0.0))
         reward_value = min(reward_value, -0.8 + build_partial)
-    elif not res.get("forward_ok"):
+    elif not res.get("forward_shape_ok"):
         reward_value = min(reward_value, -0.50)
-    elif not res.get("trained_step_ok"):
+    elif not res.get("backward_ok"):
+        reward_value = min(reward_value, -0.10)
+    elif not res.get("loss_drop_ok"):
         reward_value = min(reward_value, 0.0)
-    elif not macro_structure_ok:
-        reward_value -= 0.5
-        reward_value = min(reward_value, 0.5)
     return reward_value
 
 
@@ -379,142 +380,26 @@ def sft_reward_fn(
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
     prompt_goal_tags: List[str] = None,
+    archive_snapshot_family_counts: Dict[str, int] = None,
 ):
-    """
-    Keep TuneRLRaw's XML-format pressure, but only reward diversity for viable
-    CIFAR-10-ready architectures.
-    """
-    global global_total_gen_count
-
     res = TuneRLRaw.raw_reward_fn(
         completion,
         graph_info=graph_info,
-        batch_graph_hashes=None,
-        batch_family_hashes=None,
+        batch_graph_hashes=batch_graph_hashes,
+        batch_family_hashes=batch_family_hashes,
         prompt_goal_tags=prompt_goal_tags,
+        archive_snapshot_family_counts=archive_snapshot_family_counts,
     )
-
-    family_hash = res.get("family_hash", "")
-    if not family_hash and graph_info and hasattr(graph_info, "family_hash"):
-        family_hash = graph_info.family_hash
-
-    goal_key = TuneRL.primary_goal_key(prompt_goal_tags)
-    trainable_ok = _is_trainable_architecture(res, graph_info)
-    anti_collapse_delta = 0.0
-    
-    discovery_meta = res.get("open_discovery", {})
-    if discovery_meta.get("is_plain_parallel_triple", False) or discovery_meta.get("is_shallow_one_shot_fuse", False):
-        anti_collapse_delta -= 3.0
-    if discovery_meta.get("merges", 0) < 2 and "multi_stage" in (prompt_goal_tags or []):
-        anti_collapse_delta -= 1.5
-
-    goal_family_freq = 0
-    goal_unique_count = 0
-
-    if family_hash and trainable_ok:
-        goal_counter = get_goal_generation_counter(goal_key)
-        goal_counter[family_hash] += 1
-        global_total_gen_count += 1
-        goal_family_freq = goal_counter[family_hash]
-        goal_unique_count = len(goal_counter)
-
-        if goal_family_freq > COLLAPSE_FREQ_THRESHOLD:
-            anti_collapse_delta -= COLLAPSE_PENALTY_SCALE * math.log2(
-                goal_family_freq / COLLAPSE_FREQ_THRESHOLD
-            )
-
-        if goal_family_freq == 1:
-            anti_collapse_delta += NOVEL_EXPLORE_BONUS
-
-        if batch_family_hashes:
-            valid_batch_families = [h for h in batch_family_hashes if h and h != "incomplete"]
-            unique_families = len(set(valid_batch_families))
-            total_valid = len(valid_batch_families)
-            if total_valid >= 4 and unique_families <= 1:
-                anti_collapse_delta -= 1.5
-            elif total_valid >= 4 and unique_families <= 2:
-                anti_collapse_delta -= 0.5
-
-    total_reward = float(res.get("reward", -2.0)) + anti_collapse_delta
-    res["reward"] = _reapply_trainability_clamp(res, total_reward, graph_info)
+    res["reward"] = _reapply_trainability_clamp(res, float(res.get("reward", -2.0)), graph_info)
     res["anti_collapse"] = {
-        "goal_key": goal_key,
-        "goal_family_hash_freq": goal_family_freq,
-        "goal_unique_families_seen": goal_unique_count,
-        "total_viable_generations": global_total_gen_count,
-        "trainable_ok": trainable_ok,
-        "anti_collapse_delta": anti_collapse_delta,
+        "goal_key": TuneRL.primary_goal_key(prompt_goal_tags),
+        "trainable_ok": _is_trainable_architecture(res, graph_info),
+        "anti_collapse_delta": 0.0,
     }
     return res
 
 
-SFT_DISCOVERY_PROMPT_TEMPLATE = """
-You are writing one novel image-classification architecture.
-
-Return EXACTLY three XML blocks and nothing else.
-- The first non-whitespace token must be `<block>`
-- The last non-whitespace token must be `</forward>`
-- Do not write markdown, explanations, or prose
-
-Discovery Track
-- Track Name: {goal_name}
-- Discovery Target Tags: {target_tags}
-- Design Brief: {design_brief}
-
-Available runtime helpers already exist:
-- `TorchVision(model=..., in_channels=...)`
-- `FractalBlock(in_channels, out_channels, num_columns, loc_drop_prob, dropout_prob)`
-- `adaptive_pool_flatten(x)`
-- `self.infer_dimensions_dynamically(out_shape[0])`
-
-Backbone rules are mandatory.
-- Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b`
-- Initialize both with `TorchVision(model=..., in_channels=...)`
-- Use two DIFFERENT backbone model names
-- Both backbones must be used in `forward`
-- You may add stem / project / bridge / fractal / fuse modules around them, but never replace them
-
-Choose the two backbone models from:
-[{available_backbones}]
-
-Hard rules
-1. `self.pattern` must be a NEW motif name, not one of: {legacy_patterns}
-2. In `__init__`, set `self.device = device`, `self.use_amp = torch.cuda.is_available()`, and `self._input_spec = tuple(in_shape[1:])`
-3. Call `self.infer_dimensions_dynamically(out_shape[0])`
-4. `forward` must return classifier logits
-5. Use `adaptive_pool_flatten(...)` before concatenation or classifier input
-6. Do not use `if self.pattern` in `forward`
-7. Avoid the plain one-shot Parallel_Triple topology
-8. Use the target tags with actual graph structure, not only names
-9. Do not define any new classes or helper methods besides the 3 required defs
-10. Keep `forward` as straight-line assignments plus a final return
-11. If unsure, still output the three XML blocks with best-effort valid Python
-12. `self.backbone_a` and `self.backbone_b` must both appear in `__init__` and `forward`
-13. Prefer modules named like `stem`, `project_a`, `project_b`, `bridge`, `fractal`, `fuse`
-14. Prefer `TorchVision`, plain CNN blocks, or `FractalBlock`; avoid invented helper class names
-15. Do not emit `import ...` lines or `class ...` definitions in the completion
-16. Never define `DropConv3x3Block` or any wrapper class; write only the required defs
-17. Do not omit either backbone, and do not add a third backbone
-18. CRITICAL RULE: Do NOT simply pool the two backbones once and concatenate them only at the classifier input. You MUST perform multi-step feature fusion (e.g., `x_b = self.project_b(self.backbone_b(x)); fused = self.fuse(torch.cat([x_a, x_b], dim=1))`).
-19. CRITICAL RULE: NEVER apply `self.classifier` manually inside `forward` before returning. You must NOT do things like `x = self.classifier(x)`. Only return `self.classifier(...)` on the final line if not probing!
-
-Helpful module names:
-{module_hints}
-
-Implement exactly these signatures:
-<block>
-{block_signature}
-    ...
-</block>
-<init>
-{init_signature}
-    ...
-</init>
-<forward>
-{forward_signature}
-    ...
-</forward>
-"""
+SFT_DISCOVERY_PROMPT_TEMPLATE = SFTUtil.open_discovery_rl_prompt_template
 
 
 def load_rl_dataset_sft(tokenizer) -> TuneRL.Dataset:
@@ -528,6 +413,7 @@ def load_rl_dataset_sft(tokenizer) -> TuneRL.Dataset:
         data = TuneRL.api.data(only_best_accuracy=True, task="img-classification", dataset="cifar-10")
 
     print(f"Loaded {len(data)} examples for SFT RL")
+    TuneRL.bootstrap_trainset_reference_library(data)
 
     prompts = []
     legacy_patterns = ", ".join(SFTUtil.legacy_patterns)
@@ -691,12 +577,8 @@ def patch_sft_runtime() -> tuple[str, str, str]:
 
 
 def bootstrap_sft_runtime() -> None:
-    """Initialize logging and reset diversity counters."""
+    """Initialize logging and reset extraction cache."""
     TuneRLRaw.EXTRACTION_META_CACHE.clear()
-    goal_family_gen_counts.clear()
-
-    global global_total_gen_count
-    global_total_gen_count = 0
 
     log_dir = TuneRL.run_log_dir()
     os.makedirs(log_dir, exist_ok=True)
@@ -722,11 +604,8 @@ def main() -> None:
     print(
         f"[SFT RL] CIFAR-10 eval: resize={SFT_EVAL_IMAGE_SIZE}, batch<={SFT_EVAL_BATCH_SIZE}, "
         f"train_subset={SFT_EVAL_TRAIN_SUBSET}, val_subset={SFT_EVAL_VAL_SUBSET}, "
-        f"val_batches={SFT_EVAL_VAL_BATCHES}, baseline={SFT_VAL_METRIC_BASELINE:.2f}"
-    )
-    print(
-        f"[SFT RL] Anti-collapse: threshold={COLLAPSE_FREQ_THRESHOLD}, "
-        f"scale={COLLAPSE_PENALTY_SCALE}, explore_bonus={NOVEL_EXPLORE_BONUS}"
+        f"train_steps={SFT_EVAL_TRAIN_STEPS}, val_batches={SFT_EVAL_VAL_BATCHES}, "
+        f"baseline={SFT_VAL_METRIC_BASELINE:.2f}"
     )
     print(f"[SFT RL] Save RL adapter: {SFT_SAVE_RL_MODEL}")
 

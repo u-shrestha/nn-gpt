@@ -44,77 +44,7 @@ BLOCK_SIGNATURE = "def drop_conv3x3_block(in_channels, out_channels, stride=1, p
 INIT_SIGNATURE = "def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:"
 FORWARD_SIGNATURE = "def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:"
 
-RAW_DISCOVERY_PROMPT_TEMPLATE = """
-You are writing one novel image-classification architecture.
-
-Return EXACTLY three XML blocks and nothing else.
-- The first non-whitespace token must be `<block>`
-- The last non-whitespace token must be `</forward>`
-- Do not write markdown, explanations, or prose
-
-Discovery Track
-- Track Name: {goal_name}
-- Discovery Target Tags: {target_tags}
-- Design Brief: {design_brief}
-
-Available runtime helpers already exist:
-- `TorchVision(model=..., in_channels=...)`
-- `FractalBlock(in_channels, out_channels, num_columns, loc_drop_prob, dropout_prob)`
-- `adaptive_pool_flatten(x)`
-- `self.infer_dimensions_dynamically(out_shape[0])`
-
-Backbone rules are mandatory.
-- Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b`
-- Initialize both with `TorchVision(model=..., in_channels=...)`
-- Both backbones must be used in `forward`
-- You may add stem / project / bridge / fractal / fuse modules around them, but never replace them
-
-Choose the two backbone models from:
-[{available_backbones}]
-
-Hard rules
-1. `self.pattern` must be a NEW motif name, not one of: {legacy_patterns}
-2. In `__init__`, set `self.device = device`, `self.use_amp = torch.cuda.is_available()`, and `self._input_spec = tuple(in_shape[1:])`
-3. Call `self.infer_dimensions_dynamically(out_shape[0])`
-4. `forward` must return classifier logits
-5. Use `adaptive_pool_flatten(...)` before concatenation or classifier input
-6. Do not use `if self.pattern` in `forward`
-7. Avoid the plain one-shot Parallel_Triple topology
-8. Use the target tags with actual graph structure, not only names
-9. Do not define any new classes or helper methods besides the 3 required defs
-10. Keep `forward` as straight-line assignments plus a final return
-11. If unsure, still output the three XML blocks with best-effort valid Python
-12. `self.backbone_a` and `self.backbone_b` must both appear in `__init__` and `forward`
-13. Prefer modules named like `stem`, `project_a`, `project_b`, `bridge`, `fractal`, `fuse`
-14. Prefer `TorchVision`, plain CNN blocks, or `FractalBlock`; avoid invented helper class names
-15. Do not emit `import ...` lines or `class ...` definitions in the completion
-16. Never define `DropConv3x3Block` or any wrapper class; write only the required defs
-17. Do not omit either backbone, and do not add a third backbone
-
-Helpful module names:
-{module_hints}
-
-The assistant response is already prefixed with:
-`<block>`
-`{block_signature}`
-Continue with the function body only, then close `</block>`, then emit `<init>...</init>` and `<forward>...</forward>`.
-
-Implement exactly these signatures:
-<block>
-{block_signature}
-    ...
-</block>
-<init>
-{init_signature}
-    ...
-</init>
-<forward>
-{forward_signature}
-    ...
-</forward>
-"""
-
-ORIGINAL_REWARD_FN = TuneRL.reward_fn
+RAW_DISCOVERY_PROMPT_TEMPLATE = SFTUtil.open_discovery_rl_prompt_template
 
 BLOCKED_ATTRS = {
     "device",
@@ -147,10 +77,7 @@ PROJECT_NAME_POOL = [
     "adapter",
 ]
 
-RAW_ASSISTANT_PREFIX = (
-    "<block>\n"
-    f"{BLOCK_SIGNATURE}\n"
-)
+RAW_ASSISTANT_PREFIX = ""
 
 EXTRACTION_META_CACHE: Dict[str, Dict[str, object]] = {}
 
@@ -936,16 +863,17 @@ def raw_reward_fn(
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
     prompt_goal_tags: List[str] = None,
+    archive_snapshot_family_counts: Dict[str, int] = None,
 ):
-    res = ORIGINAL_REWARD_FN(
+    res = TuneRL.base_discovery_reward_fn(
         completion,
         graph_info=graph_info,
         batch_graph_hashes=batch_graph_hashes,
         batch_family_hashes=batch_family_hashes,
         prompt_goal_tags=prompt_goal_tags,
+        archive_snapshot_family_counts=archive_snapshot_family_counts,
     )
     meta = extract_completion_meta(completion)
-    built_ok = res.get("built_ok", False)
     raw_delta = 0.0
 
     raw_delta -= 0.35 * min(int(meta.get("class_count", 0)), 2)
@@ -972,44 +900,11 @@ def raw_reward_fn(
         if not meta.get("dual_backbone_forward_ok"):
             raw_delta -= 1.75
 
-    # --- Batch & archive diversity penalties ---
-    # When nothing builds yet, heavy diversity penalties are counterproductive:
-    # the model can only collapse to formats it knows, so penalizing that
-    # blocks learning. Scale down penalties by 0.3x when built_ok is False.
-    diversity_scale = 1.0 if built_ok else 0.3
-
-    if graph_info and graph_info.parse_ok:
-        same_graph_count = batch_graph_hashes.count(graph_info.graph_hash) if batch_graph_hashes else 0
-        same_family_count = batch_family_hashes.count(graph_info.family_hash) if batch_family_hashes else 0
-        archive_family_freq = TuneRL.family_hash_archive_counts.get(graph_info.family_hash, 0)
-
-        if same_graph_count > 1:
-            raw_delta -= 0.75 * (same_graph_count - 1) * diversity_scale
-        if same_family_count > 1:
-            raw_delta -= 0.95 * (same_family_count - 1) * diversity_scale
-        if same_family_count >= 4:
-            raw_delta -= 1.20 * diversity_scale
-        if same_family_count >= 8:
-            raw_delta -= 2.00 * diversity_scale
-        if archive_family_freq >= 1:
-            raw_delta -= 0.30 * archive_family_freq * diversity_scale
-
-        if graph_info.fractal_calls >= 2:
-            raw_delta += 0.35
-        elif graph_info.fractal_calls == 1 and "fractal_deep" in (prompt_goal_tags or []):
-            raw_delta += 0.10
-        if graph_info.max_fan_in >= 3:
-            raw_delta += 0.22
-        if graph_info.merges >= 2 and graph_info.project_calls >= 1:
-            raw_delta += 0.18
-        if "fractal_deep" in (prompt_goal_tags or []) and graph_info.fractal_calls == 0:
-            raw_delta -= 0.55
-        if "wide_fuse" in (prompt_goal_tags or []) and graph_info.max_fan_in < 3:
-            raw_delta -= 0.40
-        if "branch_reuse" in (prompt_goal_tags or []) and graph_info.merges < 2:
-            raw_delta -= 0.35
-
-    res["reward"] = float(res.get("reward", -2.0)) + raw_delta
+    res["reward"] = TuneRL._apply_trainability_clamp(
+        res,
+        float(res.get("reward", -2.0)) + raw_delta,
+        graph_info,
+    )
 
     # --- Tiered format violation clamps ---
     # Core XML structure violations (strict)
@@ -1050,6 +945,7 @@ def load_rl_dataset_raw(tokenizer):
         data = TuneRL.api.data(only_best_accuracy=True, task="img-classification", dataset="cifar-10")
 
     print(f"Loaded {len(data)} examples for RL")
+    TuneRL.bootstrap_trainset_reference_library(data)
 
     prompts = []
     legacy_patterns = ", ".join(SFTUtil.legacy_patterns)
@@ -1077,13 +973,10 @@ def load_rl_dataset_raw(tokenizer):
                 forward_signature=FORWARD_SIGNATURE,
             )
 
-            messages = [
-                {"role": "user", "content": user_prompt},
-                {"role": "assistant", "content": RAW_ASSISTANT_PREFIX},
-            ]
+            messages = [{"role": "user", "content": user_prompt}]
             prompt_str = tokenizer.apply_chat_template(
                 messages,
-                add_generation_prompt=False,
+                add_generation_prompt=True,
                 tokenize=False,
             )
 
@@ -1106,6 +999,8 @@ def patch_raw_runtime() -> None:
     TuneRL.extract_completion_blocks = extract_completion_blocks_tolerant
     TuneRL.reward_fn = raw_reward_fn
     TuneRL.load_rl_dataset = load_rl_dataset_raw
+    global RAW_ASSISTANT_PREFIX
+    RAW_ASSISTANT_PREFIX = ""
 
 
 def bootstrap_raw_runtime() -> None:

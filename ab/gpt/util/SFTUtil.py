@@ -339,6 +339,86 @@ Output ONLY the implementation within the XML tags. Each tag MUST contain the co
 </forward>
 """
 
+open_discovery_rl_prompt_template = """
+### Role & Context
+You are a Senior AI Architect exploring **new image-classification architectures**. Your job is to discover a motif that is structurally distinct from the common Parallel_Triple template while still compiling into the required XML code format.
+
+### Discovery Goal
+Produce one **novel, trainable architecture** that can reach an accuracy of {accuracy}. Novelty matters more than copying a known pattern name.
+
+### Discovery Track
+- Track Name: {goal_name}
+- Discovery Target Tags: {target_tags}
+- Design Brief: {design_brief}
+
+[CODE SKELETON START]
+{skeleton_code}
+[CODE SKELETON END]
+
+### Hard Requirements
+1. Keep the output format EXACTLY the same:
+   - Output ONLY `<block>`, `<init>`, `<forward>`
+   - Each tag must contain the full function/method definition
+   - No markdown, no explanation, no extra text
+   - The first non-whitespace token must be `<block>`
+   - The last non-whitespace token must be `</forward>`
+
+2. `self.pattern` must be a **new motif name**
+   - Use a descriptive custom name
+   - DO NOT use legacy names: {legacy_patterns}
+   - DO NOT leave `self.pattern` missing
+
+3. Dual-backbone rules are mandatory
+   - Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b`
+   - Initialize both with `TorchVision(model=..., in_channels=...)`
+   - Use two DIFFERENT backbone model names from [{available_backbones}]
+   - Both backbones must appear in `__init__` and `forward`
+   - Do not omit either backbone, and do not add a third backbone
+
+4. Preserve the required ABI
+   - Implement `drop_conv3x3_block`
+   - Implement `Net.__init__`
+   - Implement `Net.forward`
+   - In `__init__`, set `self.device = device`, `self.use_amp = torch.cuda.is_available()`, and `self._input_spec = tuple(in_shape[1:])`
+   - Call `self.infer_dimensions_dynamically(out_shape[0])`
+
+5. The architecture must be graph-level novel
+   - Avoid the plain one-shot Parallel_Triple topology
+   - Do not simply pool the two backbones once and concatenate them only at the classifier input
+   - Use the Discovery Target Tags above with actual code structure, not just naming
+   - Prefer visible modules such as: {module_hints}
+   - Do not define new classes or helper methods beyond the 3 required definitions
+
+6. Forward-path restrictions
+   - Keep `forward` as straight-line assignments plus a final return
+   - Do not use `if self.pattern` in `forward`
+   - Do not emit `import ...` lines or `class ...` definitions
+   - Never define `DropConv3x3Block` or any wrapper class
+   - NEVER apply `self.classifier` manually before the final return line
+
+7. Shape safety and trainability
+   - `forward` must return classifier logits
+   - Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs
+   - Prefer `TorchVision`, plain CNN blocks, or `FractalBlock`
+   - Avoid placeholder code, dead modules, duplicate assignments, and broken dimensions
+
+### Output Requirement (STRICT)
+Output ONLY the implementation within the XML tags. Each tag MUST contain the complete function/method definition.
+
+<block>
+{block_signature}
+    ...
+</block>
+<init>
+{init_signature}
+    ...
+</init>
+<forward>
+{forward_signature}
+    ...
+</forward>
+"""
+
 def parse_nn_code(code_str):
     try:
         tree = ast.parse(code_str)

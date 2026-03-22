@@ -11,8 +11,9 @@ from torch.utils.data import DataLoader, TensorDataset
 def compute_cv_reward_simple(
     *,
     built_ok: bool,
-    forward_ok: bool,
-    trained_step_ok: bool,
+    forward_shape_ok: Optional[bool] = None,
+    backward_ok: Optional[bool] = None,
+    loss_drop_ok: bool = False,
     val_metric: Optional[float],
     val_metric_baseline: Optional[float] = None,
     latency_ms: Optional[float] = None,
@@ -20,17 +21,20 @@ def compute_cv_reward_simple(
     flops_g: Optional[float] = None,
     critic_score: Optional[float] = None,
     kl_div: Optional[float] = None,
-    weights: Optional[Dict[str, float]] = None
+    weights: Optional[Dict[str, float]] = None,
+    forward_ok: Optional[bool] = None,
+    trained_step_ok: Optional[bool] = None,
 ) -> Dict[str, float]:
     """
     Simple scalar reward for CV model generation.
     Returns a dict with 'reward' and component terms.
     """
     w = {
-        "build": 0.2,         # bonus if model builds
-        "forward": 0.2,       # bonus if forward works
-        "trainstep": 0.2,     # bonus if 1 mini-batch trains
-        "metric_gain": 1.0,   # (val - baseline)
+        "build": 0.2,          # bonus if model builds
+        "forward_shape": 0.2,  # bonus if logits shape is correct
+        "backward": 0.3,       # bonus if backward + optimizer step succeed
+        "loss_drop": 0.6,      # bonus if short-run training shows learning signal
+        "metric_gain": 0.1,    # weak validation tie-breaker
         "eff_latency": 0.0,   # optional: -latency_ms * coeff
         "eff_params":  0.0,   # optional: -params_m  * coeff
         "eff_flops":   0.0,   # optional: -flops_g   * coeff
@@ -42,9 +46,13 @@ def compute_cv_reward_simple(
     if weights:
         w.update(weights)
 
-    r_build    = w["build"]   if built_ok else 0.0
-    r_forward  = w["forward"] if forward_ok else 0.0
-    r_train    = w["trainstep"] if trained_step_ok else 0.0
+    shape_ok = bool(forward_shape_ok if forward_shape_ok is not None else forward_ok)
+    train_ok = bool(backward_ok if backward_ok is not None else trained_step_ok)
+
+    r_build = w["build"] if built_ok else 0.0
+    r_forward_shape = w["forward_shape"] if shape_ok else 0.0
+    r_backward = w["backward"] if train_ok else 0.0
+    r_loss_drop = w["loss_drop"] if loss_drop_ok else 0.0
 
     r_metric = 0.0
     if (val_metric is not None) and (val_metric_baseline is not None):
@@ -67,14 +75,18 @@ def compute_cv_reward_simple(
     if kl_div is not None and kl_div > 0.0:
         r_kl = - w["kl"] * float(kl_div)
 
-    reward = r_build + r_forward + r_train + r_metric + r_eff + r_critic + r_kl
+    reward = r_build + r_forward_shape + r_backward + r_loss_drop + r_metric + r_eff + r_critic + r_kl
     reward = max(w["clip_lo"], min(w["clip_hi"], reward))
 
     return {
         "reward": reward,
         "r_build": r_build,
-        "r_forward": r_forward,
-        "r_trainstep": r_train,
+        "r_forward_shape": r_forward_shape,
+        "r_backward": r_backward,
+        "r_loss_drop": r_loss_drop,
+        # Legacy aliases kept so older logging / callers do not break.
+        "r_forward": r_forward_shape,
+        "r_trainstep": r_backward,
         "r_metric": r_metric,
         "r_eff": r_eff,
         "r_critic": r_critic,
@@ -89,10 +101,11 @@ def _count_params_m(model: nn.Module) -> float:
 def _quick_forward(
     model: nn.Module,
     input_shape: Tuple[int, int, int, int],
-    device: str = "cpu"
-) -> Tuple[bool, Optional[float]]:
+    device: str = "cpu",
+    n_classes: Optional[int] = None,
+) -> Dict[str, Any]:
     """
-    Try a single forward pass. Returns (ok, latency_ms).
+    Try a single forward pass. Returns shape + latency diagnostics.
     """
     model.eval()
     x = torch.randn(*input_shape, device=device)
@@ -101,10 +114,27 @@ def _quick_forward(
         y = model(x)
         torch.cuda.synchronize() if device.startswith("cuda") and torch.cuda.is_available() else None
         dt = (time.time() - t0) * 1000.0
-        _ = tuple(y.shape) if hasattr(y, "shape") else None  
-        return True, dt
-    except Exception:
-        return False, None
+        output_shape = tuple(y.shape) if hasattr(y, "shape") else None
+        shape_ok = bool(
+            isinstance(y, torch.Tensor)
+            and y.dim() == 2
+            and y.shape[0] == input_shape[0]
+            and (n_classes is None or y.shape[1] == n_classes)
+        )
+        return {
+            "forward_ok": True,
+            "forward_shape_ok": shape_ok,
+            "latency_ms": dt,
+            "output_shape": output_shape,
+        }
+    except Exception as exc:
+        return {
+            "forward_ok": False,
+            "forward_shape_ok": False,
+            "latency_ms": None,
+            "output_shape": None,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
 
 
 def _toy_loader(
@@ -127,33 +157,102 @@ def _toy_loader(
 def _train_steps(
     model: nn.Module,
     train_loader: DataLoader,
-    steps: int = 1,
-    device: str = "cpu"
-) -> bool:
+    steps: int = 8,
+    device: str = "cpu",
+    n_classes: int = 10,
+) -> Dict[str, Any]:
     """
-    Mini-batch training steps. Returns ok flag.
+    Mini-batch training steps. Returns training diagnostics.
     """
     model.train()
+    loss_start = None
+    loss_end = None
+    steps_completed = 0
     try:
         opt = torch.optim.SGD(model.parameters(), lr=1e-3, momentum=0.9)
         criterion = nn.CrossEntropyLoss()
-        k = 0
         for x, y in train_loader:
             x = x.to(device)
             y = y.to(device)
             opt.zero_grad(set_to_none=True)
             logits = model(x)
+            if not isinstance(logits, torch.Tensor) or logits.dim() != 2:
+                return {
+                    "backward_ok": False,
+                    "trained_step_ok": False,
+                    "loss_start": None,
+                    "loss_end": None,
+                    "loss_drop": None,
+                    "loss_drop_ok": False,
+                    "steps_completed": steps_completed,
+                    "error": f"RuntimeError: logits must be (N, C), got {tuple(logits.shape) if hasattr(logits, 'shape') else type(logits)}",
+                }
+            if logits.shape[0] != y.shape[0] or logits.shape[1] != n_classes:
+                return {
+                    "backward_ok": False,
+                    "trained_step_ok": False,
+                    "loss_start": None,
+                    "loss_end": None,
+                    "loss_drop": None,
+                    "loss_drop_ok": False,
+                    "steps_completed": steps_completed,
+                    "error": f"RuntimeError: logits shape {tuple(logits.shape)} incompatible with labels {tuple(y.shape)} / classes {n_classes}",
+                }
             loss = criterion(logits, y)
             if torch.isnan(loss) or torch.isinf(loss):
-                return False
+                return {
+                    "backward_ok": False,
+                    "trained_step_ok": False,
+                    "loss_start": None,
+                    "loss_end": None,
+                    "loss_drop": None,
+                    "loss_drop_ok": False,
+                    "steps_completed": steps_completed,
+                    "error": "RuntimeError: loss is NaN or Inf",
+                }
+            loss_value = float(loss.detach().item())
+            if loss_start is None:
+                loss_start = loss_value
             loss.backward()
             opt.step()
-            k += 1
-            if k >= steps:
+            loss_end = loss_value
+            steps_completed += 1
+            if steps_completed >= steps:
                 break
-        return True
-    except Exception:
-        return False
+        if steps_completed == 0 or loss_start is None or loss_end is None:
+            return {
+                "backward_ok": False,
+                "trained_step_ok": False,
+                "loss_start": loss_start,
+                "loss_end": loss_end,
+                "loss_drop": None,
+                "loss_drop_ok": False,
+                "steps_completed": steps_completed,
+                "error": "RuntimeError: no training steps completed",
+            }
+        loss_drop = float(loss_start - loss_end)
+        rel_drop_ok = loss_start > 0.0 and (loss_end <= loss_start * 0.98)
+        loss_drop_ok = bool(loss_end < (loss_start - 1e-3) or rel_drop_ok)
+        return {
+            "backward_ok": True,
+            "trained_step_ok": True,
+            "loss_start": loss_start,
+            "loss_end": loss_end,
+            "loss_drop": loss_drop,
+            "loss_drop_ok": loss_drop_ok,
+            "steps_completed": steps_completed,
+        }
+    except Exception as exc:
+        return {
+            "backward_ok": False,
+            "trained_step_ok": False,
+            "loss_start": loss_start,
+            "loss_end": loss_end,
+            "loss_drop": None if loss_start is None or loss_end is None else float(loss_start - loss_end),
+            "loss_drop_ok": False,
+            "steps_completed": steps_completed,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
 
 
 @torch.no_grad()
@@ -194,8 +293,8 @@ class EvalConfig:
     device: str = "cpu"
     input_shape: Tuple[int, int, int, int] = (2, 3, 32, 32)  # (B,C,H,W)
     n_classes: int = 10
-    train_steps: int = 1
-    max_val_batches: int = 10
+    train_steps: int = 8
+    max_val_batches: int = 2
     # Optional efficiency logging
     measure_latency: bool = True
     # Optional PPO/critic
@@ -203,6 +302,41 @@ class EvalConfig:
     critic_fn: Optional[Callable[[nn.Module, Dict[str, Any]], float]] = None
     # Optional reward weights
     weights: Optional[Dict[str, float]] = None
+
+
+def _empty_eval_result(*, reward: float = 0.0, error: Optional[str] = None) -> Dict[str, Any]:
+    components = {
+        "reward": reward,
+        "r_build": 0.0,
+        "r_forward_shape": 0.0,
+        "r_backward": 0.0,
+        "r_loss_drop": 0.0,
+        "r_forward": 0.0,
+        "r_trainstep": 0.0,
+        "r_metric": 0.0,
+        "r_eff": 0.0,
+        "r_critic": 0.0,
+        "r_kl": 0.0,
+    }
+    result = {
+        "reward": reward,
+        "components": components,
+        "val_metric": None,
+        "built_ok": False,
+        "forward_ok": False,
+        "forward_shape_ok": False,
+        "trained_step_ok": False,
+        "backward_ok": False,
+        "loss_start": None,
+        "loss_end": None,
+        "loss_drop": None,
+        "loss_drop_ok": False,
+        "latency_ms": None,
+        "params_m": None,
+    }
+    if error:
+        result["error"] = error
+    return result
 
 
 def evaluate_and_reward(
@@ -236,7 +370,13 @@ def evaluate_and_reward(
         'val_metric': float or None,
         'built_ok': bool,
         'forward_ok': bool,
+        'forward_shape_ok': bool,
         'trained_step_ok': bool,
+        'backward_ok': bool,
+        'loss_start': float | None,
+        'loss_end': float | None,
+        'loss_drop': float | None,
+        'loss_drop_ok': bool,
         'latency_ms': float or None,
         'params_m': float,
     }
@@ -244,11 +384,17 @@ def evaluate_and_reward(
     device = cfg.device
     built_ok = False
     forward_ok = False
+    forward_shape_ok = False
     trained_step_ok = False
+    backward_ok = False
     latency_ms = None
     params_m = None
     val_metric = None
     critic_score = None
+    loss_start = None
+    loss_end = None
+    loss_drop = None
+    loss_drop_ok = False
 
     # 1) Build or use provided model
     mdl = model
@@ -274,8 +420,9 @@ def evaluate_and_reward(
         if not built_ok or mdl is None:
             components = compute_cv_reward_simple(
                 built_ok=False,
-                forward_ok=False,
-                trained_step_ok=False,
+                forward_shape_ok=False,
+                backward_ok=False,
+                loss_drop_ok=False,
                 val_metric=None,
                 val_metric_baseline=val_metric_baseline,
                 latency_ms=None,
@@ -291,16 +438,28 @@ def evaluate_and_reward(
                 "val_metric": None,
                 "built_ok": False,
                 "forward_ok": False,
+                "forward_shape_ok": False,
                 "trained_step_ok": False,
+                "backward_ok": False,
+                "loss_start": None,
+                "loss_end": None,
+                "loss_drop": None,
+                "loss_drop_ok": False,
                 "latency_ms": None,
                 "params_m": None,
             }
 
         # 2) Forward sanity (and optional latency)
+        forward_result = _quick_forward(
+            mdl,
+            cfg.input_shape,
+            device=device,
+            n_classes=cfg.n_classes,
+        )
+        forward_ok = bool(forward_result["forward_ok"])
+        forward_shape_ok = bool(forward_result["forward_shape_ok"])
         if cfg.measure_latency:
-            forward_ok, latency_ms = _quick_forward(mdl, cfg.input_shape, device=device)
-        else:
-            forward_ok, _ = _quick_forward(mdl, cfg.input_shape, device=device)
+            latency_ms = forward_result["latency_ms"]
 
         # 3) Mini training steps
         if train_loader is None:
@@ -314,7 +473,19 @@ def evaluate_and_reward(
             used_train_loader = local_train_loader
         else:
             used_train_loader = train_loader
-        trained_step_ok = _train_steps(mdl, used_train_loader, steps=cfg.train_steps, device=device)
+        train_result = _train_steps(
+            mdl,
+            used_train_loader,
+            steps=cfg.train_steps,
+            device=device,
+            n_classes=cfg.n_classes,
+        )
+        backward_ok = bool(train_result["backward_ok"])
+        trained_step_ok = bool(train_result["trained_step_ok"])
+        loss_start = train_result["loss_start"]
+        loss_end = train_result["loss_end"]
+        loss_drop = train_result["loss_drop"]
+        loss_drop_ok = bool(train_result["loss_drop_ok"])
 
         # 4) Quick validation (accuracy)
         if val_loader is None:
@@ -336,7 +507,13 @@ def evaluate_and_reward(
                 critic_score = float(cfg.critic_fn(mdl, {
                     "built_ok": built_ok,
                     "forward_ok": forward_ok,
+                    "forward_shape_ok": forward_shape_ok,
                     "trained_step_ok": trained_step_ok,
+                    "backward_ok": backward_ok,
+                    "loss_start": loss_start,
+                    "loss_end": loss_end,
+                    "loss_drop": loss_drop,
+                    "loss_drop_ok": loss_drop_ok,
                     "val_metric": val_metric,
                     "params_m": params_m,
                     "latency_ms": latency_ms
@@ -348,8 +525,9 @@ def evaluate_and_reward(
         # 6) Compute reward
         components = compute_cv_reward_simple(
             built_ok=built_ok,
-            forward_ok=forward_ok,
-            trained_step_ok=trained_step_ok,
+            forward_shape_ok=forward_shape_ok,
+            backward_ok=backward_ok,
+            loss_drop_ok=loss_drop_ok,
             val_metric=val_metric,
             val_metric_baseline=val_metric_baseline,
             latency_ms=latency_ms,
@@ -366,7 +544,13 @@ def evaluate_and_reward(
             "val_metric": val_metric,
             "built_ok": built_ok,
             "forward_ok": forward_ok,
+            "forward_shape_ok": forward_shape_ok,
             "trained_step_ok": trained_step_ok,
+            "backward_ok": backward_ok,
+            "loss_start": loss_start,
+            "loss_end": loss_end,
+            "loss_drop": loss_drop,
+            "loss_drop_ok": loss_drop_ok,
             "latency_ms": latency_ms,
             "params_m": params_m,
         }
@@ -455,14 +639,9 @@ def evaluate_code_and_reward(
         if p.is_alive():
             p.terminate()
             p.join()
-        return {
-            "reward": -1.0, # Penalty for crashing evaluation
-            "components": {"reward": -1.0, "r_build": 0.0, "r_forward": 0.0,
-                           "r_trainstep": 0.0, "r_metric": 0.0, "r_eff": 0.0,
-                           "r_critic": 0.0, "r_kl": 0.0},
-            "val_metric": None, "built_ok": False, "forward_ok": False, "trained_step_ok": False,
-            "latency_ms": None, "params_m": None, "error": str(e)
-        }
+        result = _empty_eval_result(reward=-1.0, error=str(e))
+        result["components"]["reward"] = -1.0
+        return result
 
 def _eval_subprocess_worker(queue, code, in_shape, out_shape, prm, device, val_metric_baseline, cfg):
     """Worker function running in a fresh process."""
@@ -500,8 +679,8 @@ def _evaluate_code_and_reward_direct(
             device=device,
             input_shape=in_shape,
             n_classes=int(out_shape[0]),
-            train_steps=1,
-            max_val_batches=10,
+            train_steps=8,
+            max_val_batches=2,
             measure_latency=True,
             kl_div=None,
             critic_fn=None,
@@ -514,16 +693,7 @@ def _evaluate_code_and_reward_direct(
         # Pass through error type so reward_fn can assign layered partial rewards
         error_type = type(e).__name__
         error_msg = f"{error_type}: {e}"
-        return {
-            "reward": 0.0,
-            "components": {"reward": 0.0, "r_build": 0.0, "r_forward": 0.0,
-                           "r_trainstep": 0.0, "r_metric": 0.0, "r_eff": 0.0,
-                           "r_critic": 0.0, "r_kl": 0.0},
-            "val_metric": None,
-            "built_ok": False, "forward_ok": False, "trained_step_ok": False,
-            "latency_ms": None, "params_m": None,
-            "error": error_msg,
-        }
+        return _empty_eval_result(error=error_msg)
     try: 
         res = evaluate_and_reward(
             build_fn=builder,
@@ -538,16 +708,7 @@ def _evaluate_code_and_reward_direct(
     except Exception as e:
         error_type = type(e).__name__
         error_msg = f"{error_type}: {e}"
-        return {
-            "reward": 0.0,
-            "components": {"reward": 0.0, "r_build": 0.0, "r_forward": 0.0,
-                           "r_trainstep": 0.0, "r_metric": 0.0, "r_eff": 0.0,
-                           "r_critic": 0.0, "r_kl": 0.0},
-            "val_metric": None,
-            "built_ok": False, "forward_ok": False, "trained_step_ok": False,
-            "latency_ms": None, "params_m": None,
-            "error": error_msg,
-        }
+        return _empty_eval_result(error=error_msg)
 
 if __name__ == "__main__":
     demo_code = r'''
