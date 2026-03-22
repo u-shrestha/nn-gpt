@@ -5,7 +5,7 @@ import json
 from os import makedirs
 from os.path import isfile
 import glob
-
+from pathlib import Path
 import numpy as np
 import torch
 import ab.nn.api as lemur
@@ -23,7 +23,7 @@ from ab.gpt.util.LoRA import LoRA
 from ab.gpt.util.Util import exists, extract_delta, extract_code, extract_hyperparam, extract_transform
 from ab.gpt.util.prompt.NNGenPrompt import NNGenPrompt
 from ab.gpt.util.DeltaUtil import apply_delta, validate_delta, repair_code
-
+from ab.gpt.util.Const import nngpt_upload
 from ab.gpt.brute.trans.TransformEval import run_eval
 from ab.gpt.util.prompt.TransformGenPrompt import TransformGenPrompt, load_data_from_folders
 
@@ -74,8 +74,7 @@ def flatten_chunks(data):
 
 def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf, training_args, peft_config,
          max_prompts=None, save_llm_output=True, max_new_tokens=16 * 1024, nn_name_prefix=None, temperature=1.0, top_k=50, top_p=0.9, test_metric=None,
-         onnx_run=False, trans_mode=False, prompt_batch=1):
-    
+         onnx_run=False, trans_mode=False, prompt_batch=1, enable_merge=False):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
     with open(conf_llm_dir / llm_conf) as f:
@@ -84,6 +83,15 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
 
     token_from_file = config['token_from_file']
     base_model_name = config['base_model_name']
+    merged_candidate = nngpt_upload / Path(base_model_name).name
+
+    if merged_candidate.exists():
+        print(f"[EVOLUTION] Using merged model: {merged_candidate}")
+        base_model_name = str(merged_candidate)
+    else:
+        print(f"[EVOLUTION] Using base model from config: {base_model_name}")
+
+
     llm_tune_epochs = int(config['num_epochs'])
     use_deepspeed = config['use_deepspeed']
     only_best_accuracy = config['only_best_accuracy']
@@ -110,6 +118,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
     from ab.gpt.util.LLM import LLM
 
     # Load model and tokenizer
+    print(f"[EVOLUTION] Final model path used: {base_model_name}")
     model_loader = LLM(
         base_model_name,
         quantization_config_4bit,
@@ -155,7 +164,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
             if trans_mode:
                 trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix)
             else:
-                nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix, unsloth_max_input_length, prompt_batch)
+                nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix, unsloth_max_input_length, prompt_batch,enable_merge)
 
         # fine tune model for 1 epoch / Using training_args and save copy
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')
@@ -183,7 +192,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         release_memory()
 
 
-def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix, unsloth_max_input_length, prompt_batch):
+def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix, unsloth_max_input_length, prompt_batch, enable_merge=False):
     print('Preparing prompts for generation, this might take a while...')
 
     # Detect delta mode from nn_name_prefix or config key
@@ -405,10 +414,25 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
 
     print('[DEBUG] Release memory.')
     release_memory()
+
     if exists(models_dir):
         NNEval.main(nn_name_prefix, nn_train_epochs, epoch)
+
+        if enable_merge:  # ← Nested inside, only runs if models_dir exists
+            try:
+                from ab.gpt.util.Merge import rebuild_from_lineage
+
+                print(f"[MERGE] Running merge for epoch {epoch}")
+                rebuild_from_lineage()
+
+            except Exception as e:
+                print(f"[MERGE] failed: {e}")
+                import traceback
+                traceback.print_exc()
+
         print('[DEBUG] Release_memory.')
         release_memory()
+
     print('Clear LEMUR query cache.')
     lemur.data.cache_clear()
     print('The cache has been cleared.')

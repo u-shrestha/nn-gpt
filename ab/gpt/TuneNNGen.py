@@ -6,7 +6,45 @@ from typing import Literal
 
 import torch
 from ab.gpt.util.Const import nngpt_dir, new_out_file, NN_TRAIN_EPOCHS
+from pathlib import Path
+import json
+from ab.gpt.util.Const import conf_llm_dir
 
+RUN_META = Path("out/nngpt/run_config.json")
+
+
+def persist_llm_conf(llm_conf):
+    """Save run configuration including llm_conf and base_model_name."""
+
+
+    RUN_META = Path("out/nngpt/run_config.json")
+
+    if RUN_META.exists():
+        return
+
+    RUN_META.parent.mkdir(parents=True, exist_ok=True)
+
+    # Read base_model_name from llm_conf
+    base_model_name = None
+    llm_conf_path = conf_llm_dir / llm_conf
+
+    if llm_conf_path.exists():
+        try:
+            with open(llm_conf_path) as f:
+                config = json.load(f)
+            base_model_name = config.get("base_model_name")
+        except Exception as e:
+            print(f"Failed to read base_model_name from {llm_conf}: {e}")
+
+    # Save both llm_conf and base_model_name
+    run_config = {"llm_conf": llm_conf}
+    if base_model_name:
+        run_config["base_model_name"] = base_model_name #infers from conf_llm and stores it
+
+    with open(RUN_META, "w") as f:
+        json.dump(run_config, f, indent=2)
+
+    print(f"Run config saved: {RUN_META}")
 # --- Default Evaluation Parameters ---
 # These will be used as defaults for argparse arguments
 START_LAYER = 0
@@ -39,7 +77,7 @@ LLM_TUNE_CONF = 'NN_gen.json'   #'Transform_gen.json' for transform fine-tune
 NN_GEN_CONF = 'NN_gen.json'     #'Transform_gen.json'
 NN_GEN_CONF_ID = 'improve_classification_only'
 LLM_CONF = 'ds_coder_7b_olympic.json'
-MAX_PROMPTS = 4 * 1024
+MAX_PROMPTS = 64
 MAX_NEW_TOKENS = 16 * 1024
 SAVE_LLM_OUTPUT = True
 USE_DEEPSPEED = False
@@ -52,6 +90,7 @@ ONNX_RUN = False
 UNSLOTH_OPT = False
 TRANS_MODE = False  # only transform fine-tuning
 PROMPT_BATCH = 2
+ENABLE_MERGE = False
 
 # --- Pipeline-Optimized Defaults (for iterative_finetune.py) ---
 # These defaults are optimized for multi-cycle iterative fine-tuning
@@ -123,9 +162,9 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          # --- Pipeline Hyperparameters ---
          run_iterative_pipeline=False, base_data_dir=None, output_dir="out/iterative_cycles",
          cycles=5, models_per_cycle=150, samples_per_prompt=1, accuracy_threshold=0.40,
-         min_selected_k=15, fallback_threshold=0.35, adaptive_threshold=False,
+         min_selected_k=15, fallback_threshold=0.35, adaptive_threshold=False,enable_merge=ENABLE_MERGE,
          novelty_check=True, resume_from_cycle=None, max_retries=3, use_optimized_training=True):
-
+    persist_llm_conf(llm_conf)
     # --- Pipeline mode intercept ---
     if run_iterative_pipeline:
         print("--- Initiating Iterative Fine-Tuning Pipeline ---")
@@ -301,11 +340,50 @@ unsloth_opt={unsloth_opt},  trans_mode={trans_mode},  prompt_batch={prompt_batch
         print(f"[WARN] peft_config validation warning: {e}")
         # Don't fail, just warn - actual validation happens when model is loaded
 
-    tune(test_nn, nn_train_epochs, skip_epoches, peft, llm_tune_conf, nn_gen_conf, nn_gen_conf_id, llm_conf, training_args, peft_config,
-         max_prompts=max_prompts, save_llm_output=save_llm_output, max_new_tokens=max_new_tokens, nn_name_prefix=nn_name_prefix, 
-         temperature=temperature, top_k=top_k, top_p=top_p, onnx_run=onnx_run, trans_mode=trans_mode, prompt_batch=prompt_batch)
-    
-    print("\n" + "="*70)
+    from pathlib import Path
+    import subprocess
+
+    try:
+        tune(
+            test_nn, nn_train_epochs, skip_epoches, peft,
+            llm_tune_conf, nn_gen_conf, nn_gen_conf_id, llm_conf,
+            training_args, peft_config,
+            max_prompts=max_prompts,
+            save_llm_output=save_llm_output,
+            max_new_tokens=max_new_tokens,
+            nn_name_prefix=nn_name_prefix,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            onnx_run=onnx_run,
+            trans_mode=trans_mode,
+            prompt_batch=prompt_batch,
+            enable_merge=enable_merge,
+        )
+
+    except KeyboardInterrupt:
+        print("\n[INTERRUPT] Training stopped by user")
+
+
+    finally:
+        #incase there is an interruption, then do a final merge
+
+                if enable_merge:
+
+                    print("\n[MERGE] Running merge decision...\n")
+
+                    try:
+
+                        from ab.gpt.util.Merge import rebuild_from_lineage
+
+                        rebuild_from_lineage()
+
+                        print("[MERGE] Completed successfully.\n")
+
+                    except Exception as e:
+
+                        print(f"[MERGE] failed: {e}")
+
     print("FINE-TUNING CONFIGURATION SUMMARY")
     print("="*70)
     print(f"✓ LoRA: r={r}, alpha={lora_alpha}, dropout={lora_dropout}, target={target_modules}")
@@ -475,6 +553,7 @@ if __name__ == '__main__':
                         help=f"Run model generation step with LLM in ONNX format (default: {ONNX_RUN}).")
     parser.add_argument('--unsloth_opt', action='store_true',
                         help=f"Use Unsloth optimizations (default: {UNSLOTH_OPT}).")
+    parser.add_argument("--enable_merge",action="store_true",default=False,help="Enable automatic merge decision after fine-tuning.")
     parser.add_argument('--prompt_batch', type=int, default=PROMPT_BATCH,
                         help=f"Batch size for prompts – Number of prompts processed simultaneously (default: {PROMPT_BATCH}).")
 
