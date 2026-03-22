@@ -28,8 +28,8 @@ SFT_LORA_DROPOUT = 0.05
 
 # CIFAR-10 quick evaluation proxy for RL reward.
 SFT_EVAL_IMAGE_SIZE = 256
-SFT_EVAL_BATCH_SIZE = 8
-SFT_EVAL_TRAIN_SUBSET = 64
+SFT_EVAL_BATCH_SIZE = 32
+SFT_EVAL_TRAIN_SUBSET = 256
 SFT_EVAL_VAL_SUBSET = 128
 SFT_EVAL_VAL_BATCHES = 2
 SFT_EVAL_DATA_ROOT = "data_v2"
@@ -41,14 +41,14 @@ SFT_VAL_METRIC_BASELINE = 0.10
 # the mounted disk. On the server, if the model is already placed under
 # `out/llm/ABrain/NNGPT-Backbone-deepseek-coder-6.7b-instruct`, you can comment
 # out this whole block and the script will still load from `out/llm` first.
-SFT_HF_HOME = "/media/xi/Data/hf-cache"
-SFT_HF_HUB_CACHE = "/media/xi/Data/hf-cache/hub"
-SFT_TRANSFORMERS_CACHE = "/media/xi/Data/hf-cache/transformers"
+# SFT_HF_HOME = "/media/xi/Data/hf-cache"
+# SFT_HF_HUB_CACHE = "/media/xi/Data/hf-cache/hub"
+# SFT_TRANSFORMERS_CACHE = "/media/xi/Data/hf-cache/transformers"
 
-os.environ["HF_HOME"] = SFT_HF_HOME
-os.environ["HF_HUB_CACHE"] = SFT_HF_HUB_CACHE
-os.environ["HUGGINGFACE_HUB_CACHE"] = SFT_HF_HUB_CACHE
-os.environ["TRANSFORMERS_CACHE"] = SFT_TRANSFORMERS_CACHE
+# os.environ["HF_HOME"] = SFT_HF_HOME
+# os.environ["HF_HUB_CACHE"] = SFT_HF_HUB_CACHE
+# os.environ["HUGGINGFACE_HUB_CACHE"] = SFT_HF_HUB_CACHE
+# os.environ["TRANSFORMERS_CACHE"] = SFT_TRANSFORMERS_CACHE
 
 import ab.gpt.TuneRL as TuneRL
 import ab.gpt.TuneRLRaw as TuneRLRaw
@@ -266,7 +266,7 @@ def _evaluate_code_and_reward_cifar_direct(
         return _cifar_eval_error(exc)
 
 
-def _eval_cifar_subprocess_worker(queue, code, in_shape, out_shape, prm, device, val_metric_baseline, cfg):
+def _eval_cifar_subprocess_worker(send_conn, code, in_shape, out_shape, prm, device, val_metric_baseline, cfg):
     try:
         result = _evaluate_code_and_reward_cifar_direct(
             code,
@@ -277,9 +277,11 @@ def _eval_cifar_subprocess_worker(queue, code, in_shape, out_shape, prm, device,
             val_metric_baseline=val_metric_baseline,
             cfg=cfg,
         )
-        queue.put(result)
+        send_conn.send(result)
     except Exception as exc:
-        queue.put({"error": str(exc), "reward": -1.0})
+        send_conn.send({"error": str(exc), "reward": -1.0})
+    finally:
+        send_conn.close()
 
 
 def evaluate_code_and_reward_cifar(
@@ -295,16 +297,20 @@ def evaluate_code_and_reward_cifar(
     import multiprocessing as mp
 
     ctx = mp.get_context("spawn")
-    queue = ctx.Queue()
+    recv_conn, send_conn = ctx.Pipe(duplex=False)
     process = ctx.Process(
         target=_eval_cifar_subprocess_worker,
-        args=(queue, code, in_shape, out_shape, prm, device, val_metric_baseline, cfg),
+        args=(send_conn, code, in_shape, out_shape, prm, device, val_metric_baseline, cfg),
     )
 
     try:
         process.start()
-        res = queue.get(timeout=300)
-        process.join()
+        send_conn.close()  # Parent must close the write end so read end receives EOF properly
+        if recv_conn.poll(300):
+            res = recv_conn.recv()
+        else:
+            raise TimeoutError("Evaluation timed out after 300 seconds.")
+        process.join(5)
         return res
     except Exception as exc:
         print(f"[Reward Subprocess] Critical Error or Timeout: {exc}")
@@ -331,15 +337,15 @@ def evaluate_code_and_reward_cifar(
             "params_m": None,
             "error": str(exc),
         }
+    finally:
+        recv_conn.close()
 
 
 def _is_trainable_architecture(res: Dict[str, Any], graph_info) -> bool:
     discovery_meta = res.get("open_discovery", {})
     parse_ok = bool(getattr(graph_info, "parse_ok", False) or discovery_meta.get("parse_ok", False))
-    macro_structure_ok = bool(discovery_meta.get("macro_structure_ok", False))
     return bool(
         parse_ok
-        and macro_structure_ok
         and res.get("built_ok")
         and res.get("forward_ok")
         and res.get("trained_step_ok")
@@ -361,7 +367,8 @@ def _reapply_trainability_clamp(res: Dict[str, Any], reward_value: float, graph_
     elif not res.get("trained_step_ok"):
         reward_value = min(reward_value, 0.0)
     elif not macro_structure_ok:
-        reward_value = min(reward_value, 0.0)
+        reward_value -= 0.5
+        reward_value = min(reward_value, 0.5)
     return reward_value
 
 
@@ -382,8 +389,8 @@ def sft_reward_fn(
     res = TuneRLRaw.raw_reward_fn(
         completion,
         graph_info=graph_info,
-        batch_graph_hashes=batch_graph_hashes,
-        batch_family_hashes=batch_family_hashes,
+        batch_graph_hashes=None,
+        batch_family_hashes=None,
         prompt_goal_tags=prompt_goal_tags,
     )
 
@@ -394,6 +401,13 @@ def sft_reward_fn(
     goal_key = TuneRL.primary_goal_key(prompt_goal_tags)
     trainable_ok = _is_trainable_architecture(res, graph_info)
     anti_collapse_delta = 0.0
+    
+    discovery_meta = res.get("open_discovery", {})
+    if discovery_meta.get("is_plain_parallel_triple", False) or discovery_meta.get("is_shallow_one_shot_fuse", False):
+        anti_collapse_delta -= 3.0
+    if discovery_meta.get("merges", 0) < 2 and "multi_stage" in (prompt_goal_tags or []):
+        anti_collapse_delta -= 1.5
+
     goal_family_freq = 0
     goal_unique_count = 0
 
@@ -481,7 +495,8 @@ Hard rules
 15. Do not emit `import ...` lines or `class ...` definitions in the completion
 16. Never define `DropConv3x3Block` or any wrapper class; write only the required defs
 17. Do not omit either backbone, and do not add a third backbone
-18. Do not simply pool the two backbones once and concatenate them only at the classifier input
+18. CRITICAL RULE: Do NOT simply pool the two backbones once and concatenate them only at the classifier input. You MUST perform multi-step feature fusion (e.g., `x_b = self.project_b(self.backbone_b(x)); fused = self.fuse(torch.cat([x_a, x_b], dim=1))`).
+19. CRITICAL RULE: NEVER apply `self.classifier` manually inside `forward` before returning. You must NOT do things like `x = self.classifier(x)`. Only return `self.classifier(...)` on the final line if not probing!
 
 Helpful module names:
 {module_hints}
