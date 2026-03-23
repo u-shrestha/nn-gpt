@@ -32,7 +32,7 @@ from peft import PeftModel
 from ab.gpt.util.Const import nngpt_dir, nngpt_upload
 
 #config
-BUFFER_SIZE = 5  # Collect 5 candidates before merging
+BUFFER_SIZE = 5 # Collect 5 candidates before merging
 TOLERANCE = 0.0  # Must strictly improve (no ties)
 
 #detect base model
@@ -53,9 +53,8 @@ def infer_base_model():
         RuntimeError: If base model cannot be determined
     """
 
-    print("\n" + "=" * 60)
+
     print("[BASE MODEL] Detection started")
-    print("=" * 60)
 
     # SOURCE 1: run_config.json
     run_config = nngpt_dir / "run_config.json"
@@ -93,7 +92,7 @@ def infer_base_model():
                         if base:
                             print(f"[BASE MODEL] ✓ Found in llm_conf")
                             print(f"[BASE MODEL] → {base}")
-                            print("=" * 60 + "\n")
+
                             return base
 
                         print("[BASE MODEL] 'base_model_name' not in llm_conf")
@@ -135,20 +134,18 @@ def infer_base_model():
                 if base:
                     print(f"[BASE MODEL] ✓ Found in adapter config A{e}")
                     print(f"[BASE MODEL] → {base}")
-                    print("=" * 60 + "\n")
+
                     return base
 
             except Exception as e:
                 print(f"[BASE MODEL] ✗ Failed to read {cfg_path}: {e}")
 
     print("[BASE MODEL] ✗ FAILED: Cannot determine base model")
-    print("=" * 60 + "\n")
+
     raise RuntimeError("Cannot determine base model")
 
 
-# =========================================
-# EPOCH UTILITIES
-# =========================================
+
 
 def find_latest_epoch():
     """
@@ -207,7 +204,7 @@ def find_adapter(epoch: int):
         adapter_dir = candidates[0].parent
 
         if e != epoch:
-            print(f"[ADAPTER] ⚠ Requested A{epoch}, using A{e} (fallback)")
+            print(f"[ADAPTER]  Requested A{epoch}, using A{e} (fallback)")
         else:
             print(f"[ADAPTER] ✓ Found A{e}")
 
@@ -244,7 +241,7 @@ def save_lineage(lineage):
     """
     Save lineage with deduplication.
 
-    Removes duplicates by (cycle, used_epoch) key.
+    Removes duplicates by (epoch, used_epoch) key.
 
     Args:
         lineage: List of lineage entries
@@ -252,15 +249,14 @@ def save_lineage(lineage):
     path = nngpt_dir / "lineage.json"
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Deduplicate by (cycle, used_epoch)
+    # Deduplicate by (epoch, used_epoch) - CHANGED from (cycle, used_epoch)
     unique = {}
     for x in lineage:
-        key = (x["cycle"], x["used_epoch"])
+        key = (x["epoch"], x["used_epoch"])  # ← Changed from x["cycle"]
         unique[key] = x
 
     with open(path, "w") as f:
         json.dump(list(unique.values()), f, indent=2)
-
 
 #merge adapters
 
@@ -274,9 +270,9 @@ def merge_multiple_adapters(base_model, adapter_paths, output_path):
         output_path: Where to save merged model
     """
 
-    print("\n" + "=" * 60)
+
     print("[MERGE] Starting multi-adapter merge")
-    print("=" * 60)
+
     print(f"[MERGE] Base model: {base_model}")
     print(f"[MERGE] Adapters to apply: {len(adapter_paths)}")
 
@@ -284,7 +280,7 @@ def merge_multiple_adapters(base_model, adapter_paths, output_path):
         print(f"[MERGE]   {i + 1}. {p}")
 
     print(f"[MERGE] Output: {output_path}")
-    print("=" * 60 + "\n")
+
 
     # Load base model
     print("[MERGE] Loading base model...")
@@ -322,122 +318,102 @@ def merge_multiple_adapters(base_model, adapter_paths, output_path):
 
     print("[MERGE] ✓ Tokenizer saved\n")
 
-    print("=" * 60)
+
     print("[MERGE] ✓✓✓ MERGE COMPLETE ✓✓✓")
     print(f"[MERGE] Output: {output_path}")
-    print("=" * 60 + "\n")
 
 
-#rebuild the model
+
 def rebuild_from_lineage():
-    """
-    Automatic merge with buffer collection.
+    """Process ALL unprocessed epochs from epoch_tracker.json"""
 
-    Process:
-      1. Load cycle results
-      2. Find adapter for current epoch
-      3. Add to buffer (as candidate)
-      4. If buffer full:
-         a. Pick best candidate
-         b. Check if accuracy improved from last merged
-         c. If yes: merge, mark as merged
-         d. If no: reject all candidates
-      5. If buffer not full: wait for more
-
-    Raises:
-        RuntimeError: If cycle_results.json missing or adapter not found
-    """
-
-    # =====================================
-    # STEP 1: Load cycle results
-    # =====================================
-
-    cycle_file = nngpt_dir / "cycle_results.json"
-
-    if not cycle_file.exists():
-        print(f"[MERGE] ✗ cycle_results.json not found: {cycle_file}")
+    # Load epoch tracker
+    epoch_tracker_file = nngpt_dir / "epoch_tracker.json"
+    if not epoch_tracker_file.exists():
+        print(f"[MERGE] ✗ epoch_tracker.json not found")
         return
 
-    with open(cycle_file) as f:
-        data = json.load(f)
+    with open(epoch_tracker_file) as f:
+        tracker_list = json.load(f)
 
-    cycle = data.get("cycle")
-    if cycle is None:
-        print("[MERGE] ✗ 'cycle' field missing in cycle_results.json")
+    if not tracker_list:
+        print("[MERGE] ✗ epoch_tracker.json is empty")
         return
 
-    epoch = find_latest_epoch()
-
-    acc = data.get("evaluation", {}).get("best_accuracy")
-
-    # Fake accuracy fallback (for testing)
-    if acc is None or acc == 0.0:
-        acc = min(0.40 + epoch * 0.03, 0.99)
-        print(f"[MERGE] Using fake accuracy: {acc:.4f}")
-
-    acc = float(acc)
-
-    print("\n" + "=" * 60)
-    print(f"[BUFFER] NEW CANDIDATE")
-    print("=" * 60)
-    print(f"  Cycle: {cycle}")
-    print(f"  Epoch: {epoch}")
-    print(f"  Accuracy: {acc:.4f}")
-    print("=" * 60 + "\n")
-
-    # =====================================
-    # STEP 2: Find adapter
-    # =====================================
-
-    adapter_path, used_epoch = find_adapter(epoch)
-
-    if adapter_path is None:
-        print("[MERGE] ✗ No adapter found, aborting")
-        return
-
-    # =====================================
-    # STEP 3: Load lineage
-    # =====================================
-
+    # Load lineage
     lineage = load_lineage()
 
-    # =====================================
-    # STEP 4: Duplicate check
-    # =====================================
+    # Find which epochs have already been processed
+    processed_epochs = {x["epoch"] for x in lineage}
 
-    if any(x["cycle"] == cycle and x["used_epoch"] == used_epoch for x in lineage):
-        print(f"[MERGE] Cycle {cycle} already processed, skipping")
+    # Process each unprocessed epoch
+    new_candidates = []
+
+    for tracker_entry in tracker_list:
+        epoch = tracker_entry.get("epoch")
+
+        if epoch is None:
+            continue
+
+        if epoch in processed_epochs:
+            print(f"[MERGE] Epoch {epoch} already processed, skipping")
+            continue
+
+        # Process this epoch
+        print(f"\n[MERGE] Processing epoch {epoch}...")
+
+        acc = tracker_entry.get("accuracy")
+
+        if acc is None or acc == 0.0:
+            print(f"[MERGE] Epoch {epoch} has no real accuracy, skipping")
+            continue  # Skip this epoch, don't add to buffer
+
+
+        #if acc is None or acc == 0.0:
+            #acc = min(0.40 + epoch * 0.03, 0.99)
+           # print(f"[MERGE] Using fake accuracy: {acc:.4f}")
+
+        acc = float(acc)
+
+        # Find adapter
+        adapter_path, used_epoch = find_adapter(epoch)
+        if adapter_path is None:
+            print(f"[MERGE] ✗ No adapter found for epoch {epoch}, skipping")
+            continue
+
+        base_model = infer_base_model()
+
+        # Add to lineage as candidate
+        new_entry = {
+            "epoch": epoch,
+            "used_epoch": used_epoch,
+            "accuracy": acc,
+            "merged": False,
+            "candidate": True,
+            "base_model": base_model
+        }
+
+        lineage.append(new_entry)
+        new_candidates.append(new_entry)
+        processed_epochs.add(epoch)
+
+        print(f"[BUFFER] ✓ Added epoch {epoch} (acc={acc:.4f}) to buffer")
+
+    if not new_candidates:
+        print("\n[MERGE] No new epochs to process")
         return
 
-    # =====================================
-    # STEP 5: Add to buffer (as candidate)
-    # =====================================
-
-    base_model = infer_base_model()
-
-    lineage.append({
-        "cycle": cycle,
-        "used_epoch": used_epoch,
-        "accuracy": acc,
-        "merged": False,  # Not merged yet
-        "candidate": True,  # Mark as candidate
-        "base_model": base_model
-    })
-
+    # Save lineage with new candidates
     save_lineage(lineage)
 
-    print(f"[BUFFER] ✓ Candidate added to lineage")
-
-    # =====================================
-    # STEP 6: Check buffer
-    # =====================================
-
+    # Check buffer status
     candidates = [x for x in lineage if x.get("candidate") and not x.get("merged")]
 
-    print(f"\n[BUFFER] Current buffer: {len(candidates)}/{BUFFER_SIZE}")
+
+    print(f"[BUFFER] Current buffer: {len(candidates)}/{BUFFER_SIZE}")
 
     for i, c in enumerate(candidates):
-        print(f"  {i + 1}. Cycle {c['cycle']}, Epoch {c['used_epoch']}, Acc={c['accuracy']:.4f}")
+        print(f"  {i + 1}. Epoch {c['epoch']}, Acc={c['accuracy']:.4f}")
 
     if len(candidates) < BUFFER_SIZE:
         print(f"\n[BUFFER] Need {BUFFER_SIZE - len(candidates)} more candidates")
@@ -446,90 +422,62 @@ def rebuild_from_lineage():
 
     print(f"\n[BUFFER] ✓ Buffer full ({BUFFER_SIZE} candidates)")
 
-    # =====================================
-    # STEP 7: Pick best candidate
-    # =====================================
-
+    # Pick best candidate
     best = max(candidates, key=lambda x: x["accuracy"])
 
     print(f"\n[SELECTION] Best candidate:")
-    print(f"  Cycle: {best['cycle']}")
-    print(f"  Epoch: {best['used_epoch']}")
+    print(f"  Epoch: {best['epoch']}")
     print(f"  Accuracy: {best['accuracy']:.4f}")
 
-    # =====================================
-    # STEP 8: Accuracy check
-    # =====================================
-
+    # Check if it improves
     merged = [x for x in lineage if x.get("merged")]
 
     if merged:
-        prev = merged[-1]["accuracy"]  # Last merged
-
+        prev = merged[-1]["accuracy"]
         print(f"\n[COMPARISON] Accuracy check:")
         print(f"  Last merged: {prev:.4f}")
         print(f"  Current best: {best['accuracy']:.4f}")
         print(f"  Delta: {best['accuracy'] - prev:+.4f}")
-        print(f"  Tolerance: {TOLERANCE:.4f}")
 
         if best["accuracy"] <= prev + TOLERANCE:
             print(f"\n[MERGE] ✗ REJECTED - Not improving")
-            print(f"[MERGE] Threshold: {prev + TOLERANCE:.4f}")
-            print(f"[MERGE] Actual: {best['accuracy']:.4f}")
 
-            # Mark all candidates as rejected
             for x in lineage:
                 if x.get("candidate") and not x.get("merged"):
                     x["rejected"] = True
                     x["candidate"] = False
 
             save_lineage(lineage)
-
             print(f"[MERGE] All {len(candidates)} candidates marked as rejected\n")
             return
 
         print(f"\n[MERGE] ✓ APPROVED - Accuracy improved by {best['accuracy'] - prev:.4f}")
-
     else:
         print(f"\n[MERGE] ✓ APPROVED - First merge (baseline)")
 
-    # =====================================
-    # STEP 9: Build adapter chain
-    # =====================================
-
+    # Build chain
     print(f"\n[CHAIN] Building adapter chain...")
-
     chain = []
 
-    # Collect all previously merged adapters
     for x in merged:
         p, _ = find_adapter(x["used_epoch"])
         if p:
             chain.append(p)
-            print(f"[CHAIN] + A{x['used_epoch']} (merged at cycle {x['cycle']})")
+            print(f"[CHAIN] + A{x['used_epoch']} (merged at epoch {x['epoch']})")
 
-    # Add best candidate
     best_adapter, _ = find_adapter(best["used_epoch"])
     chain.append(best_adapter)
     print(f"[CHAIN] + A{best['used_epoch']} (current best)")
 
-    print(f"\n[CHAIN] Total adapters in chain: {len(chain)}")
-    print(f"[CHAIN] No MAX_CHAIN limit (unlimited growth)")
+    print(f"\n[CHAIN] Total adapters: {len(chain)}")
 
-    # =====================================
-    # STEP 10: Perform merge
-    # =====================================
-
+    # Merge
+    base_model = infer_base_model()
     output_path = nngpt_upload / Path(base_model).name
-
     merge_multiple_adapters(base_model, chain, output_path)
 
-    # =====================================
-    # STEP 11: Update run_config.json
-    # =====================================
-
+    # Update run_config
     run_config = nngpt_dir / "run_config.json"
-
     cfg = {}
     if run_config.exists():
         with open(run_config) as f:
@@ -540,21 +488,15 @@ def rebuild_from_lineage():
     with open(run_config, "w") as f:
         json.dump(cfg, f, indent=2)
 
-    print(f"[CONFIG] Updated run_config.json")
-    print(f"[CONFIG] base_model_name → {output_path}\n")
+    print(f"[CONFIG] Updated run_config.json → {output_path}\n")
 
-    # =====================================
-    # STEP 12: Update lineage
-    # =====================================
-
-    # Mark best as merged
+    # Update lineage
     for x in lineage:
-        if x["cycle"] == best["cycle"] and x["used_epoch"] == best["used_epoch"]:
+        if x["epoch"] == best["epoch"]:
             x["merged"] = True
             x["candidate"] = False
             x["chain_length"] = len(chain)
 
-    # Mark others as rejected
     for x in lineage:
         if x.get("candidate") and not x.get("merged"):
             x["rejected"] = True
@@ -562,18 +504,11 @@ def rebuild_from_lineage():
 
     save_lineage(lineage)
 
-    print(f"[LINEAGE] Updated:")
-    print(f"  Best candidate marked as MERGED")
-    print(f"  {len(candidates) - 1} other candidates marked as REJECTED")
 
-    print(f"\n{'=' * 60}")
     print(f"[MERGE] ✓✓✓ AUTO MERGE COMPLETE ✓✓✓")
-    print(f"{'=' * 60}\n")
 
 
-# =========================================
-# MANUAL MERGE
-# =========================================
+
 
 def merge_nn_llm(epoch: int):
     """
@@ -583,14 +518,13 @@ def merge_nn_llm(epoch: int):
         epoch: Epoch number to merge
     """
 
-    print("\n" + "=" * 60)
     print(f"[MANUAL] Manual merge requested for epoch {epoch}")
-    print("=" * 60 + "\n")
+
 
     adapter_path, used_epoch = find_adapter(epoch)
 
     if adapter_path is None:
-        print(f"[MANUAL] ✗ No adapter found for epoch {epoch}")
+        print(f"[MANUAL] No adapter found for epoch {epoch}")
         return
 
     base_model = infer_base_model()
@@ -601,10 +535,6 @@ def merge_nn_llm(epoch: int):
     print(f"[MANUAL] ✓ Manual merge complete for A{used_epoch}\n")
 
 
-# =========================================
-# CLI
-# =========================================
-
 if __name__ == "__main__":
-    rebuild_from_lineage()
-    #merge_nn_llm(0)
+   #rebuild_from_lineage()
+    merge_nn_llm(3)

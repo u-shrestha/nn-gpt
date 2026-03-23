@@ -17,7 +17,8 @@ from tqdm import tqdm
 import ab.gpt.NNEval as NNEval
 from ab.gpt.util.Chatbot import ChatBot
 from ab.gpt.util.Const import *
-
+from datetime import datetime
+from ab.gpt.util.Const import nngpt_dir
 from ab.gpt.util.LLMUtil import quantization_config_4bit
 from ab.gpt.util.LoRA import LoRA
 from ab.gpt.util.Util import exists, extract_delta, extract_code, extract_hyperparam, extract_transform
@@ -415,16 +416,53 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
     print('[DEBUG] Release memory.')
     release_memory()
 
+    # ALWAYS track epochs - APPEND to list (not overwrite)
+    tracker_file = nngpt_dir / "epoch_tracker.json"
+
+    # Load existing tracker data
+    if tracker_file.exists():
+        try:
+            with open(tracker_file) as f:
+                tracker_data = json.load(f)
+        except:
+            tracker_data = []
+    else:
+        tracker_data = []
+
+    # Try to get accuracy from cycle_results if it exists
+    accuracy = None
+    cycle_file = nngpt_dir / "cycle_results.json"
+    if cycle_file.exists():
+        try:
+            with open(cycle_file) as f:
+                cycle_data = json.load(f)
+            accuracy = cycle_data.get("evaluation", {}).get("best_accuracy")
+        except:
+            accuracy = None
+
+    # Add current epoch to list
+    tracker_data.append({
+        "epoch": epoch,
+        "timestamp": datetime.now().isoformat(),
+        "models_generated": len(list(models_dir.glob("B*"))) if exists(models_dir) else 0,
+        "accuracy": accuracy  # Will be None if NNEval failed
+    })
+
+    # Save updated list
+    tracker_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(tracker_file, "w") as f:
+        json.dump(tracker_data, f, indent=2)
+
+    print(f"[EPOCH TRACKER] Wrote epoch {epoch} (acc={accuracy}) to {tracker_file}")
+
     if exists(models_dir):
         NNEval.main(nn_name_prefix, nn_train_epochs, epoch)
 
-        if enable_merge:  # ← Nested inside, only runs if models_dir exists
+        if enable_merge:
             try:
                 from ab.gpt.util.Merge import rebuild_from_lineage
-
                 print(f"[MERGE] Running merge for epoch {epoch}")
                 rebuild_from_lineage()
-
             except Exception as e:
                 print(f"[MERGE] failed: {e}")
                 import traceback
@@ -436,7 +474,6 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
     print('Clear LEMUR query cache.')
     lemur.data.cache_clear()
     print('The cache has been cleared.')
-
 
 def trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict_global, test_nn, max_new_tokens, save_llm_output, nn_name_prefix):
     """
