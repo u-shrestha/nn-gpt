@@ -1,12 +1,79 @@
 from typing import Optional, Dict, Tuple, Callable, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+import atexit
 import time
 import gc
+import multiprocessing as mp
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, Subset
+
+
+class PersistentEvalWorkerError(RuntimeError):
+    pass
+
+
+class _PersistentEvalWorkerSession:
+    def __init__(self) -> None:
+        self.ctx = mp.get_context("spawn")
+        self._parent_conn, child_conn = self.ctx.Pipe()
+        self._process = self.ctx.Process(
+            target=_persistent_eval_worker_loop,
+            args=(child_conn,),
+        )
+        self._process.start()
+        child_conn.close()
+
+    def request(self, payload: Dict[str, Any], *, timeout: float) -> Dict[str, Any]:
+        if not self._process.is_alive():
+            raise PersistentEvalWorkerError("Persistent eval worker exited before handling a request")
+        try:
+            self._parent_conn.send(payload)
+        except Exception as exc:
+            raise PersistentEvalWorkerError(f"Persistent eval worker send failed: {exc}") from exc
+
+        if not self._parent_conn.poll(timeout):
+            self.close(force=True)
+            raise PersistentEvalWorkerError(f"Persistent eval worker timed out after {timeout:.0f} seconds")
+
+        try:
+            response = self._parent_conn.recv()
+        except EOFError as exc:
+            self.close(force=True)
+            raise PersistentEvalWorkerError("Persistent eval worker closed its pipe unexpectedly") from exc
+        except Exception as exc:
+            self.close(force=True)
+            raise PersistentEvalWorkerError(f"Persistent eval worker recv failed: {exc}") from exc
+
+        if not isinstance(response, dict):
+            self.close(force=True)
+            raise PersistentEvalWorkerError("Persistent eval worker returned a non-dict response")
+        return response
+
+    def close(self, *, force: bool = False) -> None:
+        try:
+            if not force and self._process.is_alive():
+                self._parent_conn.send({"cmd": "shutdown"})
+        except Exception:
+            pass
+
+        if self._process.is_alive():
+            if force:
+                self._process.terminate()
+            self._process.join(timeout=5)
+            if self._process.is_alive():
+                self._process.terminate()
+                self._process.join(timeout=5)
+
+        try:
+            self._parent_conn.close()
+        except Exception:
+            pass
+
+
+_PERSISTENT_EVAL_WORKER: Optional[_PersistentEvalWorkerSession] = None
 
 def compute_cv_reward_simple(
     *,
@@ -97,6 +164,20 @@ def _count_params_m(model: nn.Module) -> float:
     return sum(p.numel() for p in model.parameters()) / 1e6
 
 
+def _freeze_dual_backbones(model: nn.Module) -> None:
+    for backbone_name in ("backbone_a", "backbone_b"):
+        backbone = getattr(model, backbone_name, None)
+        if backbone is None:
+            continue
+        for param in backbone.parameters():
+            param.requires_grad = False
+        backbone.eval()
+
+
+def _trainable_parameters(model: nn.Module) -> list[nn.Parameter]:
+    return [param for param in model.parameters() if param.requires_grad]
+
+
 @torch.no_grad()
 def _quick_forward(
     model: nn.Module,
@@ -165,11 +246,24 @@ def _train_steps(
     Mini-batch training steps. Returns training diagnostics.
     """
     model.train()
+    _freeze_dual_backbones(model)
     loss_start = None
     loss_end = None
     steps_completed = 0
     try:
-        opt = torch.optim.SGD(model.parameters(), lr=1e-3, momentum=0.9)
+        trainable_params = _trainable_parameters(model)
+        if not trainable_params:
+            return {
+                "backward_ok": False,
+                "trained_step_ok": False,
+                "loss_start": None,
+                "loss_end": None,
+                "loss_drop": None,
+                "loss_drop_ok": False,
+                "steps_completed": 0,
+                "error": "RuntimeError: no trainable parameters remain after freezing backbones",
+            }
+        opt = torch.optim.SGD(trainable_params, lr=1e-3, momentum=0.9)
         criterion = nn.CrossEntropyLoss()
         for x, y in train_loader:
             x = x.to(device)
@@ -377,7 +471,7 @@ def _empty_eval_result(
     *,
     reward: float = 0.0,
     error: Optional[str] = None,
-    accuracy_baseline: Optional[float] = None,
+    seed_accuracy_baseline: Optional[float] = None,
 ) -> Dict[str, Any]:
     components = {
         "reward": reward,
@@ -406,9 +500,18 @@ def _empty_eval_result(
         "loss_drop": None,
         "loss_drop_ok": False,
         "train_acc": None,
-        "accuracy_baseline": accuracy_baseline,
+        "seed_accuracy_baseline": seed_accuracy_baseline,
+        "seed_train_acc_gap": None,
+        "seed_train_acc_improved": False,
+        "accuracy_baseline": seed_accuracy_baseline,
         "train_acc_gain": None,
         "train_acc_improved": False,
+        "group_baseline_train_acc": None,
+        "group_train_acc_gain": None,
+        "group_train_acc_improved": False,
+        "reward_batch_index": None,
+        "reward_group_id": None,
+        "group_warmup": False,
         "latency_ms": None,
         "params_m": None,
     }
@@ -427,9 +530,9 @@ def evaluate_and_reward(
     train_loader: Optional[DataLoader] = None,
     val_loader: Optional[DataLoader] = None,
 
-    # Validation accuracy stays logging-only. Sample-level accuracy_baseline drives RL reward.
+    # Validation accuracy stays logging-only. Seed accuracy is logged but no longer drives RL reward.
     val_metric_baseline: Optional[float] = None,
-    accuracy_baseline: Optional[float] = None,
+    seed_accuracy_baseline: Optional[float] = None,
 
     # Config & weights
     cfg: EvalConfig = EvalConfig(),
@@ -475,8 +578,8 @@ def evaluate_and_reward(
     loss_drop = None
     loss_drop_ok = False
     train_acc = None
-    train_acc_gain = None
-    train_acc_improved = False
+    seed_train_acc_gap = None
+    seed_train_acc_improved = False
 
     # 1) Build or use provided model
     mdl = model
@@ -492,6 +595,7 @@ def evaluate_and_reward(
         if mdl is not None and isinstance(mdl, nn.Module):
             try:
                 mdl.to(device)
+                _freeze_dual_backbones(mdl)
                 params_m = _count_params_m(mdl)
                 built_ok = True
             except Exception:
@@ -528,9 +632,18 @@ def evaluate_and_reward(
                 "loss_drop": None,
                 "loss_drop_ok": False,
                 "train_acc": None,
-                "accuracy_baseline": accuracy_baseline,
+                "seed_accuracy_baseline": seed_accuracy_baseline,
+                "seed_train_acc_gap": None,
+                "seed_train_acc_improved": False,
+                "accuracy_baseline": seed_accuracy_baseline,
                 "train_acc_gain": None,
                 "train_acc_improved": False,
+                "group_baseline_train_acc": None,
+                "group_train_acc_gain": None,
+                "group_train_acc_improved": False,
+                "reward_batch_index": None,
+                "reward_group_id": None,
+                "group_warmup": False,
                 "latency_ms": None,
                 "params_m": None,
             }
@@ -580,9 +693,9 @@ def evaluate_and_reward(
             device=device,
             max_batches=cfg.max_val_batches,
         )
-        if accuracy_baseline is not None:
-            train_acc_gain = float(train_acc - accuracy_baseline)
-            train_acc_improved = bool(train_acc_gain > 0.0)
+        if seed_accuracy_baseline is not None:
+            seed_train_acc_gap = float(train_acc - seed_accuracy_baseline)
+            seed_train_acc_improved = bool(seed_train_acc_gap > 0.0)
 
         # 5) Optional critic score
         if cfg.critic_fn is not None:
@@ -635,9 +748,18 @@ def evaluate_and_reward(
             "loss_drop": loss_drop,
             "loss_drop_ok": loss_drop_ok,
             "train_acc": train_acc,
-            "accuracy_baseline": accuracy_baseline,
-            "train_acc_gain": train_acc_gain,
-            "train_acc_improved": train_acc_improved,
+            "seed_accuracy_baseline": seed_accuracy_baseline,
+            "seed_train_acc_gap": seed_train_acc_gap,
+            "seed_train_acc_improved": seed_train_acc_improved,
+            "accuracy_baseline": seed_accuracy_baseline,
+            "train_acc_gain": seed_train_acc_gap,
+            "train_acc_improved": seed_train_acc_improved,
+            "group_baseline_train_acc": None,
+            "group_train_acc_gain": None,
+            "group_train_acc_improved": False,
+            "reward_batch_index": None,
+            "reward_group_id": None,
+            "group_warmup": False,
             "latency_ms": latency_ms,
             "params_m": params_m,
         }
@@ -691,6 +813,42 @@ def build_fn_from_code(
     return _builder
 
 
+def _serialize_eval_cfg(cfg: EvalConfig) -> Dict[str, Any]:
+    return asdict(cfg)
+
+
+def _deserialize_eval_cfg(cfg_payload: Optional[Dict[str, Any]]) -> EvalConfig:
+    if cfg_payload is None:
+        return EvalConfig()
+    return EvalConfig(**cfg_payload)
+
+
+def _loader_cache_key(cfg: EvalConfig) -> Tuple[Any, ...]:
+    return (
+        tuple(cfg.input_shape),
+        cfg.default_batch_size,
+        cfg.train_subset_size,
+        cfg.val_subset_size,
+        cfg.data_root,
+        cfg.download,
+    )
+
+
+def _get_or_create_eval_worker() -> _PersistentEvalWorkerSession:
+    global _PERSISTENT_EVAL_WORKER
+    if _PERSISTENT_EVAL_WORKER is None:
+        _PERSISTENT_EVAL_WORKER = _PersistentEvalWorkerSession()
+    return _PERSISTENT_EVAL_WORKER
+
+
+def shutdown_eval_worker() -> None:
+    global _PERSISTENT_EVAL_WORKER
+    if _PERSISTENT_EVAL_WORKER is None:
+        return
+    _PERSISTENT_EVAL_WORKER.close()
+    _PERSISTENT_EVAL_WORKER = None
+
+
 def evaluate_code_and_reward(
     code: str,
     *,
@@ -699,51 +857,86 @@ def evaluate_code_and_reward(
     prm: Dict[str, Any] = None,
     device: str = "cpu",
     val_metric_baseline: Optional[float] = None,
-    accuracy_baseline: Optional[float] = None,
+    seed_accuracy_baseline: Optional[float] = None,
     cfg: Optional[EvalConfig] = None,
 ) -> Dict[str, Any]:
-    """
-    Subprocess Wrapper for evaluation to prevent memory leaks from exec() and class definitions.
-    """
-    import multiprocessing as mp
-    
-    # Simple result holder in a shared list/queue
-    ctx = mp.get_context("spawn")
-    queue = ctx.Queue()
+    worker = _get_or_create_eval_worker()
+    payload = {
+        "cmd": "evaluate",
+        "code": code,
+        "in_shape": tuple(in_shape),
+        "out_shape": tuple(out_shape),
+        "prm": prm,
+        "device": device,
+        "val_metric_baseline": val_metric_baseline,
+        "seed_accuracy_baseline": seed_accuracy_baseline,
+        "cfg": _serialize_eval_cfg(cfg or EvalConfig(
+            device=device,
+            input_shape=in_shape,
+            n_classes=int(out_shape[0]),
+            train_steps=8,
+            max_val_batches=2,
+            measure_latency=True,
+            kl_div=None,
+            critic_fn=None,
+            weights=None,
+        )),
+    }
+    return worker.request(payload, timeout=300)
 
-    p = ctx.Process(
-        target=_eval_subprocess_worker, 
-        args=(queue, code, in_shape, out_shape, prm, device, val_metric_baseline, accuracy_baseline, cfg)
-    )
-    
-    try:
-        p.start()
-        # Wait for result with a generous timeout (e.g., 5 minutes)
-        res = queue.get(timeout=300)
-        p.join()
-        return res
-    except Exception as e:
-        print(f"[Reward Subprocess] Critical Error or Timeout: {e}")
-        if p.is_alive():
-            p.terminate()
-            p.join()
-        result = _empty_eval_result(reward=-1.0, error=str(e), accuracy_baseline=accuracy_baseline)
-        result["components"]["reward"] = -1.0
-        return result
 
-def _eval_subprocess_worker(queue, code, in_shape, out_shape, prm, device, val_metric_baseline, accuracy_baseline, cfg):
-    """Worker function running in a fresh process."""
+def _persistent_eval_worker_loop(conn) -> None:
+    loader_cache: Dict[Tuple[Any, ...], Tuple[DataLoader, DataLoader]] = {}
     try:
-        # Import inside worker to ensure clean state if needed
-        import torch
-        # Execute the original direct evaluation logic
-        result = _evaluate_code_and_reward_direct(
-            code, in_shape=in_shape, out_shape=out_shape, 
-            prm=prm, device=device, val_metric_baseline=val_metric_baseline, accuracy_baseline=accuracy_baseline, cfg=cfg
-        )
-        queue.put(result)
-    except Exception as e:
-        queue.put(_empty_eval_result(reward=-1.0, error=str(e), accuracy_baseline=accuracy_baseline))
+        while True:
+            try:
+                request = conn.recv()
+            except EOFError:
+                break
+
+            if not isinstance(request, dict):
+                conn.send(_empty_eval_result(error="Persistent eval worker received a non-dict request"))
+                continue
+
+            if request.get("cmd") == "shutdown":
+                break
+            if request.get("cmd") != "evaluate":
+                conn.send(_empty_eval_result(error=f"Persistent eval worker received unknown command: {request.get('cmd')!r}"))
+                continue
+
+            cfg = _deserialize_eval_cfg(request.get("cfg"))
+            loader_key = _loader_cache_key(cfg)
+            if loader_key not in loader_cache:
+                loader_cache[loader_key] = _build_cifar10_loaders(cfg)
+            train_loader, val_loader = loader_cache[loader_key]
+
+            try:
+                result = _evaluate_code_and_reward_direct(
+                    request["code"],
+                    in_shape=tuple(request["in_shape"]),
+                    out_shape=tuple(request["out_shape"]),
+                    prm=request.get("prm"),
+                    device=request.get("device", "cpu"),
+                    val_metric_baseline=request.get("val_metric_baseline"),
+                    seed_accuracy_baseline=request.get("seed_accuracy_baseline"),
+                    cfg=cfg,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                )
+            except Exception as exc:
+                result = _empty_eval_result(
+                    reward=-1.0,
+                    error=f"{type(exc).__name__}: {exc}",
+                    seed_accuracy_baseline=request.get("seed_accuracy_baseline"),
+                )
+                result["components"]["reward"] = -1.0
+
+            conn.send(result)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def _evaluate_code_and_reward_direct(
     code: str,
@@ -753,8 +946,10 @@ def _evaluate_code_and_reward_direct(
     prm: Dict[str, Any] = None,
     device: str = "cpu",
     val_metric_baseline: Optional[float] = None,
-    accuracy_baseline: Optional[float] = None,
+    seed_accuracy_baseline: Optional[float] = None,
     cfg: Optional[EvalConfig] = None,
+    train_loader: Optional[DataLoader] = None,
+    val_loader: Optional[DataLoader] = None,
 ) -> Dict[str, Any]:
     """
     The original evaluation logic (renamed).
@@ -782,23 +977,24 @@ def _evaluate_code_and_reward_direct(
         # Pass through error type so reward_fn can assign layered partial rewards
         error_type = type(e).__name__
         error_msg = f"{error_type}: {e}"
-        return _empty_eval_result(error=error_msg, accuracy_baseline=accuracy_baseline)
+        return _empty_eval_result(error=error_msg, seed_accuracy_baseline=seed_accuracy_baseline)
     try: 
         res = evaluate_and_reward(
             build_fn=builder,
-            train_loader=None,
-            val_loader=None,
+            train_loader=train_loader,
+            val_loader=val_loader,
             val_metric_baseline=val_metric_baseline,
-            accuracy_baseline=accuracy_baseline,
+            seed_accuracy_baseline=seed_accuracy_baseline,
             cfg=cfg,
         )
-        if res["reward"] == 0.0:
-            res["reward"] = -1.0
         return res
     except Exception as e:
         error_type = type(e).__name__
         error_msg = f"{error_type}: {e}"
-        return _empty_eval_result(error=error_msg, accuracy_baseline=accuracy_baseline)
+        return _empty_eval_result(error=error_msg, seed_accuracy_baseline=seed_accuracy_baseline)
+
+
+atexit.register(shutdown_eval_worker)
 
 if __name__ == "__main__":
     demo_code = r'''

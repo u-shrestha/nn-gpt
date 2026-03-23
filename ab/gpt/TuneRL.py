@@ -14,7 +14,11 @@ from ab.gpt.util.ArchDiscovery import (
 from ab.gpt.util.Util import extract_str
 from ab.gpt.util.Const import conf_train_dir, conf_test_dir, epoch_dir, new_nn_file, synth_dir, new_out_file
 from ab.nn.util.Util import create_file
-from ab.gpt.util.Reward import evaluate_code_and_reward
+from ab.gpt.util.Reward import (
+    PersistentEvalWorkerError,
+    evaluate_code_and_reward,
+    shutdown_eval_worker,
+)
 import ab.nn.api as api
 
 import os
@@ -48,6 +52,12 @@ base_model = "ABrain/NNGPT-Backbone-deepseek-coder-6.7b-instruct" # 使用新的
 LOAD_EXISTING_MODEL = False  # Model is already merged
 SAVED_MODEL_PATH = "rl_backbone_model" 
 B_index = 0
+GROUP_BATCH_SIZE = 20
+reward_batch_index = 0
+current_group_id = 0
+current_group_train_acc_sum = 0.0
+current_group_train_acc_count = 0
+prev_closed_group_train_acc_mean: Optional[float] = None
 # ==================================
 
 SHALLOW_COLLAPSE_FAMILIES = {
@@ -104,6 +114,75 @@ def env_float(name: str, default: float) -> float:
     if value is None or value == "":
         return default
     return float(value)
+
+
+def reset_reward_runtime_state() -> None:
+    global B_index
+    global reward_batch_index
+    global current_group_id
+    global current_group_train_acc_sum
+    global current_group_train_acc_count
+    global prev_closed_group_train_acc_mean
+
+    graph_archive_counts.clear()
+    family_archive_counts.clear()
+    family_hash_archive_counts.clear()
+    family_metric_best.clear()
+    motif_name_counts.clear()
+    saved_graph_counts.clear()
+    saved_family_hash_counts.clear()
+    goal_graph_archive_counts.clear()
+    goal_family_hash_archive_counts.clear()
+    saved_goal_family_hash_counts.clear()
+
+    B_index = 0
+    reward_batch_index = 0
+    current_group_id = 0
+    current_group_train_acc_sum = 0.0
+    current_group_train_acc_count = 0
+    prev_closed_group_train_acc_mean = None
+
+
+def current_reward_group_context() -> Dict[str, Any]:
+    return {
+        "reward_batch_index": reward_batch_index + 1,
+        "reward_group_id": current_group_id,
+        "group_warmup": current_group_id == 0,
+        "group_baseline_train_acc": prev_closed_group_train_acc_mean,
+    }
+
+
+def update_current_group_train_acc(train_acc_values: List[float]) -> None:
+    global current_group_train_acc_sum
+    global current_group_train_acc_count
+
+    for train_acc_value in train_acc_values:
+        current_group_train_acc_sum += float(train_acc_value)
+        current_group_train_acc_count += 1
+
+
+def close_reward_group_if_needed() -> None:
+    global reward_batch_index
+    global current_group_id
+    global current_group_train_acc_sum
+    global current_group_train_acc_count
+    global prev_closed_group_train_acc_mean
+
+    reward_batch_index += 1
+    if reward_batch_index % GROUP_BATCH_SIZE != 0:
+        return
+    if current_group_train_acc_count <= 0:
+        raise RuntimeError(f"Reward group {current_group_id} closed without any trainable samples")
+
+    prev_closed_group_train_acc_mean = current_group_train_acc_sum / current_group_train_acc_count
+    print(
+        f"[Reward Group] Closed group {current_group_id} after {GROUP_BATCH_SIZE} reward batches: "
+        f"mean_train_acc={prev_closed_group_train_acc_mean:.4f}, "
+        f"trainable_samples={current_group_train_acc_count}"
+    )
+    current_group_id += 1
+    current_group_train_acc_sum = 0.0
+    current_group_train_acc_count = 0
 
 
 def _coerce_accuracy_baseline(value: Any, *, context: str) -> float:
@@ -406,7 +485,7 @@ def _compute_build_partial_reward(res: Dict[str, Any]) -> float:
     return build_partial
 
 
-def _discovery_failure_result(reward: float, error: str, *, accuracy_baseline: float) -> Dict[str, Any]:
+def _discovery_failure_result(reward: float, error: str, *, seed_accuracy_baseline: float) -> Dict[str, Any]:
     return {
         "reward": reward,
         "built_ok": False,
@@ -419,12 +498,30 @@ def _discovery_failure_result(reward: float, error: str, *, accuracy_baseline: f
         "loss_drop": None,
         "loss_drop_ok": False,
         "train_acc": None,
-        "accuracy_baseline": accuracy_baseline,
+        "seed_accuracy_baseline": seed_accuracy_baseline,
+        "seed_train_acc_gap": None,
+        "seed_train_acc_improved": False,
+        "accuracy_baseline": seed_accuracy_baseline,
         "train_acc_gain": None,
         "train_acc_improved": False,
+        "group_baseline_train_acc": None,
+        "group_train_acc_gain": None,
+        "group_train_acc_improved": False,
+        "reward_batch_index": None,
+        "reward_group_id": None,
+        "group_warmup": False,
         "val_metric": None,
         "latency_ms": None,
         "params_m": None,
+        "open_discovery": {
+            "r_primary": 0.0,
+            "r_tiebreak": 0.0,
+            "r_trainset_novelty": 0.0,
+            "novel_vs_trainset_family": False,
+            "novel_vs_trainset_graph": False,
+            "archive_snapshot_family_freq": 0,
+            "batch_same_family_count": 0,
+        },
         "error": error,
     }
 
@@ -456,29 +553,69 @@ def _apply_trainability_clamp(res: Dict[str, Any], reward_value: float, graph_in
     return reward_value
 
 
+def _attach_group_context(
+    res: Dict[str, Any],
+    *,
+    seed_accuracy_baseline: float,
+    group_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    res.setdefault("seed_accuracy_baseline", seed_accuracy_baseline)
+    res.setdefault("seed_train_acc_gap", None)
+    res.setdefault("seed_train_acc_improved", False)
+    res.setdefault("accuracy_baseline", seed_accuracy_baseline)
+    res.setdefault("train_acc_gain", None)
+    res.setdefault("train_acc_improved", False)
+    res.setdefault("group_baseline_train_acc", group_context["group_baseline_train_acc"])
+    res.setdefault("group_train_acc_gain", None)
+    res.setdefault("group_train_acc_improved", False)
+    res.setdefault("reward_batch_index", group_context["reward_batch_index"])
+    res.setdefault("reward_group_id", group_context["reward_group_id"])
+    res.setdefault("group_warmup", group_context["group_warmup"])
+
+    open_discovery = res.setdefault("open_discovery", {})
+    open_discovery.setdefault("r_primary", 0.0)
+    open_discovery.setdefault("r_tiebreak", 0.0)
+    open_discovery.setdefault("r_trainset_novelty", 0.0)
+    open_discovery.setdefault("novel_vs_trainset_family", False)
+    open_discovery.setdefault("novel_vs_trainset_graph", False)
+    open_discovery.setdefault("archive_snapshot_family_freq", 0)
+    open_discovery.setdefault("batch_same_family_count", 0)
+    open_discovery.setdefault("group_baseline_train_acc", group_context["group_baseline_train_acc"])
+    open_discovery.setdefault("group_train_acc_gain", res.get("group_train_acc_gain"))
+    open_discovery.setdefault("group_train_acc_improved", res.get("group_train_acc_improved", False))
+    open_discovery.setdefault("reward_batch_index", group_context["reward_batch_index"])
+    open_discovery.setdefault("reward_group_id", group_context["reward_group_id"])
+    open_discovery.setdefault("group_warmup", group_context["group_warmup"])
+    return res
+
+
 def base_discovery_reward_fn(
     completion: str,
     *,
-    accuracy_baseline: float,
+    seed_accuracy_baseline: float,
     graph_info=None,
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
     prompt_goal_tags: List[str] = None,
     archive_snapshot_family_counts: Optional[Dict[str, int]] = None,
+    group_baseline_train_acc: Optional[float] = None,
+    reward_batch_index: Optional[int] = None,
+    reward_group_id: Optional[int] = None,
+    group_warmup: bool = False,
 ) -> Dict[str, Any]:
     block_code, init_code, forward_code = extract_completion_blocks(completion)
     if not block_code or not init_code or not forward_code:
         return _discovery_failure_result(
             -2.0,
             "Reconstruction failed (tags missing?)",
-            accuracy_baseline=accuracy_baseline,
+            seed_accuracy_baseline=seed_accuracy_baseline,
         )
 
     if "self.pattern" in forward_code:
         return _discovery_failure_result(
             -5.0,
             "CHEAT DETECTED: Accessed self.pattern inside forward block",
-            accuracy_baseline=accuracy_baseline,
+            seed_accuracy_baseline=seed_accuracy_baseline,
         )
 
     graph_info = graph_info or extract_graph_info(
@@ -496,7 +633,7 @@ def base_discovery_reward_fn(
         return _discovery_failure_result(
             -2.0,
             "Code reconstruction failed",
-            accuracy_baseline=accuracy_baseline,
+            seed_accuracy_baseline=seed_accuracy_baseline,
         )
 
     res = evaluate_code_and_reward(
@@ -506,7 +643,7 @@ def base_discovery_reward_fn(
         prm={'lr': 0.01, 'batch': 16, 'dropout': 0.3, 'momentum': 0.9,
              'transform': 'norm_256_flip', 'epoch': 1},
         device="cuda" if torch.cuda.is_available() else "cpu",
-        accuracy_baseline=accuracy_baseline,
+        seed_accuracy_baseline=seed_accuracy_baseline,
     )
 
     if not res.get('built_ok'):
@@ -518,13 +655,17 @@ def base_discovery_reward_fn(
 
     novel_vs_trainset_family = False
     novel_vs_trainset_graph = False
-    train_acc_gain = res.get("train_acc_gain")
+    train_acc = res.get("train_acc")
+    group_train_acc_gain = None
+    group_train_acc_improved = False
     r_primary = 0.0
-    if train_acc_gain is not None:
-        r_primary = max(-2.0, min(2.0, 4.0 * float(train_acc_gain)))
+    if (train_acc is not None) and (group_baseline_train_acc is not None) and (not group_warmup):
+        group_train_acc_gain = float(train_acc - group_baseline_train_acc)
+        group_train_acc_improved = bool(group_train_acc_gain > 0.0)
+        r_primary = max(-2.0, min(2.0, 4.0 * group_train_acc_gain))
 
     r_tiebreak = 0.0
-    if _is_trainable_candidate(res, graph_info) and float(train_acc_gain or 0.0) > 0.0:
+    if _is_trainable_candidate(res, graph_info) and bool(group_train_acc_improved):
         novel_vs_trainset_family = graph_info.family_hash not in train_family_hashes
         novel_vs_trainset_graph = graph_info.graph_hash not in train_graph_hashes
 
@@ -533,10 +674,20 @@ def base_discovery_reward_fn(
         elif novel_vs_trainset_graph:
             r_tiebreak = 0.01
 
-    total_reward = max(-2.0, min(2.0, r_primary + r_tiebreak))
+    if group_warmup and _is_trainable_candidate(res, graph_info):
+        total_reward = 0.0
+    else:
+        total_reward = max(-2.0, min(2.0, r_primary + r_tiebreak))
     total_reward = _apply_trainability_clamp(res, total_reward, graph_info)
 
     res['reward'] = total_reward
+    res['seed_accuracy_baseline'] = seed_accuracy_baseline
+    res['group_baseline_train_acc'] = group_baseline_train_acc
+    res['group_train_acc_gain'] = group_train_acc_gain
+    res['group_train_acc_improved'] = group_train_acc_improved
+    res['reward_batch_index'] = reward_batch_index
+    res['reward_group_id'] = reward_group_id
+    res['group_warmup'] = group_warmup
     res['signature'] = f"{normalize_pattern_name(effective_pattern_name)}_{graph_info.graph_hash[:6]}"
     res['graph_hash'] = graph_info.graph_hash
     res['family_id'] = graph_info.family_id
@@ -550,6 +701,12 @@ def base_discovery_reward_fn(
         'r_primary': r_primary,
         'r_tiebreak': r_tiebreak,
         'r_trainset_novelty': r_tiebreak,
+        'group_baseline_train_acc': group_baseline_train_acc,
+        'group_train_acc_gain': group_train_acc_gain,
+        'group_train_acc_improved': group_train_acc_improved,
+        'reward_batch_index': reward_batch_index,
+        'reward_group_id': reward_group_id,
+        'group_warmup': group_warmup,
         'prompt_goal_tags': list(prompt_goal_tags or []),
         'macro_structure_ok': passes_macro_structure_gate(graph_info),
         'is_multi_stage_architecture': is_multi_stage_architecture(graph_info),
@@ -579,28 +736,37 @@ def base_discovery_reward_fn(
 def reward_fn(
     completion: str,
     *,
-    accuracy_baseline: float,
+    seed_accuracy_baseline: float,
     graph_info=None,
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
     prompt_goal_tags: List[str] = None,
     archive_snapshot_family_counts: Optional[Dict[str, int]] = None,
+    group_baseline_train_acc: Optional[float] = None,
+    reward_batch_index: Optional[int] = None,
+    reward_group_id: Optional[int] = None,
+    group_warmup: bool = False,
 ) -> Dict[str, Any]:
     """Reward open-ended motif discovery while keeping the existing XML output ABI."""
     return base_discovery_reward_fn(
         completion,
-        accuracy_baseline=accuracy_baseline,
+        seed_accuracy_baseline=seed_accuracy_baseline,
         graph_info=graph_info,
         batch_graph_hashes=batch_graph_hashes,
         batch_family_hashes=batch_family_hashes,
         prompt_goal_tags=prompt_goal_tags,
         archive_snapshot_family_counts=archive_snapshot_family_counts,
+        group_baseline_train_acc=group_baseline_train_acc,
+        reward_batch_index=reward_batch_index,
+        reward_group_id=reward_group_id,
+        group_warmup=group_warmup,
     )
 
 def compute_reward(prompts, completions, **kwargs):
     global B_index
     rewards = []
-    accuracy_baselines = require_sample_accuracy_baselines(kwargs, len(completions))
+    seed_accuracy_baselines = require_sample_accuracy_baselines(kwargs, len(completions))
+    group_context = current_reward_group_context()
 
     batch_graph_infos = []
     for completion in completions:
@@ -637,12 +803,21 @@ def compute_reward(prompts, completions, **kwargs):
             goal_key = primary_goal_key(batch_prompt_goal_tags[i])
             res = reward_fn(
                 completion,
-                accuracy_baseline=accuracy_baselines[i],
+                seed_accuracy_baseline=seed_accuracy_baselines[i],
                 graph_info=graph_info,
                 batch_graph_hashes=batch_graph_hashes,
                 batch_family_hashes=batch_family_hashes,
                 prompt_goal_tags=batch_prompt_goal_tags[i],
                 archive_snapshot_family_counts=archive_snapshot_family_counts,
+                group_baseline_train_acc=group_context["group_baseline_train_acc"],
+                reward_batch_index=group_context["reward_batch_index"],
+                reward_group_id=group_context["reward_group_id"],
+                group_warmup=group_context["group_warmup"],
+            )
+            res = _attach_group_context(
+                res,
+                seed_accuracy_baseline=seed_accuracy_baselines[i],
+                group_context=group_context,
             )
             score = res.get('reward', -2.0)
             rewards.append(score)
@@ -657,9 +832,32 @@ def compute_reward(prompts, completions, **kwargs):
                     "score": score,
                 }
             )
+        except PersistentEvalWorkerError:
+            raise
         except Exception as e:
             code_logger.log_to_file(f"Reward calculation failed at index {i}: {e}")
             rewards.append(-1.0)
+            failure_result = _attach_group_context(
+                {
+                    "reward": -1.0,
+                    "built_ok": False,
+                    "forward_ok": False,
+                    "forward_shape_ok": False,
+                    "trained_step_ok": False,
+                    "backward_ok": False,
+                    "loss_start": None,
+                    "loss_end": None,
+                    "loss_drop": None,
+                    "loss_drop_ok": False,
+                    "train_acc": None,
+                    "val_metric": None,
+                    "latency_ms": None,
+                    "params_m": None,
+                    "error": str(e),
+                },
+                seed_accuracy_baseline=seed_accuracy_baselines[i],
+                group_context=group_context,
+            )
             scored_results.append(
                 {
                     "index": i,
@@ -667,11 +865,12 @@ def compute_reward(prompts, completions, **kwargs):
                     "completion": completion,
                     "graph_info": batch_graph_infos[i],
                     "goal_key": primary_goal_key(batch_prompt_goal_tags[i]),
-                    "result": {"reward": -1.0, "error": str(e)},
+                    "result": failure_result,
                     "score": -1.0,
                 }
             )
 
+    current_batch_train_accs: List[float] = []
     for item in scored_results:
         i = item["index"]
         prompt = item["prompt"]
@@ -684,6 +883,9 @@ def compute_reward(prompts, completions, **kwargs):
 
         is_trainable = _is_trainable_candidate(res, graph_info)
         if is_trainable:
+            train_acc_value = res.get("train_acc")
+            if train_acc_value is not None:
+                current_batch_train_accs.append(float(train_acc_value))
             graph_archive_counts[graph_info.graph_hash] += 1
             family_archive_counts[graph_info.family_id] += 1
             family_hash_archive_counts[graph_info.family_hash] += 1
@@ -691,7 +893,7 @@ def compute_reward(prompts, completions, **kwargs):
             get_goal_counter(goal_graph_archive_counts, goal_key)[graph_info.graph_hash] += 1
             get_goal_counter(goal_family_hash_archive_counts, goal_key)[graph_info.family_hash] += 1
             current_best = family_metric_best.get(graph_info.family_hash, float("-inf"))
-            gain_value = res.get("train_acc_gain")
+            gain_value = res.get("group_train_acc_gain")
             family_metric_best[graph_info.family_hash] = max(
                 current_best,
                 float(gain_value if gain_value is not None else float("-inf")),
@@ -708,7 +910,8 @@ def compute_reward(prompts, completions, **kwargs):
             and res.get('forward_shape_ok')
             and res.get('backward_ok')
             and res.get('loss_drop_ok')
-            and float(res.get("train_acc_gain") or 0.0) > 0.0
+            and not res.get("group_warmup")
+            and float(res.get("group_train_acc_gain") or 0.0) > 0.0
             and saved_graph_counts[graph_info.graph_hash] == 0
             and saved_family_hash_counts[graph_info.family_hash] < family_save_cap(graph_info)
             and get_goal_counter(saved_goal_family_hash_counts, goal_key)[graph_info.family_hash] < goal_family_save_cap(graph_info)
@@ -737,6 +940,9 @@ def compute_reward(prompts, completions, **kwargs):
             B_index += 1
 
         code_logger.log_generation(prompt, completion, score, res)
+
+    update_current_group_train_acc(current_batch_train_accs)
+    close_reward_group_if_needed()
 
     # 计算开放式架构多样性指标
     total_valid = sum(family_hash_archive_counts.values())
@@ -818,6 +1024,7 @@ def load_rl_dataset(tokenizer):
 
 def main():
     torch.cuda.empty_cache()  
+    reset_reward_runtime_state()
 
     print(f"Using RL base model: {base_model}")
     tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
@@ -893,7 +1100,10 @@ def main():
     )
 
     print("Starting GRPO training for Backbone Search...")
-    trainer.train()
+    try:
+        trainer.train()
+    finally:
+        shutdown_eval_worker()
 
     model_out = run_model_out()
     print(f"Saving model to {model_out}...")

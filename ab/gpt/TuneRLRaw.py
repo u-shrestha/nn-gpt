@@ -859,21 +859,29 @@ def extract_completion_meta(completion: str) -> Dict[str, object]:
 def raw_reward_fn(
     completion: str,
     *,
-    accuracy_baseline: float,
+    seed_accuracy_baseline: float,
     graph_info=None,
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
     prompt_goal_tags: List[str] = None,
     archive_snapshot_family_counts: Dict[str, int] = None,
+    group_baseline_train_acc: float | None = None,
+    reward_batch_index: int | None = None,
+    reward_group_id: int | None = None,
+    group_warmup: bool = False,
 ):
     res = TuneRL.base_discovery_reward_fn(
         completion,
-        accuracy_baseline=accuracy_baseline,
+        seed_accuracy_baseline=seed_accuracy_baseline,
         graph_info=graph_info,
         batch_graph_hashes=batch_graph_hashes,
         batch_family_hashes=batch_family_hashes,
         prompt_goal_tags=prompt_goal_tags,
         archive_snapshot_family_counts=archive_snapshot_family_counts,
+        group_baseline_train_acc=group_baseline_train_acc,
+        reward_batch_index=reward_batch_index,
+        reward_group_id=reward_group_id,
+        group_warmup=group_warmup,
     )
     meta = extract_completion_meta(completion)
     raw_delta = 0.0
@@ -932,6 +940,8 @@ def raw_reward_fn(
 
     if not meta.get("dual_backbone_ok"):
         res["reward"] = min(float(res["reward"]), -3.5)
+    elif group_warmup and TuneRL._is_trainable_candidate(res, graph_info):
+        res["reward"] = 0.0
 
     res["raw_extraction"] = {
         **meta,

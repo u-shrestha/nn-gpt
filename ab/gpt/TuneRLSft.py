@@ -110,68 +110,7 @@ def resolve_sft_model_sources() -> tuple[str, str, str]:
     return SFT_BASE_MODEL_ID, SFT_BASE_MODEL_ID, "model-id"
 
 
-def _build_cifar10_eval_loaders(batch_size: int):
-    import torch
-    from torch.utils.data import DataLoader, Subset
-    from torchvision import datasets, transforms
-
-    normalize = transforms.Normalize(
-        (0.4914, 0.4822, 0.4465),
-        (0.2023, 0.1994, 0.2010),
-    )
-    train_transform = transforms.Compose(
-        [
-            transforms.Resize((SFT_EVAL_IMAGE_SIZE, SFT_EVAL_IMAGE_SIZE)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ]
-    )
-    val_transform = transforms.Compose(
-        [
-            transforms.Resize((SFT_EVAL_IMAGE_SIZE, SFT_EVAL_IMAGE_SIZE)),
-            transforms.ToTensor(),
-            normalize,
-        ]
-    )
-
-    train_dataset = datasets.CIFAR10(
-        root=SFT_EVAL_DATA_ROOT,
-        train=True,
-        download=SFT_EVAL_DOWNLOAD,
-        transform=train_transform,
-    )
-    val_dataset = datasets.CIFAR10(
-        root=SFT_EVAL_DATA_ROOT,
-        train=False,
-        download=SFT_EVAL_DOWNLOAD,
-        transform=val_transform,
-    )
-
-    if 0 < SFT_EVAL_TRAIN_SUBSET < len(train_dataset):
-        train_dataset = Subset(train_dataset, range(SFT_EVAL_TRAIN_SUBSET))
-    if 0 < SFT_EVAL_VAL_SUBSET < len(val_dataset):
-        val_dataset = Subset(val_dataset, range(SFT_EVAL_VAL_SUBSET))
-
-    train_batch = max(1, min(batch_size, len(train_dataset)))
-    val_batch = max(1, min(batch_size, len(val_dataset)))
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=train_batch,
-        shuffle=True,
-        num_workers=0,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=val_batch,
-        shuffle=False,
-        num_workers=0,
-    )
-    return train_loader, val_loader
-
-
-def _cifar_eval_error(error: Exception, *, accuracy_baseline: float | None = None) -> Dict[str, Any]:
+def _cifar_eval_error(error: Exception, *, seed_accuracy_baseline: float | None = None) -> Dict[str, Any]:
     error_type = type(error).__name__
     error_msg = f"{error_type}: {error}"
     return {
@@ -200,86 +139,22 @@ def _cifar_eval_error(error: Exception, *, accuracy_baseline: float | None = Non
         "loss_drop": None,
         "loss_drop_ok": False,
         "train_acc": None,
-        "accuracy_baseline": accuracy_baseline,
+        "seed_accuracy_baseline": seed_accuracy_baseline,
+        "seed_train_acc_gap": None,
+        "seed_train_acc_improved": False,
+        "accuracy_baseline": seed_accuracy_baseline,
         "train_acc_gain": None,
         "train_acc_improved": False,
+        "group_baseline_train_acc": None,
+        "group_train_acc_gain": None,
+        "group_train_acc_improved": False,
+        "reward_batch_index": None,
+        "reward_group_id": None,
+        "group_warmup": False,
         "latency_ms": None,
         "params_m": None,
         "error": error_msg,
     }
-
-
-def _evaluate_code_and_reward_cifar_direct(
-    code: str,
-    *,
-    in_shape=(1, 3, 256, 256),
-    out_shape=(10,),
-    prm=None,
-    device: str = "cpu",
-    val_metric_baseline: float | None = None,
-    accuracy_baseline: float | None = None,
-    cfg=None,
-) -> Dict[str, Any]:
-    if prm is None:
-        prm = {"lr": 1e-2, "momentum": 0.9, "dropout": 0.3}
-    defaults = {"lr": 1e-2, "momentum": 0.9, "batch": SFT_EVAL_BATCH_SIZE, "epoch": 1}
-    prm = {**defaults, **prm}
-
-    if cfg is None:
-        cfg = RewardUtil.EvalConfig(
-            device=device,
-            input_shape=in_shape,
-            n_classes=int(out_shape[0]),
-            train_steps=SFT_EVAL_TRAIN_STEPS,
-            max_val_batches=SFT_EVAL_VAL_BATCHES,
-            measure_latency=True,
-            kl_div=None,
-            critic_fn=None,
-            weights=None,
-        )
-
-    try:
-        builder = RewardUtil.build_fn_from_code(code, in_shape, out_shape, prm, device)
-    except Exception as exc:
-        return _cifar_eval_error(exc, accuracy_baseline=accuracy_baseline)
-
-    try:
-        eval_batch = int(prm.get("batch") or SFT_EVAL_BATCH_SIZE)
-        eval_batch = max(1, min(eval_batch, SFT_EVAL_BATCH_SIZE))
-        train_loader, val_loader = _build_cifar10_eval_loaders(eval_batch)
-        res = RewardUtil.evaluate_and_reward(
-            build_fn=builder,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            val_metric_baseline=val_metric_baseline,
-            accuracy_baseline=accuracy_baseline,
-            cfg=cfg,
-        )
-        if res["reward"] == 0.0:
-            res["reward"] = -1.0
-        return res
-    except Exception as exc:
-        return _cifar_eval_error(exc, accuracy_baseline=accuracy_baseline)
-
-
-def _eval_cifar_subprocess_worker(send_conn, code, in_shape, out_shape, prm, device, val_metric_baseline, accuracy_baseline, cfg):
-    try:
-        result = _evaluate_code_and_reward_cifar_direct(
-            code,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            prm=prm,
-            device=device,
-            val_metric_baseline=val_metric_baseline,
-            accuracy_baseline=accuracy_baseline,
-            cfg=cfg,
-        )
-        send_conn.send(result)
-    except Exception as exc:
-        send_conn.send(_cifar_eval_error(exc, accuracy_baseline=accuracy_baseline))
-    finally:
-        send_conn.close()
-
 
 def evaluate_code_and_reward_cifar(
     code: str,
@@ -289,67 +164,47 @@ def evaluate_code_and_reward_cifar(
     prm=None,
     device: str = "cpu",
     val_metric_baseline=None,
-    accuracy_baseline=None,
+    seed_accuracy_baseline=None,
     cfg=None,
 ) -> Dict[str, Any]:
-    import multiprocessing as mp
-
-    ctx = mp.get_context("spawn")
-    recv_conn, send_conn = ctx.Pipe(duplex=False)
-    process = ctx.Process(
-        target=_eval_cifar_subprocess_worker,
-        args=(send_conn, code, in_shape, out_shape, prm, device, val_metric_baseline, accuracy_baseline, cfg),
-    )
-
     try:
-        process.start()
-        send_conn.close()  # Parent must close the write end so read end receives EOF properly
-        if recv_conn.poll(300):
-            res = recv_conn.recv()
-        else:
-            raise TimeoutError("Evaluation timed out after 300 seconds.")
-        process.join(5)
-        return res
+        if prm is None:
+            prm = {"lr": 1e-2, "momentum": 0.9, "dropout": 0.3}
+        defaults = {"lr": 1e-2, "momentum": 0.9, "batch": SFT_EVAL_BATCH_SIZE, "epoch": 1}
+        prm = {**defaults, **prm}
+
+        if cfg is None:
+            cfg = RewardUtil.EvalConfig(
+                device=device,
+                input_shape=in_shape,
+                n_classes=int(out_shape[0]),
+                train_steps=SFT_EVAL_TRAIN_STEPS,
+                max_val_batches=SFT_EVAL_VAL_BATCHES,
+                default_batch_size=SFT_EVAL_BATCH_SIZE,
+                train_subset_size=SFT_EVAL_TRAIN_SUBSET,
+                val_subset_size=SFT_EVAL_VAL_SUBSET,
+                data_root=SFT_EVAL_DATA_ROOT,
+                download=SFT_EVAL_DOWNLOAD,
+                measure_latency=True,
+                kl_div=None,
+                critic_fn=None,
+                weights=None,
+            )
+
+        return RewardUtil.evaluate_code_and_reward(
+            code,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            prm=prm,
+            device=device,
+            val_metric_baseline=val_metric_baseline,
+            seed_accuracy_baseline=seed_accuracy_baseline,
+            cfg=cfg,
+        )
     except Exception as exc:
-        print(f"[Reward Subprocess] Critical Error or Timeout: {exc}")
-        if process.is_alive():
-            process.terminate()
-            process.join()
-        return {
-            "reward": -1.0,
-            "components": {
-                "reward": -1.0,
-                "r_build": 0.0,
-                "r_forward_shape": 0.0,
-                "r_backward": 0.0,
-                "r_loss_drop": 0.0,
-                "r_forward": 0.0,
-                "r_trainstep": 0.0,
-                "r_metric": 0.0,
-                "r_eff": 0.0,
-                "r_critic": 0.0,
-                "r_kl": 0.0,
-            },
-            "val_metric": None,
-            "built_ok": False,
-            "forward_ok": False,
-            "forward_shape_ok": False,
-            "trained_step_ok": False,
-            "backward_ok": False,
-            "loss_start": None,
-            "loss_end": None,
-            "loss_drop": None,
-            "loss_drop_ok": False,
-            "train_acc": None,
-            "accuracy_baseline": accuracy_baseline,
-            "train_acc_gain": None,
-            "train_acc_improved": False,
-            "latency_ms": None,
-            "params_m": None,
-            "error": str(exc),
-        }
-    finally:
-        recv_conn.close()
+        if isinstance(exc, RewardUtil.PersistentEvalWorkerError):
+            raise
+        return _cifar_eval_error(exc, seed_accuracy_baseline=seed_accuracy_baseline)
 
 
 def _is_trainable_architecture(res: Dict[str, Any], graph_info) -> bool:
@@ -385,21 +240,29 @@ def _reapply_trainability_clamp(res: Dict[str, Any], reward_value: float, graph_
 def sft_reward_fn(
     completion: str,
     *,
-    accuracy_baseline: float,
+    seed_accuracy_baseline: float,
     graph_info=None,
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
     prompt_goal_tags: List[str] = None,
     archive_snapshot_family_counts: Dict[str, int] = None,
+    group_baseline_train_acc: float | None = None,
+    reward_batch_index: int | None = None,
+    reward_group_id: int | None = None,
+    group_warmup: bool = False,
 ):
     res = TuneRLRaw.raw_reward_fn(
         completion,
-        accuracy_baseline=accuracy_baseline,
+        seed_accuracy_baseline=seed_accuracy_baseline,
         graph_info=graph_info,
         batch_graph_hashes=batch_graph_hashes,
         batch_family_hashes=batch_family_hashes,
         prompt_goal_tags=prompt_goal_tags,
         archive_snapshot_family_counts=archive_snapshot_family_counts,
+        group_baseline_train_acc=group_baseline_train_acc,
+        reward_batch_index=reward_batch_index,
+        reward_group_id=reward_group_id,
+        group_warmup=group_warmup,
     )
     res["reward"] = _reapply_trainability_clamp(res, float(res.get("reward", -2.0)), graph_info)
     res["anti_collapse"] = {
@@ -481,6 +344,7 @@ def run_sft_training():
     from transformers import BitsAndBytesConfig
 
     torch.cuda.empty_cache()
+    TuneRL.reset_reward_runtime_state()
 
     print(f"Using RL base model: {TuneRL.base_model}")
     tokenizer_source = getattr(TuneRL, "tokenizer_source", TuneRL.base_model)
@@ -556,7 +420,10 @@ def run_sft_training():
     )
 
     print("Starting GRPO training for Backbone Search...")
-    trainer.train()
+    try:
+        trainer.train()
+    finally:
+        RewardUtil.shutdown_eval_worker()
 
     if SFT_SAVE_RL_MODEL:
         print(f"Saving model to {SFT_MODEL_OUT}...")
@@ -590,6 +457,7 @@ def patch_sft_runtime() -> tuple[str, str, str]:
 def bootstrap_sft_runtime() -> None:
     """Initialize logging and reset extraction cache."""
     TuneRLRaw.EXTRACTION_META_CACHE.clear()
+    RewardUtil.shutdown_eval_worker()
 
     log_dir = TuneRL.run_log_dir()
     os.makedirs(log_dir, exist_ok=True)

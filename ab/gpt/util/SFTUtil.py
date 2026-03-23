@@ -166,12 +166,19 @@ class Net(nn.Module):
         
     def train_setup(self, prm):
         self.to(self.device)
+        for backbone in (self.backbone_a, self.backbone_b):
+            for param in backbone.parameters():
+                param.requires_grad = False
+            backbone.eval()
         self.criterion = nn.CrossEntropyLoss().to(self.device)
-        self.optimizer = torch.optim.SGD(self.parameters(), lr=prm['lr'], momentum=prm['momentum'])
+        trainable_params = [param for param in self.parameters() if param.requires_grad]
+        self.optimizer = torch.optim.SGD(trainable_params, lr=prm['lr'], momentum=prm['momentum'])
         self._scaler = make_scaler(enabled=self.use_amp)
 
     def learn(self, train_data):
         self.train()
+        self.backbone_a.eval()
+        self.backbone_b.eval()
         scaler = self._scaler
         train_iter = iter(train_data)
         try:
@@ -265,10 +272,10 @@ open_discovery_skeleton_code = skeleton_code
 
 open_discovery_prompt_template = """
 ### Role & Context
-You are a Senior AI Architect optimizing an image-classification model under a strict XML ABI. Your job is to produce a trainable dual-backbone architecture that can surpass the provided reference accuracy.
+You are a Senior AI Architect optimizing an image-classification model under a strict XML ABI. Your job is to produce a trainable dual-backbone architecture that improves frozen-proxy training accuracy.
 
 ### Performance Goal
-Produce one trainable architecture that aims to beat the reference accuracy `{accuracy}` on short-budget training. Change the graph only when the change is likely to improve accuracy or optimization stability.
+Produce one trainable architecture that improves short-budget training accuracy when both backbones are frozen. Use `{accuracy}` only as a seed reference for the starting model quality, not as the reward baseline.
 
 ### Optimization Track
 - Track Name: {goal_name}
@@ -286,7 +293,8 @@ Produce one trainable architecture that aims to beat the reference accuracy `{ac
    - No markdown, no explanation, no extra text
 
 2. Optimize for accuracy first
-   - Treat `{accuracy}` as the per-sample reference baseline to beat
+   - The reward is driven by frozen-proxy train accuracy improvement, not novelty
+   - Treat `{accuracy}` only as seed context, not as the target reward baseline
    - Architecture changes must serve train accuracy, not visual novelty
    - Avoid unnecessary branches, dead modules, and decorative topology changes
 
@@ -300,8 +308,10 @@ Produce one trainable architecture that aims to beat the reference accuracy `{ac
    - Initialize both with `TorchVision(model=..., in_channels=...)`
    - Use both backbones in `forward`
    - Do not omit either backbone, and do not add a third backbone
+   - Both backbones are frozen during RL proxy training and final training
 
 5. Build an accuracy-oriented computation graph
+   - Do not rely on backbone finetuning; improve accuracy through stem/project/bridge/fractal/fuse/classifier design
    - Avoid the plain one-shot `torch.cat([backbone_a(x), backbone_b(x)])` classifier-only fusion
    - Prefer stems, projectors, bridges, reuse paths, staged fusion, or asymmetric branches when they help optimization
    - Use direct computation graph construction; no `if self.pattern == ...` in `forward`
@@ -351,10 +361,10 @@ Output ONLY the implementation within the XML tags. Each tag MUST contain the co
 
 open_discovery_rl_prompt_template = """
 ### Role & Context
-You are a Senior AI Architect optimizing a dual-backbone image-classification model under a strict XML ABI. Your job is to produce a trainable architecture that can surpass the provided reference accuracy.
+You are a Senior AI Architect optimizing a dual-backbone image-classification model under a strict XML ABI. Your job is to produce a trainable architecture that improves frozen-proxy training accuracy.
 
 ### Performance Goal
-Produce one trainable architecture that aims to beat the reference accuracy `{accuracy}` on short-budget training. Change the graph only when the change is likely to improve training accuracy or optimization stability.
+Produce one trainable architecture that improves short-budget training accuracy when both backbones are frozen. Use `{accuracy}` only as a seed reference for the starting model quality, not as the reward baseline.
 
 ### Optimization Track
 - Track Name: {goal_name}
@@ -374,7 +384,8 @@ Produce one trainable architecture that aims to beat the reference accuracy `{ac
    - The last non-whitespace token must be `</forward>`
 
 2. Optimize for accuracy first
-   - Treat `{accuracy}` as the per-sample reference baseline to beat
+   - The reward is driven by frozen-proxy train accuracy improvement, not novelty for its own sake
+   - Treat `{accuracy}` only as seed context, not as the target reward baseline
    - Architecture changes must serve train accuracy, not novelty for its own sake
    - Avoid decorative complexity, unused modules, or graph edits that do not improve learning signal
 
@@ -389,6 +400,7 @@ Produce one trainable architecture that aims to beat the reference accuracy `{ac
    - Use two DIFFERENT backbone model names from [{available_backbones}]
    - Both backbones must appear in `__init__` and `forward`
    - Do not omit either backbone, and do not add a third backbone
+   - Both backbones are frozen during RL proxy training and final training
 
 5. Preserve the required ABI
    - Implement `drop_conv3x3_block`
@@ -400,6 +412,7 @@ Produce one trainable architecture that aims to beat the reference accuracy `{ac
 6. Build an accuracy-oriented graph
    - Avoid the plain one-shot parallel fuse topology because it is usually too weak
    - Do not simply pool the two backbones once and concatenate them only at the classifier input
+   - Do not rely on backbone finetuning; focus improvements on stem/project/bridge/fractal/fuse/classifier structure
    - Use the Optimization Target Tags above with actual code structure, not just naming
    - Prefer visible modules such as: {module_hints}
    - Do not define new classes or helper methods beyond the 3 required definitions
