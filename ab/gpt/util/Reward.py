@@ -101,7 +101,15 @@ class _PersistentEvalWorkerSession:
             raise PersistentEvalWorkerError(
                 f"Persistent eval worker startup handshake missing fields: {', '.join(missing)}"
             )
-        if bool(response["cuda_available"]) or int(response["cuda_device_count"]) != 0:
+        cuda_visible_devices = str(response["cuda_visible_devices"]).strip()
+        cuda_device_count = int(response["cuda_device_count"])
+        if cuda_visible_devices not in {"", "-1"}:
+            self.close(force=True)
+            raise PersistentEvalWorkerError(
+                "Persistent eval worker must hide CUDA devices, but reported "
+                f"CUDA_VISIBLE_DEVICES={response['cuda_visible_devices']!r}"
+            )
+        if cuda_device_count != 0:
             self.close(force=True)
             raise PersistentEvalWorkerError(
                 "Persistent eval worker must be CPU-only, but reported CUDA visibility "
