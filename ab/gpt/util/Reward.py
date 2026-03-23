@@ -6,7 +6,7 @@ import gc
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, Subset
 
 def compute_cv_reward_simple(
     *,
@@ -34,7 +34,7 @@ def compute_cv_reward_simple(
         "forward_shape": 0.2,  # bonus if logits shape is correct
         "backward": 0.3,       # bonus if backward + optimizer step succeed
         "loss_drop": 0.6,      # bonus if short-run training shows learning signal
-        "metric_gain": 0.1,    # weak validation tie-breaker
+        "metric_gain": 0.0,    # validation stays logging-only in RL reward
         "eff_latency": 0.0,   # optional: -latency_ms * coeff
         "eff_params":  0.0,   # optional: -params_m  * coeff
         "eff_flops":   0.0,   # optional: -flops_g   * coeff
@@ -256,32 +256,96 @@ def _train_steps(
 
 
 @torch.no_grad()
-def _quick_validate_acc(
+def _quick_accuracy(
     model: nn.Module,
-    val_loader: DataLoader,
+    data_loader: DataLoader,
+    *,
     device: str = "cpu",
-    max_batches: int = 10
+    max_batches: int = 10,
 ) -> float:
     """
-    Evaluation. Returns accuracy in [0,1].
+    Evaluate accuracy in [0,1] on the provided loader without interpolation or fallback.
     """
-    try:
-        model.eval()
-        correct, total, bs = 0, 0, 0
-        for x, y in val_loader:
-            x = x.to(device); y = y.to(device)
-            logits = model(x)                   
-            if logits.dim() != 2:
-                raise RuntimeError(f"logits must be (N,C), got {tuple(logits.shape)}")
-            pred = logits.argmax(dim=1)
-            correct += (pred == y).sum().item()
-            total += y.numel()
-            bs += 1
-            if bs >= max_batches:
-                break
-        return (correct / total) if total > 0 else 0.0
-    except Exception:
-        return 0.0
+    model.eval()
+    correct = 0
+    total = 0
+    batches_seen = 0
+
+    for x, y in data_loader:
+        x = x.to(device)
+        y = y.to(device)
+        logits = model(x)
+        if logits.dim() != 2:
+            raise RuntimeError(f"logits must be (N,C), got {tuple(logits.shape)}")
+        pred = logits.argmax(dim=1)
+        correct += (pred == y).sum().item()
+        total += y.numel()
+        batches_seen += 1
+        if batches_seen >= max_batches:
+            break
+
+    return (correct / total) if total > 0 else 0.0
+
+
+def _build_cifar10_loaders(cfg: "EvalConfig") -> Tuple[DataLoader, DataLoader]:
+    from torchvision import datasets, transforms
+
+    height = int(cfg.input_shape[2])
+    width = int(cfg.input_shape[3])
+    normalize = transforms.Normalize(
+        (0.4914, 0.4822, 0.4465),
+        (0.2023, 0.1994, 0.2010),
+    )
+    train_transform = transforms.Compose(
+        [
+            transforms.Resize((height, width)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize,
+        ]
+    )
+    val_transform = transforms.Compose(
+        [
+            transforms.Resize((height, width)),
+            transforms.ToTensor(),
+            normalize,
+        ]
+    )
+
+    train_dataset = datasets.CIFAR10(
+        root=cfg.data_root,
+        train=True,
+        download=cfg.download,
+        transform=train_transform,
+    )
+    val_dataset = datasets.CIFAR10(
+        root=cfg.data_root,
+        train=False,
+        download=cfg.download,
+        transform=val_transform,
+    )
+
+    if 0 < cfg.train_subset_size < len(train_dataset):
+        train_dataset = Subset(train_dataset, range(cfg.train_subset_size))
+    if 0 < cfg.val_subset_size < len(val_dataset):
+        val_dataset = Subset(val_dataset, range(cfg.val_subset_size))
+
+    train_batch = max(1, min(cfg.default_batch_size, len(train_dataset)))
+    val_batch = max(1, min(cfg.default_batch_size, len(val_dataset)))
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=train_batch,
+        shuffle=True,
+        num_workers=0,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=val_batch,
+        shuffle=False,
+        num_workers=0,
+    )
+    return train_loader, val_loader
 
 
 # ------------------------------------
@@ -295,6 +359,11 @@ class EvalConfig:
     n_classes: int = 10
     train_steps: int = 8
     max_val_batches: int = 2
+    default_batch_size: int = 32
+    train_subset_size: int = 256
+    val_subset_size: int = 128
+    data_root: str = "data_v2"
+    download: bool = True
     # Optional efficiency logging
     measure_latency: bool = True
     # Optional PPO/critic
@@ -304,7 +373,12 @@ class EvalConfig:
     weights: Optional[Dict[str, float]] = None
 
 
-def _empty_eval_result(*, reward: float = 0.0, error: Optional[str] = None) -> Dict[str, Any]:
+def _empty_eval_result(
+    *,
+    reward: float = 0.0,
+    error: Optional[str] = None,
+    accuracy_baseline: Optional[float] = None,
+) -> Dict[str, Any]:
     components = {
         "reward": reward,
         "r_build": 0.0,
@@ -331,6 +405,10 @@ def _empty_eval_result(*, reward: float = 0.0, error: Optional[str] = None) -> D
         "loss_end": None,
         "loss_drop": None,
         "loss_drop_ok": False,
+        "train_acc": None,
+        "accuracy_baseline": accuracy_baseline,
+        "train_acc_gain": None,
+        "train_acc_improved": False,
         "latency_ms": None,
         "params_m": None,
     }
@@ -345,12 +423,13 @@ def evaluate_and_reward(
     model: Optional[nn.Module] = None,
     build_fn: Optional[Callable[[], nn.Module]] = None,
 
-    # Optional loaders; if None, random toy loaders will be used
+    # Optional loaders; if None, CIFAR-10 proxy loaders will be built
     train_loader: Optional[DataLoader] = None,
     val_loader: Optional[DataLoader] = None,
 
-    # Baseline metric for delta reward (e.g., last round or best-so-far)
+    # Validation accuracy stays logging-only. Sample-level accuracy_baseline drives RL reward.
     val_metric_baseline: Optional[float] = None,
+    accuracy_baseline: Optional[float] = None,
 
     # Config & weights
     cfg: EvalConfig = EvalConfig(),
@@ -395,6 +474,9 @@ def evaluate_and_reward(
     loss_end = None
     loss_drop = None
     loss_drop_ok = False
+    train_acc = None
+    train_acc_gain = None
+    train_acc_improved = False
 
     # 1) Build or use provided model
     mdl = model
@@ -445,6 +527,10 @@ def evaluate_and_reward(
                 "loss_end": None,
                 "loss_drop": None,
                 "loss_drop_ok": False,
+                "train_acc": None,
+                "accuracy_baseline": accuracy_baseline,
+                "train_acc_gain": None,
+                "train_acc_improved": False,
                 "latency_ms": None,
                 "params_m": None,
             }
@@ -462,17 +548,9 @@ def evaluate_and_reward(
             latency_ms = forward_result["latency_ms"]
 
         # 3) Mini training steps
-        if train_loader is None:
-            local_train_loader = _toy_loader(
-                n=128,
-                input_shape=cfg.input_shape,
-                n_classes=cfg.n_classes,
-                device=device,
-                batch_size=max(2, cfg.input_shape[0])
-            )
-            used_train_loader = local_train_loader
-        else:
-            used_train_loader = train_loader
+        if train_loader is None or val_loader is None:
+            local_train_loader, local_val_loader = _build_cifar10_loaders(cfg)
+        used_train_loader = train_loader if train_loader is not None else local_train_loader
         train_result = _train_steps(
             mdl,
             used_train_loader,
@@ -488,18 +566,23 @@ def evaluate_and_reward(
         loss_drop_ok = bool(train_result["loss_drop_ok"])
 
         # 4) Quick validation (accuracy)
-        if val_loader is None:
-            local_val_loader = _toy_loader(
-                n=128,
-                input_shape=cfg.input_shape,
-                n_classes=cfg.n_classes,
-                device=device,
-                batch_size=max(2, cfg.input_shape[0])
-            )
-            used_val_loader = local_val_loader
-        else:
-            used_val_loader = val_loader
-        val_metric = _quick_validate_acc(mdl, used_val_loader, device=device, max_batches=cfg.max_val_batches)
+        used_val_loader = val_loader if val_loader is not None else local_val_loader
+        train_metric_batches = max(1, min(cfg.train_steps, int(train_result["steps_completed"] or 0) or cfg.train_steps))
+        train_acc = _quick_accuracy(
+            mdl,
+            used_train_loader,
+            device=device,
+            max_batches=train_metric_batches,
+        )
+        val_metric = _quick_accuracy(
+            mdl,
+            used_val_loader,
+            device=device,
+            max_batches=cfg.max_val_batches,
+        )
+        if accuracy_baseline is not None:
+            train_acc_gain = float(train_acc - accuracy_baseline)
+            train_acc_improved = bool(train_acc_gain > 0.0)
 
         # 5) Optional critic score
         if cfg.critic_fn is not None:
@@ -551,6 +634,10 @@ def evaluate_and_reward(
             "loss_end": loss_end,
             "loss_drop": loss_drop,
             "loss_drop_ok": loss_drop_ok,
+            "train_acc": train_acc,
+            "accuracy_baseline": accuracy_baseline,
+            "train_acc_gain": train_acc_gain,
+            "train_acc_improved": train_acc_improved,
             "latency_ms": latency_ms,
             "params_m": params_m,
         }
@@ -612,6 +699,7 @@ def evaluate_code_and_reward(
     prm: Dict[str, Any] = None,
     device: str = "cpu",
     val_metric_baseline: Optional[float] = None,
+    accuracy_baseline: Optional[float] = None,
     cfg: Optional[EvalConfig] = None,
 ) -> Dict[str, Any]:
     """
@@ -625,7 +713,7 @@ def evaluate_code_and_reward(
 
     p = ctx.Process(
         target=_eval_subprocess_worker, 
-        args=(queue, code, in_shape, out_shape, prm, device, val_metric_baseline, cfg)
+        args=(queue, code, in_shape, out_shape, prm, device, val_metric_baseline, accuracy_baseline, cfg)
     )
     
     try:
@@ -639,11 +727,11 @@ def evaluate_code_and_reward(
         if p.is_alive():
             p.terminate()
             p.join()
-        result = _empty_eval_result(reward=-1.0, error=str(e))
+        result = _empty_eval_result(reward=-1.0, error=str(e), accuracy_baseline=accuracy_baseline)
         result["components"]["reward"] = -1.0
         return result
 
-def _eval_subprocess_worker(queue, code, in_shape, out_shape, prm, device, val_metric_baseline, cfg):
+def _eval_subprocess_worker(queue, code, in_shape, out_shape, prm, device, val_metric_baseline, accuracy_baseline, cfg):
     """Worker function running in a fresh process."""
     try:
         # Import inside worker to ensure clean state if needed
@@ -651,11 +739,11 @@ def _eval_subprocess_worker(queue, code, in_shape, out_shape, prm, device, val_m
         # Execute the original direct evaluation logic
         result = _evaluate_code_and_reward_direct(
             code, in_shape=in_shape, out_shape=out_shape, 
-            prm=prm, device=device, val_metric_baseline=val_metric_baseline, cfg=cfg
+            prm=prm, device=device, val_metric_baseline=val_metric_baseline, accuracy_baseline=accuracy_baseline, cfg=cfg
         )
         queue.put(result)
     except Exception as e:
-        queue.put({"error": str(e), "reward": -1.0})
+        queue.put(_empty_eval_result(reward=-1.0, error=str(e), accuracy_baseline=accuracy_baseline))
 
 def _evaluate_code_and_reward_direct(
     code: str,
@@ -665,6 +753,7 @@ def _evaluate_code_and_reward_direct(
     prm: Dict[str, Any] = None,
     device: str = "cpu",
     val_metric_baseline: Optional[float] = None,
+    accuracy_baseline: Optional[float] = None,
     cfg: Optional[EvalConfig] = None,
 ) -> Dict[str, Any]:
     """
@@ -693,13 +782,14 @@ def _evaluate_code_and_reward_direct(
         # Pass through error type so reward_fn can assign layered partial rewards
         error_type = type(e).__name__
         error_msg = f"{error_type}: {e}"
-        return _empty_eval_result(error=error_msg)
+        return _empty_eval_result(error=error_msg, accuracy_baseline=accuracy_baseline)
     try: 
         res = evaluate_and_reward(
             build_fn=builder,
             train_loader=None,
             val_loader=None,
             val_metric_baseline=val_metric_baseline,
+            accuracy_baseline=accuracy_baseline,
             cfg=cfg,
         )
         if res["reward"] == 0.0:
@@ -708,7 +798,7 @@ def _evaluate_code_and_reward_direct(
     except Exception as e:
         error_type = type(e).__name__
         error_msg = f"{error_type}: {e}"
-        return _empty_eval_result(error=error_msg)
+        return _empty_eval_result(error=error_msg, accuracy_baseline=accuracy_baseline)
 
 if __name__ == "__main__":
     demo_code = r'''

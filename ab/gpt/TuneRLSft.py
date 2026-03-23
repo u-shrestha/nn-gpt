@@ -171,7 +171,7 @@ def _build_cifar10_eval_loaders(batch_size: int):
     return train_loader, val_loader
 
 
-def _cifar_eval_error(error: Exception) -> Dict[str, Any]:
+def _cifar_eval_error(error: Exception, *, accuracy_baseline: float | None = None) -> Dict[str, Any]:
     error_type = type(error).__name__
     error_msg = f"{error_type}: {error}"
     return {
@@ -199,6 +199,10 @@ def _cifar_eval_error(error: Exception) -> Dict[str, Any]:
         "loss_end": None,
         "loss_drop": None,
         "loss_drop_ok": False,
+        "train_acc": None,
+        "accuracy_baseline": accuracy_baseline,
+        "train_acc_gain": None,
+        "train_acc_improved": False,
         "latency_ms": None,
         "params_m": None,
         "error": error_msg,
@@ -213,6 +217,7 @@ def _evaluate_code_and_reward_cifar_direct(
     prm=None,
     device: str = "cpu",
     val_metric_baseline: float | None = None,
+    accuracy_baseline: float | None = None,
     cfg=None,
 ) -> Dict[str, Any]:
     if prm is None:
@@ -233,13 +238,10 @@ def _evaluate_code_and_reward_cifar_direct(
             weights=None,
         )
 
-    effective_baseline = float(val_metric_baseline if val_metric_baseline is not None else SFT_VAL_METRIC_BASELINE)
-    effective_baseline = max(effective_baseline, SFT_VAL_METRIC_BASELINE)
-
     try:
         builder = RewardUtil.build_fn_from_code(code, in_shape, out_shape, prm, device)
     except Exception as exc:
-        return _cifar_eval_error(exc)
+        return _cifar_eval_error(exc, accuracy_baseline=accuracy_baseline)
 
     try:
         eval_batch = int(prm.get("batch") or SFT_EVAL_BATCH_SIZE)
@@ -249,17 +251,18 @@ def _evaluate_code_and_reward_cifar_direct(
             build_fn=builder,
             train_loader=train_loader,
             val_loader=val_loader,
-            val_metric_baseline=effective_baseline,
+            val_metric_baseline=val_metric_baseline,
+            accuracy_baseline=accuracy_baseline,
             cfg=cfg,
         )
         if res["reward"] == 0.0:
             res["reward"] = -1.0
         return res
     except Exception as exc:
-        return _cifar_eval_error(exc)
+        return _cifar_eval_error(exc, accuracy_baseline=accuracy_baseline)
 
 
-def _eval_cifar_subprocess_worker(send_conn, code, in_shape, out_shape, prm, device, val_metric_baseline, cfg):
+def _eval_cifar_subprocess_worker(send_conn, code, in_shape, out_shape, prm, device, val_metric_baseline, accuracy_baseline, cfg):
     try:
         result = _evaluate_code_and_reward_cifar_direct(
             code,
@@ -268,11 +271,12 @@ def _eval_cifar_subprocess_worker(send_conn, code, in_shape, out_shape, prm, dev
             prm=prm,
             device=device,
             val_metric_baseline=val_metric_baseline,
+            accuracy_baseline=accuracy_baseline,
             cfg=cfg,
         )
         send_conn.send(result)
     except Exception as exc:
-        send_conn.send({"error": str(exc), "reward": -1.0})
+        send_conn.send(_cifar_eval_error(exc, accuracy_baseline=accuracy_baseline))
     finally:
         send_conn.close()
 
@@ -285,6 +289,7 @@ def evaluate_code_and_reward_cifar(
     prm=None,
     device: str = "cpu",
     val_metric_baseline=None,
+    accuracy_baseline=None,
     cfg=None,
 ) -> Dict[str, Any]:
     import multiprocessing as mp
@@ -293,7 +298,7 @@ def evaluate_code_and_reward_cifar(
     recv_conn, send_conn = ctx.Pipe(duplex=False)
     process = ctx.Process(
         target=_eval_cifar_subprocess_worker,
-        args=(send_conn, code, in_shape, out_shape, prm, device, val_metric_baseline, cfg),
+        args=(send_conn, code, in_shape, out_shape, prm, device, val_metric_baseline, accuracy_baseline, cfg),
     )
 
     try:
@@ -335,6 +340,10 @@ def evaluate_code_and_reward_cifar(
             "loss_end": None,
             "loss_drop": None,
             "loss_drop_ok": False,
+            "train_acc": None,
+            "accuracy_baseline": accuracy_baseline,
+            "train_acc_gain": None,
+            "train_acc_improved": False,
             "latency_ms": None,
             "params_m": None,
             "error": str(exc),
@@ -376,6 +385,7 @@ def _reapply_trainability_clamp(res: Dict[str, Any], reward_value: float, graph_
 def sft_reward_fn(
     completion: str,
     *,
+    accuracy_baseline: float,
     graph_info=None,
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
@@ -384,6 +394,7 @@ def sft_reward_fn(
 ):
     res = TuneRLRaw.raw_reward_fn(
         completion,
+        accuracy_baseline=accuracy_baseline,
         graph_info=graph_info,
         batch_graph_hashes=batch_graph_hashes,
         batch_family_hashes=batch_family_hashes,
@@ -419,7 +430,7 @@ def load_rl_dataset_sft(tokenizer) -> TuneRL.Dataset:
     legacy_patterns = ", ".join(SFTUtil.legacy_patterns)
 
     for _, row in data.iterrows():
-        accuracy = row.get("accuracy", 0.8)
+        accuracy = TuneRL._coerce_accuracy_baseline(row.get("accuracy"), context="seed row accuracy")
         for profile in SFTUtil.open_discovery_goal_profiles:
             module_hints = (
                 "self.backbone_a",

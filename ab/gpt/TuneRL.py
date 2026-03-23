@@ -106,6 +106,34 @@ def env_float(name: str, default: float) -> float:
     return float(value)
 
 
+def _coerce_accuracy_baseline(value: Any, *, context: str) -> float:
+    if value is None:
+        raise ValueError(f"{context}: missing required sample accuracy baseline")
+    if isinstance(value, bool):
+        raise ValueError(f"{context}: accuracy baseline must be numeric, got bool")
+    try:
+        baseline = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{context}: accuracy baseline must be numeric, got {value!r}") from exc
+    if baseline != baseline or baseline in {float("inf"), float("-inf")}:
+        raise ValueError(f"{context}: accuracy baseline must be finite, got {value!r}")
+    return baseline
+
+
+def require_sample_accuracy_baselines(kwargs: Dict[str, Any], expected_count: int) -> List[float]:
+    if "accuracy" not in kwargs:
+        raise ValueError("compute_reward requires kwargs['accuracy'] for every sample")
+    raw_values = kwargs["accuracy"]
+    if len(raw_values) != expected_count:
+        raise ValueError(
+            f"compute_reward expected {expected_count} accuracy baselines, got {len(raw_values)}"
+        )
+    return [
+        _coerce_accuracy_baseline(value, context=f"completion[{idx}]")
+        for idx, value in enumerate(raw_values)
+    ]
+
+
 def run_epoch_dir(*args):
     root_override = os.getenv("NNGPT_RL_EPOCH_ROOT")
     if root_override:
@@ -265,7 +293,7 @@ def bootstrap_trainset_reference_library(data) -> None:
 def extract_prompt_goal_tags(prompt_text: str) -> List[str]:
     if not prompt_text:
         return []
-    match = re.search(r"Discovery Target Tags:\s*([A-Za-z0-9_, \-]+)", prompt_text)
+    match = re.search(r"(?:Discovery|Optimization) Target Tags:\s*([A-Za-z0-9_, \-]+)", prompt_text)
     if not match:
         return []
     return [tag.strip() for tag in match.group(1).split(",") if tag.strip()]
@@ -378,6 +406,29 @@ def _compute_build_partial_reward(res: Dict[str, Any]) -> float:
     return build_partial
 
 
+def _discovery_failure_result(reward: float, error: str, *, accuracy_baseline: float) -> Dict[str, Any]:
+    return {
+        "reward": reward,
+        "built_ok": False,
+        "forward_ok": False,
+        "forward_shape_ok": False,
+        "trained_step_ok": False,
+        "backward_ok": False,
+        "loss_start": None,
+        "loss_end": None,
+        "loss_drop": None,
+        "loss_drop_ok": False,
+        "train_acc": None,
+        "accuracy_baseline": accuracy_baseline,
+        "train_acc_gain": None,
+        "train_acc_improved": False,
+        "val_metric": None,
+        "latency_ms": None,
+        "params_m": None,
+        "error": error,
+    }
+
+
 def _is_trainable_candidate(res: Dict[str, Any], graph_info) -> bool:
     return bool(
         graph_info
@@ -408,6 +459,7 @@ def _apply_trainability_clamp(res: Dict[str, Any], reward_value: float, graph_in
 def base_discovery_reward_fn(
     completion: str,
     *,
+    accuracy_baseline: float,
     graph_info=None,
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
@@ -416,10 +468,18 @@ def base_discovery_reward_fn(
 ) -> Dict[str, Any]:
     block_code, init_code, forward_code = extract_completion_blocks(completion)
     if not block_code or not init_code or not forward_code:
-        return {"reward": -2.0, "built_ok": False, "error": "Reconstruction failed (tags missing?)"}
+        return _discovery_failure_result(
+            -2.0,
+            "Reconstruction failed (tags missing?)",
+            accuracy_baseline=accuracy_baseline,
+        )
 
     if "self.pattern" in forward_code:
-        return {"reward": -5.0, "built_ok": False, "error": "CHEAT DETECTED: Accessed self.pattern inside forward block"}
+        return _discovery_failure_result(
+            -5.0,
+            "CHEAT DETECTED: Accessed self.pattern inside forward block",
+            accuracy_baseline=accuracy_baseline,
+        )
 
     graph_info = graph_info or extract_graph_info(
         init_code,
@@ -433,7 +493,11 @@ def base_discovery_reward_fn(
 
     final_code = reconstruct_code(completion, pattern_name_override=pattern_override)
     if not final_code:
-        return {"reward": -2.0, "built_ok": False, "error": "Code reconstruction failed"}
+        return _discovery_failure_result(
+            -2.0,
+            "Code reconstruction failed",
+            accuracy_baseline=accuracy_baseline,
+        )
 
     res = evaluate_code_and_reward(
         final_code,
@@ -442,7 +506,7 @@ def base_discovery_reward_fn(
         prm={'lr': 0.01, 'batch': 16, 'dropout': 0.3, 'momentum': 0.9,
              'transform': 'norm_256_flip', 'epoch': 1},
         device="cuda" if torch.cuda.is_available() else "cpu",
-        val_metric_baseline=0.05,
+        accuracy_baseline=accuracy_baseline,
     )
 
     if not res.get('built_ok'):
@@ -452,44 +516,24 @@ def base_discovery_reward_fn(
     batch_same_family_count = batch_family_hashes.count(graph_info.family_hash) if batch_family_hashes and graph_info.parse_ok else 0
     archive_snapshot_family_freq = int((archive_snapshot_family_counts or {}).get(graph_info.family_hash, 0)) if graph_info.parse_ok else 0
 
-    r_structure = 0.0
-    if graph_info.is_plain_parallel_triple:
-        r_structure -= 0.10
-    elif shallow_one_shot:
-        r_structure -= 0.05
-    if graph_info.is_legacy_pattern_name:
-        r_structure -= 0.05
-
-    r_batch = 0.0
-    if batch_same_family_count > 1:
-        r_batch -= 0.10 * (batch_same_family_count - 1)
-
-    r_archive = -0.10 if archive_snapshot_family_freq > 0 else 0.0
-
     novel_vs_trainset_family = False
     novel_vs_trainset_graph = False
-    novel_vs_trainset_descriptor = False
-    r_trainset_novelty = 0.0
+    train_acc_gain = res.get("train_acc_gain")
+    r_primary = 0.0
+    if train_acc_gain is not None:
+        r_primary = max(-2.0, min(2.0, 4.0 * float(train_acc_gain)))
 
-    if _is_trainable_candidate(res, graph_info):
+    r_tiebreak = 0.0
+    if _is_trainable_candidate(res, graph_info) and float(train_acc_gain or 0.0) > 0.0:
         novel_vs_trainset_family = graph_info.family_hash not in train_family_hashes
         novel_vs_trainset_graph = graph_info.graph_hash not in train_graph_hashes
-        novel_vs_trainset_descriptor = graph_info.descriptor_key not in train_descriptor_keys
 
         if novel_vs_trainset_family:
-            r_trainset_novelty += 0.20
-        if novel_vs_trainset_graph:
-            r_trainset_novelty += 0.10
-        elif (not novel_vs_trainset_family) and novel_vs_trainset_descriptor:
-            r_trainset_novelty += 0.05
+            r_tiebreak = 0.02
+        elif novel_vs_trainset_graph:
+            r_tiebreak = 0.01
 
-    total_reward = (
-        float(res.get('reward', 0.0))
-        + r_structure
-        + r_batch
-        + r_archive
-        + r_trainset_novelty
-    )
+    total_reward = max(-2.0, min(2.0, r_primary + r_tiebreak))
     total_reward = _apply_trainability_clamp(res, total_reward, graph_info)
 
     res['reward'] = total_reward
@@ -503,10 +547,9 @@ def base_discovery_reward_fn(
     res['pattern_name'] = effective_pattern_name
     res['suggested_pattern_name'] = graph_info.suggested_pattern_name
     res['open_discovery'] = {
-        'r_structure': r_structure,
-        'r_batch': r_batch,
-        'r_archive': r_archive,
-        'r_trainset_novelty': r_trainset_novelty,
+        'r_primary': r_primary,
+        'r_tiebreak': r_tiebreak,
+        'r_trainset_novelty': r_tiebreak,
         'prompt_goal_tags': list(prompt_goal_tags or []),
         'macro_structure_ok': passes_macro_structure_gate(graph_info),
         'is_multi_stage_architecture': is_multi_stage_architecture(graph_info),
@@ -527,7 +570,6 @@ def base_discovery_reward_fn(
         'parse_ok': graph_info.parse_ok,
         'novel_vs_trainset_family': novel_vs_trainset_family,
         'novel_vs_trainset_graph': novel_vs_trainset_graph,
-        'novel_vs_trainset_descriptor': novel_vs_trainset_descriptor,
         'archive_snapshot_family_freq': archive_snapshot_family_freq,
         'batch_same_family_count': batch_same_family_count,
     }
@@ -537,6 +579,7 @@ def base_discovery_reward_fn(
 def reward_fn(
     completion: str,
     *,
+    accuracy_baseline: float,
     graph_info=None,
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
@@ -546,6 +589,7 @@ def reward_fn(
     """Reward open-ended motif discovery while keeping the existing XML output ABI."""
     return base_discovery_reward_fn(
         completion,
+        accuracy_baseline=accuracy_baseline,
         graph_info=graph_info,
         batch_graph_hashes=batch_graph_hashes,
         batch_family_hashes=batch_family_hashes,
@@ -556,6 +600,7 @@ def reward_fn(
 def compute_reward(prompts, completions, **kwargs):
     global B_index
     rewards = []
+    accuracy_baselines = require_sample_accuracy_baselines(kwargs, len(completions))
 
     batch_graph_infos = []
     for completion in completions:
@@ -592,6 +637,7 @@ def compute_reward(prompts, completions, **kwargs):
             goal_key = primary_goal_key(batch_prompt_goal_tags[i])
             res = reward_fn(
                 completion,
+                accuracy_baseline=accuracy_baselines[i],
                 graph_info=graph_info,
                 batch_graph_hashes=batch_graph_hashes,
                 batch_family_hashes=batch_family_hashes,
@@ -645,7 +691,11 @@ def compute_reward(prompts, completions, **kwargs):
             get_goal_counter(goal_graph_archive_counts, goal_key)[graph_info.graph_hash] += 1
             get_goal_counter(goal_family_hash_archive_counts, goal_key)[graph_info.family_hash] += 1
             current_best = family_metric_best.get(graph_info.family_hash, float("-inf"))
-            family_metric_best[graph_info.family_hash] = max(current_best, float(res.get('val_metric') or 0.0))
+            gain_value = res.get("train_acc_gain")
+            family_metric_best[graph_info.family_hash] = max(
+                current_best,
+                float(gain_value if gain_value is not None else float("-inf")),
+            )
 
         code_logger.log_to_file(
             f"Batch index {i}, Motif: {res.get('pattern_name')}, Signature: {sig}, Result: {res}"
@@ -658,7 +708,7 @@ def compute_reward(prompts, completions, **kwargs):
             and res.get('forward_shape_ok')
             and res.get('backward_ok')
             and res.get('loss_drop_ok')
-            and score > 0
+            and float(res.get("train_acc_gain") or 0.0) > 0.0
             and saved_graph_counts[graph_info.graph_hash] == 0
             and saved_family_hash_counts[graph_info.family_hash] < family_save_cap(graph_info)
             and get_goal_counter(saved_goal_family_hash_counts, goal_key)[graph_info.family_hash] < goal_family_save_cap(graph_info)
@@ -736,7 +786,7 @@ def load_rl_dataset(tokenizer):
     goal_profiles = SFTUtil.open_discovery_goal_profiles
 
     for _, row in data.iterrows():
-        accuracy = row.get('accuracy', 0.8)
+        accuracy = _coerce_accuracy_baseline(row.get('accuracy'), context="seed row accuracy")
         for profile in goal_profiles:
             user_prompt = PROMPT_TEMPLATE.format(
                 accuracy=accuracy,

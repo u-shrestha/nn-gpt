@@ -265,14 +265,14 @@ open_discovery_skeleton_code = skeleton_code
 
 open_discovery_prompt_template = """
 ### Role & Context
-You are a Senior AI Architect exploring **new image-classification architectures**. Your job is to discover a motif that is structurally distinct from the common Parallel_Triple template while still compiling into the required XML code format.
+You are a Senior AI Architect optimizing an image-classification model under a strict XML ABI. Your job is to produce a trainable dual-backbone architecture that can surpass the provided reference accuracy.
 
-### Discovery Goal
-Produce one **novel, trainable architecture** that can reach an accuracy of {accuracy}. Novelty matters more than copying a known pattern name.
+### Performance Goal
+Produce one trainable architecture that aims to beat the reference accuracy `{accuracy}` on short-budget training. Change the graph only when the change is likely to improve accuracy or optimization stability.
 
-### Discovery Track
+### Optimization Track
 - Track Name: {goal_name}
-- Discovery Target Tags: {target_tags}
+- Optimization Target Tags: {target_tags}
 - Design Brief: {design_brief}
 
 [CODE SKELETON START]
@@ -285,39 +285,49 @@ Produce one **novel, trainable architecture** that can reach an accuracy of {acc
    - Each tag must contain the full function/method definition
    - No markdown, no explanation, no extra text
 
-2. `self.pattern` must be a **new motif name**
-   - Use a descriptive custom name such as `StemDualBackboneFuse_xxxxx`
-   - DO NOT use legacy names: {legacy_patterns}
+2. Optimize for accuracy first
+   - Treat `{accuracy}` as the per-sample reference baseline to beat
+   - Architecture changes must serve train accuracy, not visual novelty
+   - Avoid unnecessary branches, dead modules, and decorative topology changes
+
+3. Keep a descriptive `self.pattern`
+   - Set `self.pattern` to a concise descriptive name
+   - `self.pattern` is for logging only; it does not need to advertise novelty
    - DO NOT leave `self.pattern` missing
 
-3. The architecture must be graph-level novel
-   - Plain ParallelTriple-like one-shot fusion receives non-positive reward
-   - DO NOT copy the plain `torch.cat([features(x), backbone_a(x), backbone_b(x)])` topology
-   - Introduce a real structural motif such as a learned stem, sequential backbone->fractal routing, cross-branch reuse, bridge/project blocks, gated fusion, or multi-stage fusion
-   - Use direct computation graph construction; no `if self.pattern == ...` in `forward`
-   - Satisfy the Discovery Target Tags above with actual code structure, not just naming
+4. Use the dual-backbone search space
+   - Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b`
+   - Initialize both with `TorchVision(model=..., in_channels=...)`
+   - Use both backbones in `forward`
+   - Do not omit either backbone, and do not add a third backbone
 
-4. Use the provided code ABI
+5. Build an accuracy-oriented computation graph
+   - Avoid the plain one-shot `torch.cat([backbone_a(x), backbone_b(x)])` classifier-only fusion
+   - Prefer stems, projectors, bridges, reuse paths, staged fusion, or asymmetric branches when they help optimization
+   - Use direct computation graph construction; no `if self.pattern == ...` in `forward`
+   - Satisfy the Optimization Target Tags above with actual code structure, not just naming
+
+6. Use the provided code ABI
    - Implement `drop_conv3x3_block`
    - Implement `Net.__init__`
    - Implement `Net.forward`
    - Call `self.infer_dimensions_dynamically(out_shape[0])` inside `__init__`
    - Always define `self.device`, `self.use_amp`, and `self._input_spec`
 
-5. Component guidance
-   - You may use 1-3 backbones from [{available_backbones}]
-   - You may define optional modules such as `self.stem`, `self.bridge`, `self.project`, `self.mixer`, `self.fuse`, `self.backbone_c`
+7. Component guidance
+   - Choose the two backbone model names from [{available_backbones}]
+   - You may define optional modules such as `self.stem`, `self.bridge`, `self.project`, `self.mixer`, `self.fuse`
    - You may use `TorchVision(...)`, `FractalUnit(...)`, `nn.Sequential(...)`, and standard `nn.*` layers inside `__init__`
    - Use all major modules you define in `forward`
    - To expose structure clearly, prefer semantic attribute names such as: {module_hints}
    - Do not hide all learned routing logic inside a single generic name like `self.features`
 
-6. Shape safety and trainability
+8. Shape safety and trainability
    - Ensure `forward` returns classifier logits
    - Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs when needed
    - Avoid placeholder code, dead modules, duplicate assignments, and hardcoded broken dimensions
 
-### Preferred Discovery Directions
+### Preferred Optimization Directions
 - stem -> split -> asymmetric backbones -> bridge -> fuse
 - backbone -> fractal -> project -> dual fusion
 - split stem with one deep branch and one lightweight branch
@@ -341,14 +351,14 @@ Output ONLY the implementation within the XML tags. Each tag MUST contain the co
 
 open_discovery_rl_prompt_template = """
 ### Role & Context
-You are a Senior AI Architect exploring **new image-classification architectures**. Your job is to discover a motif that is structurally distinct from the common Parallel_Triple template while still compiling into the required XML code format.
+You are a Senior AI Architect optimizing a dual-backbone image-classification model under a strict XML ABI. Your job is to produce a trainable architecture that can surpass the provided reference accuracy.
 
-### Discovery Goal
-Produce one **novel, trainable architecture** that can reach an accuracy of {accuracy}. Novelty matters more than copying a known pattern name.
+### Performance Goal
+Produce one trainable architecture that aims to beat the reference accuracy `{accuracy}` on short-budget training. Change the graph only when the change is likely to improve training accuracy or optimization stability.
 
-### Discovery Track
+### Optimization Track
 - Track Name: {goal_name}
-- Discovery Target Tags: {target_tags}
+- Optimization Target Tags: {target_tags}
 - Design Brief: {design_brief}
 
 [CODE SKELETON START]
@@ -363,40 +373,45 @@ Produce one **novel, trainable architecture** that can reach an accuracy of {acc
    - The first non-whitespace token must be `<block>`
    - The last non-whitespace token must be `</forward>`
 
-2. `self.pattern` must be a **new motif name**
-   - Use a descriptive custom name
-   - DO NOT use legacy names: {legacy_patterns}
+2. Optimize for accuracy first
+   - Treat `{accuracy}` as the per-sample reference baseline to beat
+   - Architecture changes must serve train accuracy, not novelty for its own sake
+   - Avoid decorative complexity, unused modules, or graph edits that do not improve learning signal
+
+3. Keep a descriptive `self.pattern`
+   - Set `self.pattern` to a concise descriptive name
+   - `self.pattern` is a logging label, not a novelty target
    - DO NOT leave `self.pattern` missing
 
-3. Dual-backbone rules are mandatory
+4. Dual-backbone rules are mandatory
    - Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b`
    - Initialize both with `TorchVision(model=..., in_channels=...)`
    - Use two DIFFERENT backbone model names from [{available_backbones}]
    - Both backbones must appear in `__init__` and `forward`
    - Do not omit either backbone, and do not add a third backbone
 
-4. Preserve the required ABI
+5. Preserve the required ABI
    - Implement `drop_conv3x3_block`
    - Implement `Net.__init__`
    - Implement `Net.forward`
    - In `__init__`, set `self.device = device`, `self.use_amp = torch.cuda.is_available()`, and `self._input_spec = tuple(in_shape[1:])`
    - Call `self.infer_dimensions_dynamically(out_shape[0])`
 
-5. The architecture must be graph-level novel
-   - Avoid the plain one-shot Parallel_Triple topology
+6. Build an accuracy-oriented graph
+   - Avoid the plain one-shot parallel fuse topology because it is usually too weak
    - Do not simply pool the two backbones once and concatenate them only at the classifier input
-   - Use the Discovery Target Tags above with actual code structure, not just naming
+   - Use the Optimization Target Tags above with actual code structure, not just naming
    - Prefer visible modules such as: {module_hints}
    - Do not define new classes or helper methods beyond the 3 required definitions
 
-6. Forward-path restrictions
+7. Forward-path restrictions
    - Keep `forward` as straight-line assignments plus a final return
    - Do not use `if self.pattern` in `forward`
    - Do not emit `import ...` lines or `class ...` definitions
    - Never define `DropConv3x3Block` or any wrapper class
    - NEVER apply `self.classifier` manually before the final return line
 
-7. Shape safety and trainability
+8. Shape safety and trainability
    - `forward` must return classifier logits
    - Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs
    - Prefer `TorchVision`, plain CNN blocks, or `FractalBlock`

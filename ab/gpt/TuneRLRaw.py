@@ -859,6 +859,7 @@ def extract_completion_meta(completion: str) -> Dict[str, object]:
 def raw_reward_fn(
     completion: str,
     *,
+    accuracy_baseline: float,
     graph_info=None,
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
@@ -867,6 +868,7 @@ def raw_reward_fn(
 ):
     res = TuneRL.base_discovery_reward_fn(
         completion,
+        accuracy_baseline=accuracy_baseline,
         graph_info=graph_info,
         batch_graph_hashes=batch_graph_hashes,
         batch_family_hashes=batch_family_hashes,
@@ -952,7 +954,7 @@ def load_rl_dataset_raw(tokenizer):
     goal_profiles = SFTUtil.open_discovery_goal_profiles
 
     for _, row in data.iterrows():
-        accuracy = row.get("accuracy", 0.8)
+        accuracy = TuneRL._coerce_accuracy_baseline(row.get("accuracy"), context="seed row accuracy")
         for profile in goal_profiles:
             module_hints = (
                 "self.backbone_a",
