@@ -17,6 +17,7 @@ from ab.nn.util.Util import create_file
 from ab.gpt.util.Reward import (
     PersistentEvalWorkerError,
     evaluate_code_and_reward,
+    get_eval_worker_diagnostics,
     shutdown_eval_worker,
 )
 import ab.nn.api as api
@@ -150,6 +151,55 @@ def current_reward_group_context() -> Dict[str, Any]:
         "group_warmup": current_group_id == 0,
         "group_baseline_train_acc": prev_closed_group_train_acc_mean,
     }
+
+
+def _read_process_rss_gib() -> Optional[float]:
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return float(parts[1]) / (1024.0 * 1024.0)
+                    break
+    except OSError:
+        return None
+    return None
+
+
+def _cuda_memory_gib() -> Tuple[Optional[float], Optional[float]]:
+    if not torch.cuda.is_available():
+        return 0.0, 0.0
+    try:
+        allocated = torch.cuda.memory_allocated() / float(1024 ** 3)
+        reserved = torch.cuda.memory_reserved() / float(1024 ** 3)
+        return allocated, reserved
+    except RuntimeError:
+        return None, None
+
+
+def _format_mem_value(value: Optional[float]) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.2f}"
+
+
+def log_memory_snapshot(stage: str, *, group_context: Optional[Dict[str, Any]] = None) -> None:
+    effective_group_context = group_context or current_reward_group_context()
+    cuda_allocated_gib, cuda_reserved_gib = _cuda_memory_gib()
+    worker_info = get_eval_worker_diagnostics()
+    worker_pid = worker_info["pid"] if worker_info else None
+    print(
+        "[Memory] "
+        f"stage={stage} "
+        f"pid={os.getpid()} "
+        f"reward_batch_index={effective_group_context.get('reward_batch_index')} "
+        f"reward_group_id={effective_group_context.get('reward_group_id')} "
+        f"rss_gib={_format_mem_value(_read_process_rss_gib())} "
+        f"cuda_allocated_gib={_format_mem_value(cuda_allocated_gib)} "
+        f"cuda_reserved_gib={_format_mem_value(cuda_reserved_gib)} "
+        f"worker_pid={worker_pid}"
+    )
 
 
 def update_current_group_train_acc(train_acc_values: List[float]) -> None:
@@ -767,6 +817,7 @@ def compute_reward(prompts, completions, **kwargs):
     rewards = []
     seed_accuracy_baselines = require_sample_accuracy_baselines(kwargs, len(completions))
     group_context = current_reward_group_context()
+    log_memory_snapshot("compute_reward:start", group_context=group_context)
 
     batch_graph_infos = []
     for completion in completions:
@@ -973,6 +1024,15 @@ def compute_reward(prompts, completions, **kwargs):
         for goal_key, counter in goal_family_hash_archive_counts.items()
     }
     print(f"[Goal Skeleton Coverage] {goal_summary}")
+    log_memory_snapshot(
+        "compute_reward:end",
+        group_context={
+            "reward_batch_index": reward_batch_index,
+            "reward_group_id": current_group_id,
+            "group_warmup": current_group_id == 0,
+            "group_baseline_train_acc": prev_closed_group_train_acc_mean,
+        },
+    )
     return rewards
 
 PROMPT_TEMPLATE = SFTUtil.open_discovery_prompt_template

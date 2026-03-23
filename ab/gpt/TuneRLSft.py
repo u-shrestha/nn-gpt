@@ -168,6 +168,7 @@ def evaluate_code_and_reward_cifar(
     cfg=None,
 ) -> Dict[str, Any]:
     try:
+        eval_device = "cpu"
         if prm is None:
             prm = {"lr": 1e-2, "momentum": 0.9, "dropout": 0.3}
         defaults = {"lr": 1e-2, "momentum": 0.9, "batch": SFT_EVAL_BATCH_SIZE, "epoch": 1}
@@ -175,7 +176,7 @@ def evaluate_code_and_reward_cifar(
 
         if cfg is None:
             cfg = RewardUtil.EvalConfig(
-                device=device,
+                device=eval_device,
                 input_shape=in_shape,
                 n_classes=int(out_shape[0]),
                 train_steps=SFT_EVAL_TRAIN_STEPS,
@@ -190,13 +191,30 @@ def evaluate_code_and_reward_cifar(
                 critic_fn=None,
                 weights=None,
             )
+        else:
+            cfg = RewardUtil.EvalConfig(
+                device=eval_device,
+                input_shape=cfg.input_shape,
+                n_classes=cfg.n_classes,
+                train_steps=cfg.train_steps,
+                max_val_batches=cfg.max_val_batches,
+                default_batch_size=cfg.default_batch_size,
+                train_subset_size=cfg.train_subset_size,
+                val_subset_size=cfg.val_subset_size,
+                data_root=cfg.data_root,
+                download=cfg.download,
+                measure_latency=cfg.measure_latency,
+                kl_div=cfg.kl_div,
+                critic_fn=cfg.critic_fn,
+                weights=cfg.weights,
+            )
 
         return RewardUtil.evaluate_code_and_reward(
             code,
             in_shape=in_shape,
             out_shape=out_shape,
             prm=prm,
-            device=device,
+            device=eval_device,
             val_metric_baseline=val_metric_baseline,
             seed_accuracy_baseline=seed_accuracy_baseline,
             cfg=cfg,
@@ -343,16 +361,28 @@ def run_sft_training():
     import torch
     from transformers import BitsAndBytesConfig
 
+    if not torch.cuda.is_available():
+        raise RuntimeError("SFT RL requires CUDA for GRPO training, but no CUDA device is available")
+    visible_cuda_devices = torch.cuda.device_count()
+    if visible_cuda_devices != 1:
+        raise RuntimeError(
+            f"SFT RL requires exactly one visible CUDA device, got {visible_cuda_devices}"
+        )
+    torch.cuda.set_device(0)
+    train_device = "cuda:0"
+
     torch.cuda.empty_cache()
     TuneRL.reset_reward_runtime_state()
 
     print(f"Using RL base model: {TuneRL.base_model}")
+    print(f"[SFT RL] Fixed training device: {train_device}")
     tokenizer_source = getattr(TuneRL, "tokenizer_source", TuneRL.base_model)
     if tokenizer_source != TuneRL.base_model:
         print(f"Using RL tokenizer: {tokenizer_source}")
     tokenizer = TuneRL.AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    TuneRL.log_memory_snapshot("sft/tokenizer_loaded")
 
     rl_dataset = TuneRL.load_rl_dataset(tokenizer)
     if len(rl_dataset) > SFT_DATASET_LIMIT:
@@ -369,8 +399,9 @@ def run_sft_training():
         TuneRL.base_model,
         trust_remote_code=True,
         quantization_config=bnb_config,
-        device_map="auto",
+        device_map={"": train_device},
     )
+    TuneRL.log_memory_snapshot("sft/base_model_loaded")
 
     if SFT_LOAD_INITIAL_ADAPTER:
         if not SFT_INIT_ADAPTER:
@@ -394,6 +425,7 @@ def run_sft_training():
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
     model.print_trainable_parameters()
+    TuneRL.log_memory_snapshot("sft/lora_wrapped")
 
     grpo_config = TuneRL.GRPOConfig(
         temperature=SFT_TEMPERATURE,
@@ -418,9 +450,11 @@ def run_sft_training():
         reward_funcs=TuneRL.compute_reward,
         args=grpo_config,
     )
+    TuneRL.log_memory_snapshot("sft/grpo_trainer_initialized")
 
     print("Starting GRPO training for Backbone Search...")
     try:
+        TuneRL.log_memory_snapshot("sft/before_trainer_train")
         trainer.train()
     finally:
         RewardUtil.shutdown_eval_worker()

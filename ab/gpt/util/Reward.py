@@ -1,9 +1,10 @@
 from typing import Optional, Dict, Tuple, Callable, Any
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 import atexit
 import time
 import gc
 import multiprocessing as mp
+import os
 
 import torch
 import torch.nn as nn
@@ -17,14 +18,24 @@ class PersistentEvalWorkerError(RuntimeError):
 
 class _PersistentEvalWorkerSession:
     def __init__(self) -> None:
+        from ab.gpt.util.reward_worker_bootstrap import reward_worker_main
+
         self.ctx = mp.get_context("spawn")
         self._parent_conn, child_conn = self.ctx.Pipe()
         self._process = self.ctx.Process(
-            target=_persistent_eval_worker_loop,
+            target=reward_worker_main,
             args=(child_conn,),
         )
         self._process.start()
         child_conn.close()
+        self._worker_info = self._wait_for_ready(timeout=30.0)
+        print(
+            "[Reward Worker] Ready "
+            f"pid={self._worker_info['pid']}, "
+            f"cuda_visible_devices={self._worker_info['cuda_visible_devices']!r}, "
+            f"cuda_available={self._worker_info['cuda_available']}, "
+            f"cuda_device_count={self._worker_info['cuda_device_count']}"
+        )
 
     def request(self, payload: Dict[str, Any], *, timeout: float) -> Dict[str, Any]:
         if not self._process.is_alive():
@@ -51,6 +62,60 @@ class _PersistentEvalWorkerSession:
             self.close(force=True)
             raise PersistentEvalWorkerError("Persistent eval worker returned a non-dict response")
         return response
+
+    def _wait_for_ready(self, *, timeout: float) -> Dict[str, Any]:
+        if not self._process.is_alive():
+            raise PersistentEvalWorkerError("Persistent eval worker exited during startup")
+        if not self._parent_conn.poll(timeout):
+            self.close(force=True)
+            raise PersistentEvalWorkerError(
+                f"Persistent eval worker did not send a startup handshake within {timeout:.0f} seconds"
+            )
+        try:
+            response = self._parent_conn.recv()
+        except EOFError as exc:
+            self.close(force=True)
+            raise PersistentEvalWorkerError("Persistent eval worker closed its pipe during startup") from exc
+        except Exception as exc:
+            self.close(force=True)
+            raise PersistentEvalWorkerError(f"Persistent eval worker startup recv failed: {exc}") from exc
+
+        if not isinstance(response, dict):
+            self.close(force=True)
+            raise PersistentEvalWorkerError("Persistent eval worker startup handshake was not a dict")
+        if response.get("cmd") == "worker_init_error":
+            self.close(force=True)
+            raise PersistentEvalWorkerError(
+                f"Persistent eval worker failed to initialize: {response.get('error', 'unknown error')}"
+            )
+        if response.get("cmd") != "worker_ready":
+            self.close(force=True)
+            raise PersistentEvalWorkerError(
+                f"Persistent eval worker returned unexpected startup message: {response!r}"
+            )
+
+        required_keys = {"pid", "cuda_visible_devices", "cuda_available", "cuda_device_count"}
+        missing = sorted(required_keys.difference(response))
+        if missing:
+            self.close(force=True)
+            raise PersistentEvalWorkerError(
+                f"Persistent eval worker startup handshake missing fields: {', '.join(missing)}"
+            )
+        if bool(response["cuda_available"]) or int(response["cuda_device_count"]) != 0:
+            self.close(force=True)
+            raise PersistentEvalWorkerError(
+                "Persistent eval worker must be CPU-only, but reported CUDA visibility "
+                f"(available={response['cuda_available']}, count={response['cuda_device_count']})"
+            )
+        return {
+            "pid": int(response["pid"]),
+            "cuda_visible_devices": str(response["cuda_visible_devices"]),
+            "cuda_available": bool(response["cuda_available"]),
+            "cuda_device_count": int(response["cuda_device_count"]),
+        }
+
+    def diagnostics(self) -> Dict[str, Any]:
+        return {**self._worker_info, "alive": self._process.is_alive()}
 
     def close(self, *, force: bool = False) -> None:
         try:
@@ -849,6 +914,42 @@ def shutdown_eval_worker() -> None:
     _PERSISTENT_EVAL_WORKER = None
 
 
+def get_eval_worker_diagnostics() -> Optional[Dict[str, Any]]:
+    if _PERSISTENT_EVAL_WORKER is None:
+        return None
+    return _PERSISTENT_EVAL_WORKER.diagnostics()
+
+
+def _persistent_eval_worker_entry(conn) -> None:
+    try:
+        conn.send(
+            {
+                "cmd": "worker_ready",
+                "pid": os.getpid(),
+                "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
+                "cuda_available": bool(torch.cuda.is_available()),
+                "cuda_device_count": int(torch.cuda.device_count()),
+            }
+        )
+        _persistent_eval_worker_loop(conn)
+    except Exception as exc:
+        try:
+            conn.send(
+                {
+                    "cmd": "worker_init_error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def evaluate_code_and_reward(
     code: str,
     *,
@@ -861,26 +962,31 @@ def evaluate_code_and_reward(
     cfg: Optional[EvalConfig] = None,
 ) -> Dict[str, Any]:
     worker = _get_or_create_eval_worker()
+    worker_device = "cpu"
+    effective_cfg = replace(
+        cfg,
+        device=worker_device,
+    ) if cfg is not None else EvalConfig(
+        device=worker_device,
+        input_shape=in_shape,
+        n_classes=int(out_shape[0]),
+        train_steps=8,
+        max_val_batches=2,
+        measure_latency=True,
+        kl_div=None,
+        critic_fn=None,
+        weights=None,
+    )
     payload = {
         "cmd": "evaluate",
         "code": code,
         "in_shape": tuple(in_shape),
         "out_shape": tuple(out_shape),
         "prm": prm,
-        "device": device,
+        "device": worker_device,
         "val_metric_baseline": val_metric_baseline,
         "seed_accuracy_baseline": seed_accuracy_baseline,
-        "cfg": _serialize_eval_cfg(cfg or EvalConfig(
-            device=device,
-            input_shape=in_shape,
-            n_classes=int(out_shape[0]),
-            train_steps=8,
-            max_val_batches=2,
-            measure_latency=True,
-            kl_div=None,
-            critic_fn=None,
-            weights=None,
-        )),
+        "cfg": _serialize_eval_cfg(effective_cfg),
     }
     return worker.request(payload, timeout=300)
 
