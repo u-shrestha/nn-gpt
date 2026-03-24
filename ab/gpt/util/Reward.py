@@ -34,7 +34,9 @@ class _PersistentEvalWorkerSession:
             f"pid={self._worker_info['pid']}, "
             f"cuda_visible_devices={self._worker_info['cuda_visible_devices']!r}, "
             f"cuda_available={self._worker_info['cuda_available']}, "
-            f"cuda_device_count={self._worker_info['cuda_device_count']}"
+            f"cuda_device_count={self._worker_info['cuda_device_count']}, "
+            f"rss_gib={self._worker_info['rss_gib']:.2f}, "
+            f"torch_home={self._worker_info['torch_home']!r}"
         )
 
     def request(self, payload: Dict[str, Any], *, timeout: float) -> Dict[str, Any]:
@@ -94,7 +96,7 @@ class _PersistentEvalWorkerSession:
                 f"Persistent eval worker returned unexpected startup message: {response!r}"
             )
 
-        required_keys = {"pid", "cuda_visible_devices", "cuda_available", "cuda_device_count"}
+        required_keys = {"pid", "cuda_visible_devices", "cuda_available", "cuda_device_count", "rss_gib", "torch_home"}
         missing = sorted(required_keys.difference(response))
         if missing:
             self.close(force=True)
@@ -120,6 +122,8 @@ class _PersistentEvalWorkerSession:
             "cuda_visible_devices": str(response["cuda_visible_devices"]),
             "cuda_available": bool(response["cuda_available"]),
             "cuda_device_count": int(response["cuda_device_count"]),
+            "rss_gib": float(response["rss_gib"]),
+            "torch_home": str(response["torch_home"]),
         }
 
     def diagnostics(self) -> Dict[str, Any]:
@@ -147,6 +151,26 @@ class _PersistentEvalWorkerSession:
 
 
 _PERSISTENT_EVAL_WORKER: Optional[_PersistentEvalWorkerSession] = None
+
+
+def _read_process_rss_gib() -> Optional[float]:
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return float(parts[1]) / (1024.0 * 1024.0)
+                    break
+    except OSError:
+        return None
+    return None
+
+
+def _format_mem_value(value: Optional[float]) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.2f}"
 
 def compute_cv_reward_simple(
     *,
@@ -918,6 +942,14 @@ def shutdown_eval_worker() -> None:
     global _PERSISTENT_EVAL_WORKER
     if _PERSISTENT_EVAL_WORKER is None:
         return
+    info = _PERSISTENT_EVAL_WORKER.diagnostics()
+    print(
+        "[Reward Worker] Shutdown "
+        f"pid={info['pid']}, "
+        f"alive={info['alive']}, "
+        f"rss_gib={info['rss_gib']:.2f}, "
+        f"torch_home={info['torch_home']!r}"
+    )
     _PERSISTENT_EVAL_WORKER.close()
     _PERSISTENT_EVAL_WORKER = None
 
@@ -937,6 +969,8 @@ def _persistent_eval_worker_entry(conn) -> None:
                 "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
                 "cuda_available": bool(torch.cuda.is_available()),
                 "cuda_device_count": int(torch.cuda.device_count()),
+                "rss_gib": float(_read_process_rss_gib() or 0.0),
+                "torch_home": os.environ.get("TORCH_HOME", ""),
             }
         )
         _persistent_eval_worker_loop(conn)
@@ -968,6 +1002,9 @@ def evaluate_code_and_reward(
     val_metric_baseline: Optional[float] = None,
     seed_accuracy_baseline: Optional[float] = None,
     cfg: Optional[EvalConfig] = None,
+    reward_batch_index: Optional[int] = None,
+    completion_index: Optional[int] = None,
+    batch_last_item: bool = False,
 ) -> Dict[str, Any]:
     worker = _get_or_create_eval_worker()
     worker_device = "cpu"
@@ -995,12 +1032,17 @@ def evaluate_code_and_reward(
         "val_metric_baseline": val_metric_baseline,
         "seed_accuracy_baseline": seed_accuracy_baseline,
         "cfg": _serialize_eval_cfg(effective_cfg),
+        "reward_batch_index": reward_batch_index,
+        "completion_index": completion_index,
+        "batch_last_item": batch_last_item,
     }
     return worker.request(payload, timeout=300)
 
 
 def _persistent_eval_worker_loop(conn) -> None:
     loader_cache: Dict[Tuple[Any, ...], Tuple[DataLoader, DataLoader]] = {}
+    last_reward_batch_index = None
+    last_completion_index = None
     try:
         while True:
             try:
@@ -1023,6 +1065,20 @@ def _persistent_eval_worker_loop(conn) -> None:
             if loader_key not in loader_cache:
                 loader_cache[loader_key] = _build_cifar10_loaders(cfg)
             train_loader, val_loader = loader_cache[loader_key]
+            reward_batch_index = request.get("reward_batch_index")
+            completion_index = request.get("completion_index")
+            last_reward_batch_index = reward_batch_index
+            last_completion_index = completion_index
+            if completion_index == 0:
+                print(
+                    "[Reward Worker Memory] "
+                    f"stage=batch_start "
+                    f"pid={os.getpid()} "
+                    f"reward_batch_index={reward_batch_index} "
+                    f"completion_index={completion_index} "
+                    f"rss_gib={_format_mem_value(_read_process_rss_gib())} "
+                    f"torch_home={os.environ.get('TORCH_HOME', '')!r}"
+                )
 
             try:
                 result = _evaluate_code_and_reward_direct(
@@ -1044,9 +1100,30 @@ def _persistent_eval_worker_loop(conn) -> None:
                     seed_accuracy_baseline=request.get("seed_accuracy_baseline"),
                 )
                 result["components"]["reward"] = -1.0
+            if bool(request.get("batch_last_item")):
+                print(
+                    "[Reward Worker Memory] "
+                    f"stage=batch_end "
+                    f"pid={os.getpid()} "
+                    f"reward_batch_index={reward_batch_index} "
+                    f"completion_index={completion_index} "
+                    f"rss_gib={_format_mem_value(_read_process_rss_gib())} "
+                    f"torch_home={os.environ.get('TORCH_HOME', '')!r}"
+                )
 
             conn.send(result)
     finally:
+        print(
+            "[Reward Worker Memory] "
+            f"stage=shutdown "
+            f"pid={os.getpid()} "
+            f"reward_batch_index={last_reward_batch_index} "
+            f"completion_index={last_completion_index} "
+            f"rss_gib={_format_mem_value(_read_process_rss_gib())} "
+            f"torch_home={os.environ.get('TORCH_HOME', '')!r}"
+        )
+        loader_cache.clear()
+        gc.collect()
         try:
             conn.close()
         except Exception:

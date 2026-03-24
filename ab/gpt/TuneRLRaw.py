@@ -877,6 +877,8 @@ def raw_reward_fn(
     reward_batch_index: int | None = None,
     reward_group_id: int | None = None,
     group_warmup: bool = False,
+    completion_index: int | None = None,
+    batch_last_item: bool = False,
 ):
     res = TuneRL.base_discovery_reward_fn(
         completion,
@@ -890,6 +892,8 @@ def raw_reward_fn(
         reward_batch_index=reward_batch_index,
         reward_group_id=reward_group_id,
         group_warmup=group_warmup,
+        completion_index=completion_index,
+        batch_last_item=batch_last_item,
     )
     meta = extract_completion_meta(completion)
     raw_delta = 0.0

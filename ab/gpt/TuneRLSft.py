@@ -1,4 +1,5 @@
 import os
+import multiprocessing as mp
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List
@@ -53,6 +54,7 @@ import ab.gpt.TuneRL as TuneRL
 import ab.gpt.TuneRLRaw as TuneRLRaw
 import ab.gpt.util.Reward as RewardUtil
 import ab.gpt.util.SFTUtil as SFTUtil
+from ab.gpt.util.torchvision_prewarm import torchvision_prewarm_main
 
 
 def _repo_model_dir(model_id: str) -> Path:
@@ -156,6 +158,100 @@ def _cifar_eval_error(error: Exception, *, seed_accuracy_baseline: float | None 
         "error": error_msg,
     }
 
+
+def _torch_hub_checkpoints_dir() -> Path:
+    import torch
+
+    return Path(torch.hub.get_dir()) / "checkpoints"
+
+
+def _print_runtime_cache_roots() -> None:
+    print(f"[SFT RL] HF_HOME={os.environ.get('HF_HOME', '')!r}")
+    print(f"[SFT RL] TORCH_HOME={os.environ.get('TORCH_HOME', '')!r}")
+    print(f"[SFT RL] Torch hub checkpoints dir: {_torch_hub_checkpoints_dir()}")
+
+
+def _run_torchvision_prewarm(backbone_names: List[str]) -> None:
+    ctx = mp.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe()
+    process = ctx.Process(
+        target=torchvision_prewarm_main,
+        args=(child_conn, list(backbone_names)),
+    )
+
+    TuneRL.log_memory_snapshot("sft/prewarm_before_spawn")
+    process.start()
+    child_conn.close()
+    print(f"[TorchVision Prewarm] Starting CPU prewarm for {len(backbone_names)} backbones")
+
+    try:
+        while True:
+            if not parent_conn.poll(600):
+                raise RuntimeError("TorchVision prewarm timed out after 600 seconds")
+            message = parent_conn.recv()
+            if not isinstance(message, dict):
+                raise RuntimeError(f"Unexpected TorchVision prewarm message: {message!r}")
+
+            cmd = message.get("cmd")
+            if cmd == "prewarm_ready":
+                print(
+                    "[TorchVision Prewarm] Ready "
+                    f"pid={message['pid']} "
+                    f"rss_gib={message['rss_gib']:.2f} "
+                    f"torch_home={message['torch_home']!r} "
+                    f"checkpoints_dir={message['checkpoints_dir']}"
+                )
+                continue
+
+            if cmd == "prewarm_progress":
+                print(
+                    "[TorchVision Prewarm] "
+                    f"backbone={message['backbone']} "
+                    f"cache_hit={message['cache_hit']} "
+                    f"completed={message['completed']} "
+                    f"failed={message['failed']} "
+                    f"rss_gib={message['rss_gib']:.2f} "
+                    f"checkpoints_dir={message['checkpoints_dir']}"
+                )
+                continue
+
+            if cmd == "prewarm_error":
+                raise RuntimeError(
+                    "TorchVision prewarm failed for "
+                    f"{message['backbone']}: {message['error']}"
+                )
+
+            if cmd == "prewarm_done":
+                print(
+                    "[TorchVision Prewarm] Done "
+                    f"completed={message['completed']} "
+                    f"failed={message['failed']} "
+                    f"rss_gib={message['rss_gib']:.2f} "
+                    f"checkpoints_dir={message['checkpoints_dir']}"
+                )
+                break
+
+            if cmd == "prewarm_fatal":
+                raise RuntimeError(f"TorchVision prewarm fatal error: {message['error']}")
+
+            raise RuntimeError(f"Unknown TorchVision prewarm message: {message!r}")
+
+        process.join(timeout=30)
+        if process.is_alive():
+            raise RuntimeError("TorchVision prewarm process did not exit cleanly")
+        if process.exitcode != 0:
+            raise RuntimeError(f"TorchVision prewarm process exited with code {process.exitcode}")
+    finally:
+        try:
+            parent_conn.close()
+        except Exception:
+            pass
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+    TuneRL.log_memory_snapshot("sft/prewarm_after_done")
+
+
 def evaluate_code_and_reward_cifar(
     code: str,
     *,
@@ -166,6 +262,9 @@ def evaluate_code_and_reward_cifar(
     val_metric_baseline=None,
     seed_accuracy_baseline=None,
     cfg=None,
+    reward_batch_index: int | None = None,
+    completion_index: int | None = None,
+    batch_last_item: bool = False,
 ) -> Dict[str, Any]:
     try:
         eval_device = "cpu"
@@ -218,6 +317,9 @@ def evaluate_code_and_reward_cifar(
             val_metric_baseline=val_metric_baseline,
             seed_accuracy_baseline=seed_accuracy_baseline,
             cfg=cfg,
+            reward_batch_index=reward_batch_index,
+            completion_index=completion_index,
+            batch_last_item=batch_last_item,
         )
     except Exception as exc:
         if isinstance(exc, RewardUtil.PersistentEvalWorkerError):
@@ -268,6 +370,8 @@ def sft_reward_fn(
     reward_batch_index: int | None = None,
     reward_group_id: int | None = None,
     group_warmup: bool = False,
+    completion_index: int | None = None,
+    batch_last_item: bool = False,
 ):
     res = TuneRLRaw.raw_reward_fn(
         completion,
@@ -281,6 +385,8 @@ def sft_reward_fn(
         reward_batch_index=reward_batch_index,
         reward_group_id=reward_group_id,
         group_warmup=group_warmup,
+        completion_index=completion_index,
+        batch_last_item=batch_last_item,
     )
     res["reward"] = _reapply_trainability_clamp(res, float(res.get("reward", -2.0)), graph_info)
     res["anti_collapse"] = {
@@ -388,6 +494,7 @@ def run_sft_training():
 
     print(f"Using RL base model: {TuneRL.base_model}")
     print(f"[SFT RL] Fixed training device: {train_device}")
+    _print_runtime_cache_roots()
     tokenizer_source = getattr(TuneRL, "tokenizer_source", TuneRL.base_model)
     if tokenizer_source != TuneRL.base_model:
         print(f"Using RL tokenizer: {tokenizer_source}")
@@ -399,6 +506,7 @@ def run_sft_training():
     rl_dataset = TuneRL.load_rl_dataset(tokenizer)
     if len(rl_dataset) > SFT_DATASET_LIMIT:
         rl_dataset = rl_dataset.select(range(SFT_DATASET_LIMIT))
+    _run_torchvision_prewarm(list(SFTUtil.available_backbones))
 
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,

@@ -652,6 +652,8 @@ def base_discovery_reward_fn(
     reward_batch_index: Optional[int] = None,
     reward_group_id: Optional[int] = None,
     group_warmup: bool = False,
+    completion_index: Optional[int] = None,
+    batch_last_item: bool = False,
 ) -> Dict[str, Any]:
     block_code, init_code, forward_code = extract_completion_blocks(completion)
     if not block_code or not init_code or not forward_code:
@@ -694,6 +696,9 @@ def base_discovery_reward_fn(
              'transform': 'norm_256_flip', 'epoch': 1},
         device="cuda" if torch.cuda.is_available() else "cpu",
         seed_accuracy_baseline=seed_accuracy_baseline,
+        reward_batch_index=reward_batch_index,
+        completion_index=completion_index,
+        batch_last_item=batch_last_item,
     )
 
     if not res.get('built_ok'):
@@ -796,6 +801,8 @@ def reward_fn(
     reward_batch_index: Optional[int] = None,
     reward_group_id: Optional[int] = None,
     group_warmup: bool = False,
+    completion_index: Optional[int] = None,
+    batch_last_item: bool = False,
 ) -> Dict[str, Any]:
     """Reward open-ended motif discovery while keeping the existing XML output ABI."""
     return base_discovery_reward_fn(
@@ -810,6 +817,8 @@ def reward_fn(
         reward_batch_index=reward_batch_index,
         reward_group_id=reward_group_id,
         group_warmup=group_warmup,
+        completion_index=completion_index,
+        batch_last_item=batch_last_item,
     )
 
 def compute_reward(prompts, completions, **kwargs):
@@ -822,222 +831,222 @@ def compute_reward(prompts, completions, **kwargs):
     group_context = current_reward_group_context()
     log_memory_snapshot("compute_reward:start", group_context=group_context)
 
-    batch_graph_infos = []
-    for completion in completions:
-        _, init_code, forward_code = extract_completion_blocks(completion)
-        if init_code and forward_code:
-            batch_graph_infos.append(
-                extract_graph_info(
-                    init_code,
-                    forward_code,
-                    legacy_patterns=SFTUtil.legacy_patterns,
+    try:
+        batch_graph_infos = []
+        for completion in completions:
+            _, init_code, forward_code = extract_completion_blocks(completion)
+            if init_code and forward_code:
+                batch_graph_infos.append(
+                    extract_graph_info(
+                        init_code,
+                        forward_code,
+                        legacy_patterns=SFTUtil.legacy_patterns,
+                    )
                 )
+            else:
+                batch_graph_infos.append(None)
+
+        batch_graph_hashes = [
+            info.graph_hash if info and info.parse_ok else "incomplete"
+            for info in batch_graph_infos
+        ]
+        batch_family_hashes = [
+            info.family_hash if info and info.parse_ok else "incomplete"
+            for info in batch_graph_infos
+        ]
+        batch_prompt_goal_tags = [extract_prompt_goal_tags(prompt) for prompt in prompts]
+        archive_snapshot_family_counts = dict(family_hash_archive_counts)
+        scored_results = []
+
+        for i, (prompt, completion) in enumerate(zip(prompts, completions)):
+            code_logger.log_to_file("=" * 50)
+            torch.cuda.empty_cache()
+
+            try:
+                graph_info = batch_graph_infos[i]
+                goal_key = primary_goal_key(batch_prompt_goal_tags[i])
+                res = reward_fn(
+                    completion,
+                    seed_accuracy_baseline=seed_accuracy_baselines[i],
+                    graph_info=graph_info,
+                    batch_graph_hashes=batch_graph_hashes,
+                    batch_family_hashes=batch_family_hashes,
+                    prompt_goal_tags=batch_prompt_goal_tags[i],
+                    archive_snapshot_family_counts=archive_snapshot_family_counts,
+                    group_baseline_train_acc=group_context["group_baseline_train_acc"],
+                    reward_batch_index=group_context["reward_batch_index"],
+                    reward_group_id=group_context["reward_group_id"],
+                    group_warmup=group_context["group_warmup"],
+                    completion_index=i,
+                    batch_last_item=i == (len(completions) - 1),
+                )
+                res = _attach_group_context(
+                    res,
+                    seed_accuracy_baseline=seed_accuracy_baselines[i],
+                    group_context=group_context,
+                )
+                score = res.get('reward', -2.0)
+                rewards.append(score)
+                scored_results.append(
+                    {
+                        "index": i,
+                        "prompt": prompt,
+                        "completion": completion,
+                        "graph_info": graph_info,
+                        "goal_key": goal_key,
+                        "result": res,
+                        "score": score,
+                    }
+                )
+            except PersistentEvalWorkerError:
+                raise
+            except Exception as e:
+                code_logger.log_to_file(f"Reward calculation failed at index {i}: {e}")
+                rewards.append(-1.0)
+                failure_result = _attach_group_context(
+                    {
+                        "reward": -1.0,
+                        "built_ok": False,
+                        "forward_ok": False,
+                        "forward_shape_ok": False,
+                        "trained_step_ok": False,
+                        "backward_ok": False,
+                        "loss_start": None,
+                        "loss_end": None,
+                        "loss_drop": None,
+                        "loss_drop_ok": False,
+                        "train_acc": None,
+                        "val_metric": None,
+                        "latency_ms": None,
+                        "params_m": None,
+                        "error": str(e),
+                    },
+                    seed_accuracy_baseline=seed_accuracy_baselines[i],
+                    group_context=group_context,
+                )
+                scored_results.append(
+                    {
+                        "index": i,
+                        "prompt": prompt,
+                        "completion": completion,
+                        "graph_info": batch_graph_infos[i],
+                        "goal_key": primary_goal_key(batch_prompt_goal_tags[i]),
+                        "result": failure_result,
+                        "score": -1.0,
+                    }
+                )
+
+        current_batch_train_accs: List[float] = []
+        for item in scored_results:
+            i = item["index"]
+            prompt = item["prompt"]
+            completion = item["completion"]
+            graph_info = item["graph_info"]
+            goal_key = item["goal_key"]
+            res = item["result"]
+            score = item["score"]
+            sig = res.get('signature', 'unknown')
+
+            is_trainable = _is_trainable_candidate(res, graph_info)
+            if is_trainable:
+                train_acc_value = res.get("train_acc")
+                if train_acc_value is not None:
+                    current_batch_train_accs.append(float(train_acc_value))
+                graph_archive_counts[graph_info.graph_hash] += 1
+                family_archive_counts[graph_info.family_id] += 1
+                family_hash_archive_counts[graph_info.family_hash] += 1
+                motif_name_counts[res.get('pattern_name', graph_info.suggested_pattern_name)] += 1
+                get_goal_counter(goal_graph_archive_counts, goal_key)[graph_info.graph_hash] += 1
+                get_goal_counter(goal_family_hash_archive_counts, goal_key)[graph_info.family_hash] += 1
+                current_best = family_metric_best.get(graph_info.family_hash, float("-inf"))
+                gain_value = res.get("group_train_acc_gain")
+                family_metric_best[graph_info.family_hash] = max(
+                    current_best,
+                    float(gain_value if gain_value is not None else float("-inf")),
+                )
+
+            code_logger.log_to_file(
+                f"Batch index {i}, Motif: {res.get('pattern_name')}, Signature: {sig}, Result: {res}"
             )
+
+            should_save = (
+                bool(graph_info)
+                and graph_info.parse_ok
+                and res.get('built_ok')
+                and res.get('forward_shape_ok')
+                and res.get('backward_ok')
+                and res.get('loss_drop_ok')
+                and not res.get("group_warmup")
+                and float(res.get("group_train_acc_gain") or 0.0) > 0.0
+                and saved_graph_counts[graph_info.graph_hash] == 0
+                and saved_family_hash_counts[graph_info.family_hash] < family_save_cap(graph_info)
+                and get_goal_counter(saved_goal_family_hash_counts, goal_key)[graph_info.family_hash] < goal_family_save_cap(graph_info)
+            )
+
+            if should_save:
+                pattern_override = "" if graph_info.has_custom_pattern_name else res.get('suggested_pattern_name', '')
+                block_code, init_code, forward_code = extract_completion_blocks(completion)
+                if pattern_override:
+                    init_code = ensure_pattern_name(init_code, pattern_override)
+                final_code = reconstruct_code(completion, pattern_name_override=pattern_override)
+                normalized_completion = render_completion_xml(block_code, init_code, forward_code)
+                out_path = run_epoch_dir(0)
+                model_dir = synth_dir(out_path) / f"B{B_index}"
+                model_dir.mkdir(exist_ok=True, parents=True)
+
+                code_file = model_dir / new_nn_file
+                with open(code_file, 'w') as f:
+                    f.write(final_code)
+
+                create_file(model_dir, new_out_file, normalized_completion)
+                code_logger.log_to_file(f"[INFO] Saved successful code to B{B_index} (Signature: {sig})")
+                saved_graph_counts[graph_info.graph_hash] += 1
+                saved_family_hash_counts[graph_info.family_hash] += 1
+                get_goal_counter(saved_goal_family_hash_counts, goal_key)[graph_info.family_hash] += 1
+                B_index += 1
+
+            code_logger.log_generation(prompt, completion, score, res)
+
+        update_current_group_train_acc(current_batch_train_accs)
+        close_reward_group_if_needed()
+
+        # 计算开放式架构多样性指标
+        total_valid = sum(family_hash_archive_counts.values())
+        unique_count = len(graph_archive_counts)
+        unique_families = len(family_archive_counts)
+        unique_skeletons = len(family_hash_archive_counts)
+        
+        if total_valid > 0:
+            most_common_count = family_hash_archive_counts.most_common(1)[0][1]
+            dominant_share = most_common_count / total_valid
+
+            import math
+            entropy = -sum((count/total_valid) * math.log2(count/total_valid) for count in family_hash_archive_counts.values() if count > 0)
         else:
-            batch_graph_infos.append(None)
+            dominant_share = 0
+            entropy = 0
 
-    batch_graph_hashes = [
-        info.graph_hash if info and info.parse_ok else "incomplete"
-        for info in batch_graph_infos
-    ]
-    batch_family_hashes = [
-        info.family_hash if info and info.parse_ok else "incomplete"
-        for info in batch_graph_infos
-    ]
-    batch_prompt_goal_tags = [extract_prompt_goal_tags(prompt) for prompt in prompts]
-    archive_snapshot_family_counts = dict(family_hash_archive_counts)
-    scored_results = []
-
-    for i, (prompt, completion) in enumerate(zip(prompts, completions)):
-        code_logger.log_to_file("=" * 50)
-        torch.cuda.empty_cache()
-
-        try:
-            graph_info = batch_graph_infos[i]
-            goal_key = primary_goal_key(batch_prompt_goal_tags[i])
-            res = reward_fn(
-                completion,
-                seed_accuracy_baseline=seed_accuracy_baselines[i],
-                graph_info=graph_info,
-                batch_graph_hashes=batch_graph_hashes,
-                batch_family_hashes=batch_family_hashes,
-                prompt_goal_tags=batch_prompt_goal_tags[i],
-                archive_snapshot_family_counts=archive_snapshot_family_counts,
-                group_baseline_train_acc=group_context["group_baseline_train_acc"],
-                reward_batch_index=group_context["reward_batch_index"],
-                reward_group_id=group_context["reward_group_id"],
-                group_warmup=group_context["group_warmup"],
-            )
-            res = _attach_group_context(
-                res,
-                seed_accuracy_baseline=seed_accuracy_baselines[i],
-                group_context=group_context,
-            )
-            score = res.get('reward', -2.0)
-            rewards.append(score)
-            scored_results.append(
-                {
-                    "index": i,
-                    "prompt": prompt,
-                    "completion": completion,
-                    "graph_info": graph_info,
-                    "goal_key": goal_key,
-                    "result": res,
-                    "score": score,
-                }
-            )
-        except PersistentEvalWorkerError:
-            raise
-        except Exception as e:
-            code_logger.log_to_file(f"Reward calculation failed at index {i}: {e}")
-            rewards.append(-1.0)
-            failure_result = _attach_group_context(
-                {
-                    "reward": -1.0,
-                    "built_ok": False,
-                    "forward_ok": False,
-                    "forward_shape_ok": False,
-                    "trained_step_ok": False,
-                    "backward_ok": False,
-                    "loss_start": None,
-                    "loss_end": None,
-                    "loss_drop": None,
-                    "loss_drop_ok": False,
-                    "train_acc": None,
-                    "val_metric": None,
-                    "latency_ms": None,
-                    "params_m": None,
-                    "error": str(e),
-                },
-                seed_accuracy_baseline=seed_accuracy_baselines[i],
-                group_context=group_context,
-            )
-            scored_results.append(
-                {
-                    "index": i,
-                    "prompt": prompt,
-                    "completion": completion,
-                    "graph_info": batch_graph_infos[i],
-                    "goal_key": primary_goal_key(batch_prompt_goal_tags[i]),
-                    "result": failure_result,
-                    "score": -1.0,
-                }
-            )
-
-    current_batch_train_accs: List[float] = []
-    for item in scored_results:
-        i = item["index"]
-        prompt = item["prompt"]
-        completion = item["completion"]
-        graph_info = item["graph_info"]
-        goal_key = item["goal_key"]
-        res = item["result"]
-        score = item["score"]
-        sig = res.get('signature', 'unknown')
-
-        is_trainable = _is_trainable_candidate(res, graph_info)
-        if is_trainable:
-            train_acc_value = res.get("train_acc")
-            if train_acc_value is not None:
-                current_batch_train_accs.append(float(train_acc_value))
-            graph_archive_counts[graph_info.graph_hash] += 1
-            family_archive_counts[graph_info.family_id] += 1
-            family_hash_archive_counts[graph_info.family_hash] += 1
-            motif_name_counts[res.get('pattern_name', graph_info.suggested_pattern_name)] += 1
-            get_goal_counter(goal_graph_archive_counts, goal_key)[graph_info.graph_hash] += 1
-            get_goal_counter(goal_family_hash_archive_counts, goal_key)[graph_info.family_hash] += 1
-            current_best = family_metric_best.get(graph_info.family_hash, float("-inf"))
-            gain_value = res.get("group_train_acc_gain")
-            family_metric_best[graph_info.family_hash] = max(
-                current_best,
-                float(gain_value if gain_value is not None else float("-inf")),
-            )
-
-        code_logger.log_to_file(
-            f"Batch index {i}, Motif: {res.get('pattern_name')}, Signature: {sig}, Result: {res}"
+        print(
+            f"\n[Discovery Metrics] Unique Graphs: {unique_count}, "
+            f"Families: {unique_families}, Skeletons: {unique_skeletons}, Dominant Family Share: {dominant_share:.2%}, Entropy: {entropy:.2f}"
         )
-
-        should_save = (
-            bool(graph_info)
-            and graph_info.parse_ok
-            and res.get('built_ok')
-            and res.get('forward_shape_ok')
-            and res.get('backward_ok')
-            and res.get('loss_drop_ok')
-            and not res.get("group_warmup")
-            and float(res.get("group_train_acc_gain") or 0.0) > 0.0
-            and saved_graph_counts[graph_info.graph_hash] == 0
-            and saved_family_hash_counts[graph_info.family_hash] < family_save_cap(graph_info)
-            and get_goal_counter(saved_goal_family_hash_counts, goal_key)[graph_info.family_hash] < goal_family_save_cap(graph_info)
+        print(f"[Graph Archive] Top 5 Exact Graphs: {dict(graph_archive_counts.most_common(5))}")
+        print(f"[Family Archive] Top 5 Family IDs: {dict(family_archive_counts.most_common(5))}")
+        print(f"[Family Archive] Top 5 Skeletons: {dict(family_hash_archive_counts.most_common(5))}")
+        print(f"[Motif Names] Top 5: {dict(motif_name_counts.most_common(5))}")
+        goal_summary = {
+            goal_key: len(counter)
+            for goal_key, counter in goal_family_hash_archive_counts.items()
+        }
+        print(f"[Goal Skeleton Coverage] {goal_summary}")
+        return rewards
+    finally:
+        shutdown_eval_worker()
+        TuneRLRaw.clear_extraction_meta_cache()
+        log_memory_snapshot(
+            "compute_reward:end",
+            group_context=group_context,
         )
-
-        if should_save:
-            pattern_override = "" if graph_info.has_custom_pattern_name else res.get('suggested_pattern_name', '')
-            block_code, init_code, forward_code = extract_completion_blocks(completion)
-            if pattern_override:
-                init_code = ensure_pattern_name(init_code, pattern_override)
-            final_code = reconstruct_code(completion, pattern_name_override=pattern_override)
-            normalized_completion = render_completion_xml(block_code, init_code, forward_code)
-            out_path = run_epoch_dir(0)
-            model_dir = synth_dir(out_path) / f"B{B_index}"
-            model_dir.mkdir(exist_ok=True, parents=True)
-
-            code_file = model_dir / new_nn_file
-            with open(code_file, 'w') as f:
-                f.write(final_code)
-
-            create_file(model_dir, new_out_file, normalized_completion)
-            code_logger.log_to_file(f"[INFO] Saved successful code to B{B_index} (Signature: {sig})")
-            saved_graph_counts[graph_info.graph_hash] += 1
-            saved_family_hash_counts[graph_info.family_hash] += 1
-            get_goal_counter(saved_goal_family_hash_counts, goal_key)[graph_info.family_hash] += 1
-            B_index += 1
-
-        code_logger.log_generation(prompt, completion, score, res)
-
-    update_current_group_train_acc(current_batch_train_accs)
-    close_reward_group_if_needed()
-
-    # 计算开放式架构多样性指标
-    total_valid = sum(family_hash_archive_counts.values())
-    unique_count = len(graph_archive_counts)
-    unique_families = len(family_archive_counts)
-    unique_skeletons = len(family_hash_archive_counts)
-    
-    if total_valid > 0:
-        most_common_count = family_hash_archive_counts.most_common(1)[0][1]
-        dominant_share = most_common_count / total_valid
-
-        import math
-        entropy = -sum((count/total_valid) * math.log2(count/total_valid) for count in family_hash_archive_counts.values() if count > 0)
-    else:
-        dominant_share = 0
-        entropy = 0
-
-    print(
-        f"\n[Discovery Metrics] Unique Graphs: {unique_count}, "
-        f"Families: {unique_families}, Skeletons: {unique_skeletons}, Dominant Family Share: {dominant_share:.2%}, Entropy: {entropy:.2f}"
-    )
-    print(f"[Graph Archive] Top 5 Exact Graphs: {dict(graph_archive_counts.most_common(5))}")
-    print(f"[Family Archive] Top 5 Family IDs: {dict(family_archive_counts.most_common(5))}")
-    print(f"[Family Archive] Top 5 Skeletons: {dict(family_hash_archive_counts.most_common(5))}")
-    print(f"[Motif Names] Top 5: {dict(motif_name_counts.most_common(5))}")
-    goal_summary = {
-        goal_key: len(counter)
-        for goal_key, counter in goal_family_hash_archive_counts.items()
-    }
-    print(f"[Goal Skeleton Coverage] {goal_summary}")
-    TuneRLRaw.clear_extraction_meta_cache()
-    log_memory_snapshot(
-        "compute_reward:end",
-        group_context={
-            "reward_batch_index": reward_batch_index,
-            "reward_group_id": current_group_id,
-            "group_warmup": current_group_id == 0,
-            "group_baseline_train_acc": prev_closed_group_train_acc_mean,
-        },
-    )
-    return rewards
 
 PROMPT_TEMPLATE = SFTUtil.open_discovery_prompt_template
 
