@@ -364,13 +364,13 @@ def rebuild_from_lineage():
 
         acc = tracker_entry.get("accuracy")
 
-        #if acc is None or acc == 0.0:
-            #print(f"[MERGE] Epoch {epoch} has no real accuracy, skipping")
-            #continue  # Skip this epoch, don't add to buffer
-
-
         if acc is None or acc == 0.0:
-            acc = min(0.40 + epoch * 0.03, 0.99)
+            print(f"[MERGE] Epoch {epoch} has no real accuracy, skipping")
+            continue  # Skip this epoch, don't add to buffer
+
+
+        #if acc is None or acc == 0.0:
+            #acc = min(0.40 + epoch * 0.03, 0.99)
             print(f"[MERGE] Using fake accuracy: {acc:.4f}")
 
         acc = float(acc)
@@ -536,5 +536,5 @@ def merge_nn_llm(epoch: int):
 
 
 if __name__ == "__main__":
-   #rebuild_from_lineage()
-    merge_nn_llm(3)
+    rebuild_from_lineage()
+    #merge_nn_llm(3)
