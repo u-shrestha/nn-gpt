@@ -10,11 +10,12 @@ import ab.gpt.TuneNNGen as TuneNNGen
 
 def main():
     TuneNNGen.main(
-        llm_conf='ds_coder_1.3b_instruct.json',
+        llm_conf='ds_coder_7b_instruct.json',
         run_iterative_pipeline=True,
-        cycles=28,
-        models_per_cycle=20,
+        cycles=22,
         resume_from_cycle=None,
+        nn_name_prefix='unq'
+        # models_per_cycle=20,
     )
 
 
