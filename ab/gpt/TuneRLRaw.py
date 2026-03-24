@@ -82,6 +82,14 @@ RAW_ASSISTANT_PREFIX = ""
 EXTRACTION_META_CACHE: Dict[str, Dict[str, object]] = {}
 
 
+def clear_extraction_meta_cache() -> None:
+    EXTRACTION_META_CACHE.clear()
+
+
+def extraction_meta_cache_size() -> int:
+    return len(EXTRACTION_META_CACHE)
+
+
 class RawCodeLogger(TuneRL.SimpleCodeLogger):
     def __init__(self, output_dir: str = "rl_output/raw"):
         super().__init__(output_dir)
@@ -1016,7 +1024,7 @@ def patch_raw_runtime() -> None:
 
 
 def bootstrap_raw_runtime() -> None:
-    EXTRACTION_META_CACHE.clear()
+    clear_extraction_meta_cache()
     log_dir = TuneRL.run_log_dir()
     os.makedirs(log_dir, exist_ok=True)
     TuneRL.code_logger = RawCodeLogger(log_dir)

@@ -813,8 +813,11 @@ def reward_fn(
     )
 
 def compute_reward(prompts, completions, **kwargs):
+    import ab.gpt.TuneRLRaw as TuneRLRaw
+
     global B_index
     rewards = []
+    TuneRLRaw.clear_extraction_meta_cache()
     seed_accuracy_baselines = require_sample_accuracy_baselines(kwargs, len(completions))
     group_context = current_reward_group_context()
     log_memory_snapshot("compute_reward:start", group_context=group_context)
@@ -1024,6 +1027,7 @@ def compute_reward(prompts, completions, **kwargs):
         for goal_key, counter in goal_family_hash_archive_counts.items()
     }
     print(f"[Goal Skeleton Coverage] {goal_summary}")
+    TuneRLRaw.clear_extraction_meta_cache()
     log_memory_snapshot(
         "compute_reward:end",
         group_context={

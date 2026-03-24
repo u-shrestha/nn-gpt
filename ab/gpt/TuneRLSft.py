@@ -361,6 +361,18 @@ def run_sft_training():
     import torch
     from transformers import BitsAndBytesConfig
 
+    def _disable_model_cache(runtime_model) -> None:
+        try:
+            runtime_model.config.use_cache = False
+        except Exception:
+            pass
+        try:
+            generation_config = getattr(runtime_model, "generation_config", None)
+            if generation_config is not None:
+                generation_config.use_cache = False
+        except Exception:
+            pass
+
     if not torch.cuda.is_available():
         raise RuntimeError("SFT RL requires CUDA for GRPO training, but no CUDA device is available")
     visible_cuda_devices = torch.cuda.device_count()
@@ -401,6 +413,7 @@ def run_sft_training():
         quantization_config=bnb_config,
         device_map={"": train_device},
     )
+    _disable_model_cache(model)
     TuneRL.log_memory_snapshot("sft/base_model_loaded")
 
     if SFT_LOAD_INITIAL_ADAPTER:
@@ -421,6 +434,7 @@ def run_sft_training():
         task_type="CAUSAL_LM",
     )
     model = TuneRL.get_peft_model(model, peft_config)
+    _disable_model_cache(model)
 
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
@@ -490,7 +504,7 @@ def patch_sft_runtime() -> tuple[str, str, str]:
 
 def bootstrap_sft_runtime() -> None:
     """Initialize logging and reset extraction cache."""
-    TuneRLRaw.EXTRACTION_META_CACHE.clear()
+    TuneRLRaw.clear_extraction_meta_cache()
     RewardUtil.shutdown_eval_worker()
 
     log_dir = TuneRL.run_log_dir()
