@@ -1,0 +1,23 @@
+{
+  "dataset": "svhn",
+  "model": "ResNet",
+  "accuracy": 0.8485709895513215,
+  "batch": 64,
+  "duration": 303808213189,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "norm_256",
+  "uid": "00de847aa4f44df6067981b367078d74",
+  "augment": [
+    [
+      "cutout",
+      0.4,
+      0.5
+    ],
+    [
+      "mixup",
+      1.0,
+      0.5
+    ]
+  ]
+}

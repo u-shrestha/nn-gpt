@@ -1,0 +1,23 @@
+{
+  "dataset": "cifar-10",
+  "model": "ResNet",
+  "accuracy": 0.5457,
+  "batch": 64,
+  "duration": 13071937657,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "norm",
+  "uid": "5379625308d17645fbbe326e33620ecc",
+  "augment": [
+    [
+      "cutout",
+      0.2,
+      0.85
+    ],
+    [
+      "none",
+      null,
+      0.15
+    ]
+  ]
+}

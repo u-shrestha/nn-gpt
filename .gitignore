@@ -37,3 +37,7 @@ ab/gpt/brute/ga/modular/FIX_REPORT.md
 .venv/
 # ab/gpt/brute/ga/meta_evolution/ga_history_backup/
 \n/ab/nn/
+
+ab/gpt/brute/trans/augment/eval.py
+ab/gpt/brute/trans/augment/AugmentGenerator.py
+ab/gpt/brute/trans/augment/test.py
