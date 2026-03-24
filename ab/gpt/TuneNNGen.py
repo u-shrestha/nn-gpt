@@ -13,12 +13,8 @@ from ab.gpt.util.Const import conf_llm_dir
 RUN_META = out_dir / 'nngpt' / 'run_config.json'
 
 
-def persist_llm_conf(llm_conf):
-    """Save run configuration including llm_conf and base_model_name."""
-
-
-    if RUN_META.exists():
-        return
+def persist_llm_conf(llm_conf, enable_merge=False):
+    """Save run configuration including llm_conf, base_model_name, and enable_merge."""
 
     RUN_META.parent.mkdir(parents=True, exist_ok=True)
 
@@ -34,10 +30,13 @@ def persist_llm_conf(llm_conf):
         except Exception as e:
             print(f"Failed to read base_model_name from {llm_conf}: {e}")
 
-    # Save both llm_conf and base_model_name
-    run_config = {"llm_conf": llm_conf}
+    # Save llm_conf, base_model_name, and enable_merge
+    run_config = {
+        "llm_conf": llm_conf,
+        "enable_merge": enable_merge
+    }
     if base_model_name:
-        run_config["base_model_name"] = base_model_name #infers from conf_llm and stores it
+        run_config["base_model_name"] = base_model_name
 
     with open(RUN_META, "w") as f:
         json.dump(run_config, f, indent=2)
@@ -56,7 +55,7 @@ BiasType = Literal['none', 'all', 'lora_only']
 BIAS: BiasType = 'none'
 LEARNING_RATE = 1e-6  # Conservative default for standalone
 MAX_GRAD_NORM = 1.0  # Gradient clipping
-
+ENABLE_MERGE = False
 PEFT = None
 SKIP_EPOCHES = -1
 
@@ -144,7 +143,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          llm_conf=LLM_CONF, test_nn=TEST_NN, peft=PEFT, skip_epoches=SKIP_EPOCHES, per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
          gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS, warmup_ratio=WARMUP_RATIO, logging_steps=LOGGING_STEPS, optimizer=OPTIMIZER,
          max_prompts=MAX_PROMPTS, save_llm_output=SAVE_LLM_OUTPUT, max_new_tokens=MAX_NEW_TOKENS, use_deepspeed=USE_DEEPSPEED, nn_name_prefix=NN_NAME_PREFIX,
-         nn_train_epochs=NN_TRAIN_EPOCHS, temperature=TEMPERATURE, top_k=TOP_K, top_p=TOP_P, data_dir=None,
+         nn_train_epochs=NN_TRAIN_EPOCHS, temperature=TEMPERATURE, top_k=TOP_K, top_p=TOP_P, data_dir=None,base_data_dir=None,output_dir=None,
          # Pipeline-specific overrides (for backward compatibility with iterative_finetune.py)
          evaluation_strategy=None, eval_steps=None, save_strategy=None, save_steps=None,
          save_total_limit=None, load_best_model_at_end=False, metric_for_best_model=None, warmup_steps=None, weight_decay=None,
@@ -155,7 +154,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          min_selected_k=15, fallback_threshold=0.35, adaptive_threshold=False,
          novelty_check=True, resume_from_cycle=None, max_retries=3, use_optimized_training=True,
          use_agents=USE_AGENTS, use_predictor=USE_PREDICTOR, use_backbone=False):
-    persist_llm_conf(llm_conf)
+    persist_llm_conf(llm_conf, enable_merge)
     # --- Pipeline mode intercept ---
     if run_iterative_pipeline:
         print("--- Initiating Iterative Fine-Tuning Pipeline ---")
@@ -329,6 +328,7 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
             prompt_batch=prompt_batch,
             use_agents=use_agents,
             use_predictor=use_predictor,
+            enable_merge=enable_merge
         )
 
     except KeyboardInterrupt:
@@ -340,9 +340,8 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
             print("\n[MERGE] Running final merge decision...\n")
 
             try:
-                from ab.gpt.util.Mergedecision import main as merge
-                merge()
-                print("[MERGE] Completed successfully.\n")
+                from ab.gpt.util.Merge import rebuild_from_lineage
+                rebuild_from_lineage()
 
             except Exception as e:
                 print(f"[MERGE] Merge decision failed: {e}")

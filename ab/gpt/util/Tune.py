@@ -15,7 +15,7 @@ from os import makedirs
 from os.path import isfile
 import glob
 from pathlib import Path
-
+from datetime import datetime
 import numpy as np
 import pandas as pd
 import torch
@@ -24,7 +24,7 @@ import deepspeed
 from ab.nn.util.Util import release_memory, create_file
 from peft import PeftModel
 from tqdm import tqdm
-
+from ab.gpt.util.Const import nngpt_dir
 import ab.gpt.NNEval as NNEval
 from ab.gpt.util.Chatbot import ChatBot
 from ab.gpt.util.Const import *
@@ -353,6 +353,44 @@ def nn_gen(
     print('[DEBUG] Release memory.')
     release_memory()
 
+    # === EPOCH TRACKER + MERGE SYSTEM ===
+    tracker_file = nngpt_dir / "epoch_tracker.json"
+
+    if tracker_file.exists():
+        try:
+            with open(tracker_file) as f:
+                tracker_data = json.load(f)
+        except:
+            tracker_data = []
+    else:
+        tracker_data = []
+
+    # Try to get accuracy from cycle_results
+    accuracy = None
+    cycle_file = nngpt_dir / "cycle_results.json"
+    if cycle_file.exists():
+        try:
+            with open(cycle_file) as f:
+                cycle_data = json.load(f)
+            accuracy = cycle_data.get("evaluation", {}).get("best_accuracy")
+        except:
+            pass
+
+    # Add current epoch to list
+    tracker_data.append({
+        "epoch": epoch,
+        "timestamp": datetime.now().isoformat(),
+        "models_generated": len(list(models_dir.glob("B*"))) if exists(models_dir) else 0,
+        "accuracy": accuracy
+    })
+
+    # Save updated list
+    tracker_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(tracker_file, "w") as f:
+        json.dump(tracker_data, f, indent=2)
+
+    print(f"[EPOCH TRACKER] Wrote epoch {epoch} (acc={accuracy})")
+
 
 def trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict_global, test_nn, max_new_tokens, save_llm_output, nn_name_prefix):
     """
@@ -517,13 +555,35 @@ def _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode
             print('Folder data reload will occur next epoch.')
         else:
             NNEval.main(nn_name_prefix, nn_train_epochs, epoch)
+
+            # === MERGE SYSTEM ===
+            enable_merge = False
+            try:
+                run_cfg_path = nngpt_dir / "run_config.json"
+                if run_cfg_path.exists():
+                    with open(run_cfg_path) as f:
+                        run_cfg = json.load(f)
+                    enable_merge = run_cfg.get("enable_merge", False)
+            except:
+                pass
+
+            if enable_merge:
+                try:
+                    from ab.gpt.util.Merge import rebuild_from_lineage
+                    print(f"[MERGE] Running merge for epoch {epoch}")
+                    rebuild_from_lineage()
+                except Exception as e:
+                    print(f"[MERGE] failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+
             print('[DEBUG] Release_memory.')
+            release_memory()
 
-        release_memory()
+        print('Clear LEMUR query cache.')
+        lemur.data.cache_clear()
+        print('The cache has been cleared.')
 
-    print('Clear LEMUR query cache.')
-    lemur.data.cache_clear()
-    print('The cache has been cleared.')
 
     # Read accuracy from cycle_results.json (written by NNEval after evaluation)
     cycle_file = out_path.parent / "cycle_results.json"
@@ -749,6 +809,7 @@ def tune(
     use_agents=False,
     use_predictor=False,
     use_backbone=False,
+    enable_merge=False,
 ):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
@@ -865,6 +926,7 @@ def tune(
 
         "use_predictor": use_predictor,
         "use_backbone": use_backbone,
+        "enable_merge": enable_merge
     }
 
     shutil.rmtree(epoch_dir(), ignore_errors=True)
