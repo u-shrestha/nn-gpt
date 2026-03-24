@@ -371,7 +371,7 @@ def rebuild_from_lineage():
 
         #if acc is None or acc == 0.0:
             #acc = min(0.40 + epoch * 0.03, 0.99)
-            print(f"[MERGE] Using fake accuracy: {acc:.4f}")
+            #print(f"[MERGE] Using fake accuracy: {acc:.4f}")
 
         acc = float(acc)
 
