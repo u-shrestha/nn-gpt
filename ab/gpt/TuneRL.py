@@ -494,6 +494,19 @@ def render_completion_xml(block_code: str, init_code: str, forward_code: str) ->
         ]
     )
 
+
+def _extract_backbone_model_names(init_code: str) -> List[str]:
+    matches: Dict[str, str] = {}
+    patterns = (
+        r"self\.(backbone_[ab])\s*=\s*TorchVision\(\s*model\s*=\s*['\"]([^'\"]+)['\"]",
+        r"self\.(backbone_[ab])\s*=\s*TorchVision\(\s*['\"]([^'\"]+)['\"]",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, init_code or ""):
+            matches.setdefault(match.group(1), match.group(2))
+    return [matches[name] for name in ("backbone_a", "backbone_b") if name in matches]
+
+
 def reconstruct_code(
     completion: str,
     *,
@@ -535,7 +548,19 @@ def _compute_build_partial_reward(res: Dict[str, Any]) -> float:
     return build_partial
 
 
-def _discovery_failure_result(reward: float, error: str, *, seed_accuracy_baseline: float) -> Dict[str, Any]:
+def _compute_warmup_dense_reward(train_acc: Optional[float]) -> Optional[float]:
+    if train_acc is None:
+        return None
+    return max(0.05, min(0.30, 0.10 + 0.50 * float(train_acc)))
+
+
+def _discovery_failure_result(
+    reward: float,
+    error: str,
+    *,
+    seed_accuracy_baseline: float,
+    backbone_model_names: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     return {
         "reward": reward,
         "built_ok": False,
@@ -563,6 +588,11 @@ def _discovery_failure_result(reward: float, error: str, *, seed_accuracy_baseli
         "val_metric": None,
         "latency_ms": None,
         "params_m": None,
+        "timed_out": False,
+        "estimated_total_seconds": None,
+        "eval_limit_seconds": None,
+        "warmup_dense_reward": None,
+        "backbone_model_names": list(backbone_model_names or []),
         "open_discovery": {
             "r_primary": 0.0,
             "r_tiebreak": 0.0,
@@ -621,6 +651,11 @@ def _attach_group_context(
     res.setdefault("reward_batch_index", group_context["reward_batch_index"])
     res.setdefault("reward_group_id", group_context["reward_group_id"])
     res.setdefault("group_warmup", group_context["group_warmup"])
+    res.setdefault("timed_out", False)
+    res.setdefault("estimated_total_seconds", None)
+    res.setdefault("eval_limit_seconds", None)
+    res.setdefault("warmup_dense_reward", None)
+    res.setdefault("backbone_model_names", [])
 
     open_discovery = res.setdefault("open_discovery", {})
     open_discovery.setdefault("r_primary", 0.0)
@@ -656,11 +691,13 @@ def base_discovery_reward_fn(
     batch_last_item: bool = False,
 ) -> Dict[str, Any]:
     block_code, init_code, forward_code = extract_completion_blocks(completion)
+    backbone_model_names = _extract_backbone_model_names(init_code)
     if not block_code or not init_code or not forward_code:
         return _discovery_failure_result(
             -2.0,
             "Reconstruction failed (tags missing?)",
             seed_accuracy_baseline=seed_accuracy_baseline,
+            backbone_model_names=backbone_model_names,
         )
 
     if "self.pattern" in forward_code:
@@ -668,6 +705,7 @@ def base_discovery_reward_fn(
             -5.0,
             "CHEAT DETECTED: Accessed self.pattern inside forward block",
             seed_accuracy_baseline=seed_accuracy_baseline,
+            backbone_model_names=backbone_model_names,
         )
 
     graph_info = graph_info or extract_graph_info(
@@ -686,6 +724,7 @@ def base_discovery_reward_fn(
             -2.0,
             "Code reconstruction failed",
             seed_accuracy_baseline=seed_accuracy_baseline,
+            backbone_model_names=backbone_model_names,
         )
 
     res = evaluate_code_and_reward(
@@ -703,6 +742,7 @@ def base_discovery_reward_fn(
 
     if not res.get('built_ok'):
         res['r_build_partial'] = _compute_build_partial_reward(res)
+    res.setdefault("backbone_model_names", backbone_model_names)
 
     shallow_one_shot = is_shallow_one_shot_fuse(graph_info)
     batch_same_family_count = batch_family_hashes.count(graph_info.family_hash) if batch_family_hashes and graph_info.parse_ok else 0
@@ -729,8 +769,10 @@ def base_discovery_reward_fn(
         elif novel_vs_trainset_graph:
             r_tiebreak = 0.01
 
+    warmup_dense_reward = None
     if group_warmup and _is_trainable_candidate(res, graph_info):
-        total_reward = 0.0
+        warmup_dense_reward = _compute_warmup_dense_reward(res.get("train_acc"))
+        total_reward = float(warmup_dense_reward or 0.0)
     else:
         total_reward = max(-2.0, min(2.0, r_primary + r_tiebreak))
     total_reward = _apply_trainability_clamp(res, total_reward, graph_info)
@@ -743,6 +785,7 @@ def base_discovery_reward_fn(
     res['reward_batch_index'] = reward_batch_index
     res['reward_group_id'] = reward_group_id
     res['group_warmup'] = group_warmup
+    res['warmup_dense_reward'] = warmup_dense_reward
     res['signature'] = f"{normalize_pattern_name(effective_pattern_name)}_{graph_info.graph_hash[:6]}"
     res['graph_hash'] = graph_info.graph_hash
     res['family_id'] = graph_info.family_id

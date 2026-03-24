@@ -15,6 +15,10 @@ class SimpleCodeLogger:
         
         self.total_count = 0
         self.success_count = 0
+        self.warmup_trainable_count = 0
+        self.warmup_positive_count = 0
+        self.timeout_count = 0
+        self.improved_count = 0
         self.start_time = time.time()
         
         os.makedirs(self.output_dir, exist_ok=True)
@@ -30,6 +34,22 @@ class SimpleCodeLogger:
     
     def log_generation(self, prompt: str, completion: str, reward: float, api_result: Any = None):
         self.total_count += 1
+
+        if isinstance(api_result, dict):
+            trainable_ok = bool(
+                api_result.get("built_ok")
+                and api_result.get("forward_shape_ok")
+                and api_result.get("backward_ok")
+                and api_result.get("loss_drop_ok")
+            )
+            if api_result.get("timed_out"):
+                self.timeout_count += 1
+            if api_result.get("group_warmup") and trainable_ok:
+                self.warmup_trainable_count += 1
+                if float(reward) > 0.0:
+                    self.warmup_positive_count += 1
+            if (not api_result.get("group_warmup")) and trainable_ok and float(api_result.get("group_train_acc_gain") or 0.0) > 0.0:
+                self.improved_count += 1
         
         self.log_to_file(f"Generation {self.total_count}: Reward={reward:.4f}")
         
@@ -42,13 +62,24 @@ class SimpleCodeLogger:
         
         if self.total_count % 10 == 0:
             current_success_rate = (self.success_count / self.total_count * 100)
-            self.log_to_file(f"progress: {self.total_count} generation，{self.success_count} success，success rate {current_success_rate:.1f}%")
+            self.log_to_file(
+                f"progress: {self.total_count} generation，"
+                f"{self.success_count} success，success rate {current_success_rate:.1f}% "
+                f"warmup_trainable_count={self.warmup_trainable_count} "
+                f"warmup_positive_count={self.warmup_positive_count} "
+                f"timeout_count={self.timeout_count} "
+                f"improved_count={self.improved_count}"
+            )
      
     def save_log(self):
         log_data = {
             'summary': {
                 'total_count': self.total_count,
                 'success_count': self.success_count,
+                'warmup_trainable_count': self.warmup_trainable_count,
+                'warmup_positive_count': self.warmup_positive_count,
+                'timeout_count': self.timeout_count,
+                'improved_count': self.improved_count,
                 'success_rate': (self.success_count / self.total_count) if self.total_count > 0 else 0,
                 'start_time': self.start_time,
                 'duration_minutes': (time.time() - self.start_time) / 60
@@ -59,6 +90,4 @@ class SimpleCodeLogger:
             json.dump(log_data, f, indent=2, ensure_ascii=False)
         
         print(f"log save to {self.log_file}")
-
-
 

@@ -155,6 +155,11 @@ def _cifar_eval_error(error: Exception, *, seed_accuracy_baseline: float | None 
         "group_warmup": False,
         "latency_ms": None,
         "params_m": None,
+        "timed_out": False,
+        "estimated_total_seconds": None,
+        "eval_limit_seconds": None,
+        "warmup_dense_reward": None,
+        "backbone_model_names": [],
         "error": error_msg,
     }
 
@@ -306,6 +311,8 @@ def evaluate_code_and_reward_cifar(
                 kl_div=cfg.kl_div,
                 critic_fn=cfg.critic_fn,
                 weights=cfg.weights,
+                eval_limit_seconds=cfg.eval_limit_seconds,
+                budget_probe_batches=cfg.budget_probe_batches,
             )
 
         return RewardUtil.evaluate_code_and_reward(

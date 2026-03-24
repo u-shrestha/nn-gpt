@@ -61,6 +61,7 @@ from torch.amp import autocast, GradScaler
 class TorchVision(nn.Module):
     def __init__(self, model: str, weights: str = "DEFAULT", unwrap: bool = True, truncate: int = 1, in_channels: int = 3):
         super().__init__()
+        self.model_name = str(model)
         self.adapter = nn.Conv2d(in_channels, 3, kernel_size=1) if in_channels != 3 else nn.Identity()
         kwargs = {"aux_logits": False} if "inception" in model.lower() else {}
         try:
@@ -145,14 +146,22 @@ class Net(nn.Module):
 
     def infer_dimensions_dynamically(self, num_classes):
         self.to(self.device)
+        was_training = self.training
         self.eval()
+        classifier = getattr(self, "classifier", None)
         with torch.no_grad():
             c, h, w = self._input_spec
             dummy = torch.zeros(1, c, h, w).to(self.device)
+            self.classifier = nn.Identity()
             output_feat = self.forward(dummy, is_probing=True)
+            output_feat = adaptive_pool_flatten(output_feat)
+            if output_feat.dim() != 2:
+                output_feat = output_feat.flatten(1)
             dim_fused = output_feat.shape[1]
-        self.classifier = nn.Linear(dim_fused, num_classes)
-        self.train()
+        self.classifier = nn.Linear(dim_fused, num_classes).to(self.device)
+        if classifier is not None and isinstance(classifier, nn.Module):
+            del classifier
+        self.train(was_training)
 
     @staticmethod
     def _norm4d(x: torch.Tensor) -> torch.Tensor:
@@ -307,6 +316,8 @@ Produce one trainable architecture that improves short-budget training accuracy 
    - Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b`
    - Initialize both with `TorchVision(model=..., in_channels=...)`
    - Use both backbones in `forward`
+   - The backbone model names do NOT need to come from a whitelist; runtime trainability is what matters
+   - `{available_backbones}` is only an example/recommended source list if you want safe torchvision choices
    - Do not omit either backbone, and do not add a third backbone
    - Both backbones are frozen during RL proxy training and final training
 
@@ -325,17 +336,19 @@ Produce one trainable architecture that improves short-budget training accuracy 
    - Always define `self.device`, `self.use_amp`, and `self._input_spec`
 
 7. Component guidance
-   - Choose the two backbone model names from [{available_backbones}]
+   - You may choose any torchvision backbone names that can instantiate at runtime; examples include [{available_backbones}]
    - You may define optional modules such as `self.stem`, `self.bridge`, `self.project`, `self.mixer`, `self.fuse`
    - You may use `TorchVision(...)`, `FractalUnit(...)`, `nn.Sequential(...)`, and standard `nn.*` layers inside `__init__`
    - Use all major modules you define in `forward`
    - To expose structure clearly, prefer semantic attribute names such as: {module_hints}
    - Do not hide all learned routing logic inside a single generic name like `self.features`
+   - `is_probing` is optional. Your `forward` may use it, or may ignore it completely, as long as the graph still runs when `self.classifier` is temporarily `nn.Identity()`
 
 8. Shape safety and trainability
    - Ensure `forward` returns classifier logits
    - Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs when needed
    - Avoid placeholder code, dead modules, duplicate assignments, and hardcoded broken dimensions
+   - The reward worker runs with a CPU time budget. Overly heavy backbones or very slow graphs can be marked as timed out
 
 ### Preferred Optimization Directions
 - stem -> split -> asymmetric backbones -> bridge -> fuse
@@ -397,7 +410,8 @@ Produce one trainable architecture that improves short-budget training accuracy 
 4. Dual-backbone rules are mandatory
    - Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b`
    - Initialize both with `TorchVision(model=..., in_channels=...)`
-   - Use two DIFFERENT backbone model names from [{available_backbones}]
+   - Backbone names do NOT need to be on a whitelist and they may be the same or different, as long as runtime instantiation and training proxy evaluation succeed
+   - `{available_backbones}` is only a recommended example list of safe torchvision options
    - Both backbones must appear in `__init__` and `forward`
    - Do not omit either backbone, and do not add a third backbone
    - Both backbones are frozen during RL proxy training and final training
@@ -429,6 +443,8 @@ Produce one trainable architecture that improves short-budget training accuracy 
    - Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs
    - Prefer `TorchVision`, plain CNN blocks, or `FractalBlock`
    - Avoid placeholder code, dead modules, duplicate assignments, and broken dimensions
+   - `is_probing` is optional. Your `forward` may use it or ignore it, but it must still run when `self.classifier` is temporarily replaced by `nn.Identity()`
+   - The reward worker has a CPU time budget. Very heavy or slow architectures can return a timeout penalty instead of finishing evaluation
 
 ### Output Requirement (STRICT)
 Output ONLY the implementation within the XML tags. Each tag MUST contain the complete function/method definition.

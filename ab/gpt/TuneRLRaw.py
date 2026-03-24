@@ -755,6 +755,18 @@ def _extract_used_backbones(forward_code: str) -> List[str]:
     )
 
 
+def _extract_backbone_model_names(init_code: str) -> List[str]:
+    matches: Dict[str, str] = {}
+    patterns = (
+        r"self\.(backbone_[ab])\s*=\s*TorchVision\(\s*model\s*=\s*['\"]([^'\"]+)['\"]",
+        r"self\.(backbone_[ab])\s*=\s*TorchVision\(\s*['\"]([^'\"]+)['\"]",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, init_code or ""):
+            matches.setdefault(match.group(1), match.group(2))
+    return [matches[name] for name in REQUIRED_BACKBONE_NAMES if name in matches]
+
+
 def _count_xml_tags(text: str, tag: str) -> Tuple[int, int]:
     return (
         len(re.findall(rf"<{tag}>", text, re.IGNORECASE)),
@@ -781,6 +793,7 @@ def _build_extraction_meta(
 
     defined_backbones = _extract_defined_backbones(init_code)
     used_backbones = _extract_used_backbones(forward_code)
+    backbone_model_names = _extract_backbone_model_names(init_code)
     required_backbone_set = set(REQUIRED_BACKBONE_NAMES)
     dual_backbone_init_ok = set(defined_backbones) == required_backbone_set and len(defined_backbones) == 2
     dual_backbone_forward_ok = required_backbone_set.issubset(set(used_backbones)) and len(set(used_backbones)) == 2
@@ -816,6 +829,7 @@ def _build_extraction_meta(
         "exact_forward_signature": exact_signatures["forward"],
         "defined_backbones": defined_backbones,
         "used_backbones": used_backbones,
+        "backbone_model_names": backbone_model_names,
         "dual_backbone_init_ok": dual_backbone_init_ok,
         "dual_backbone_forward_ok": dual_backbone_forward_ok,
         "dual_backbone_ok": dual_backbone_ok,
@@ -953,12 +967,13 @@ def raw_reward_fn(
     if not meta.get("dual_backbone_ok"):
         res["reward"] = min(float(res["reward"]), -3.5)
     elif group_warmup and TuneRL._is_trainable_candidate(res, graph_info):
-        res["reward"] = 0.0
+        res["reward"] = float(res.get("warmup_dense_reward") or 0.0)
 
     res["raw_extraction"] = {
         **meta,
         "raw_delta": raw_delta,
     }
+    res.setdefault("backbone_model_names", list(meta.get("backbone_model_names", [])))
     return res
 
 
