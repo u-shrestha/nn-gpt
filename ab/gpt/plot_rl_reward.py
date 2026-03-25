@@ -135,6 +135,19 @@ def _require_bool(container: dict[str, Any], key: str, line_no: int) -> float:
     return 1.0 if value else 0.0
 
 
+def _require_bool_alias(container: dict[str, Any], key: str, aliases: Sequence[str], line_no: int) -> float:
+    candidate_keys = (key, *aliases)
+    for candidate in candidate_keys:
+        if candidate not in container:
+            continue
+        value = container[candidate]
+        if not isinstance(value, bool):
+            raise ValueError(f"Line {line_no}: field '{candidate}' must be boolean")
+        return 1.0 if value else 0.0
+    alias_text = ", ".join(repr(alias) for alias in aliases)
+    raise ValueError(f"Line {line_no}: missing required boolean field '{key}' (accepted aliases: {alias_text})")
+
+
 def _optional_numeric(container: dict[str, Any] | None, key: str, line_no: int) -> float:
     if container is None or key not in container or container[key] is None:
         return float("nan")
@@ -287,7 +300,7 @@ def load_reward_log(log_dir: Path) -> RewardLogData:
             reward.append(reward_value)
             reward_positive.append(1.0 if reward_value > 0.0 else 0.0)
             built_ok.append(_require_bool(api_result, "built_ok", line_no))
-            forward_shape_ok.append(_require_bool(api_result, "forward_shape_ok", line_no))
+            forward_shape_ok.append(_require_bool_alias(api_result, "forward_shape_ok", ("forward_ok",), line_no))
             backward_ok.append(_require_bool(api_result, "backward_ok", line_no))
             loss_drop_ok.append(_require_bool(api_result, "loss_drop_ok", line_no))
             timed_out.append(_require_bool(api_result, "timed_out", line_no))
