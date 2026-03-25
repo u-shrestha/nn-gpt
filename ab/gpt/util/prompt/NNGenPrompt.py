@@ -9,7 +9,7 @@ from transformers import PreTrainedTokenizerBase
 from ab.gpt.util.prompt.Prompt import Prompt
 from tqdm import tqdm
 
-from ab.nn.api import JoinConf
+from ab.nn.util.db.Query import JoinConf
 
 
 def shuffle_data(df: DataFrame):
