@@ -23,12 +23,16 @@ PROGRESS_PATTERN = re.compile(
     r"timeout_count=(?P<timeout_count>\d+)\s+"
     r"improved_count=(?P<improved_count>\d+)"
 )
+GENERATION_PATTERN = re.compile(r"Generation\s+(?P<generation_index>\d+)\s*:\s*Reward=")
 _MISSING = object()
 
 
 @dataclass
 class RewardLogData:
     run_name: str
+    total_file_samples: int
+    current_run_sample_count: int
+    trimmed_stale_samples: int
     sample_index: list[int]
     reward: list[float]
     reward_positive: list[float]
@@ -341,6 +345,7 @@ def _load_training_progress(log_dir: Path) -> dict[str, list[float] | list[int]]
     progress_file = log_dir / "training_progress.log"
     series = {
         "generation_total": [],
+        "generation_index": [],
         "success_count": [],
         "success_rate": [],
         "warmup_trainable_count": [],
@@ -353,6 +358,9 @@ def _load_training_progress(log_dir: Path) -> dict[str, list[float] | list[int]]
 
     with progress_file.open("r", encoding="utf-8") as handle:
         for raw_line in handle:
+            generation_match = GENERATION_PATTERN.search(raw_line)
+            if generation_match:
+                series["generation_index"].append(int(generation_match.group("generation_index")))
             match = PROGRESS_PATTERN.search(raw_line)
             if not match:
                 continue
@@ -364,6 +372,14 @@ def _load_training_progress(log_dir: Path) -> dict[str, list[float] | list[int]]
             series["timeout_count"].append(float(match.group("timeout_count")))
             series["improved_count"].append(float(match.group("improved_count")))
     return series
+
+
+def _slice_tail(values: list[Any], keep_count: int) -> list[Any]:
+    if keep_count <= 0:
+        return []
+    if keep_count >= len(values):
+        return list(values)
+    return list(values[-keep_count:])
 
 
 def load_reward_log(log_dir: Path) -> RewardLogData:
@@ -462,9 +478,51 @@ def load_reward_log(log_dir: Path) -> RewardLogData:
         raise ValueError(f"No samples found in {log_file}")
 
     progress = _load_training_progress(log_dir)
+    total_file_samples = len(reward)
+    current_run_sample_count = (
+        max(progress["generation_index"])
+        if progress["generation_index"]
+        else 0
+    )
+    keep_count = total_file_samples
+    if current_run_sample_count > 0:
+        keep_count = min(current_run_sample_count, total_file_samples)
+    trimmed_stale_samples = max(0, total_file_samples - keep_count)
+
+    reward = _slice_tail(reward, keep_count)
+    reward_positive = _slice_tail(reward_positive, keep_count)
+    built_ok = _slice_tail(built_ok, keep_count)
+    forward_shape_ok = _slice_tail(forward_shape_ok, keep_count)
+    backward_ok = _slice_tail(backward_ok, keep_count)
+    loss_drop_ok = _slice_tail(loss_drop_ok, keep_count)
+    timed_out = _slice_tail(timed_out, keep_count)
+    train_acc = _slice_tail(train_acc, keep_count)
+    seed_accuracy_baseline = _slice_tail(seed_accuracy_baseline, keep_count)
+    seed_train_acc_gap = _slice_tail(seed_train_acc_gap, keep_count)
+    group_baseline_train_acc = _slice_tail(group_baseline_train_acc, keep_count)
+    group_train_acc_gain = _slice_tail(group_train_acc_gain, keep_count)
+    group_train_acc_improved = _slice_tail(group_train_acc_improved, keep_count)
+    reward_batch_index = _slice_tail(reward_batch_index, keep_count)
+    reward_group_id = _slice_tail(reward_group_id, keep_count)
+    group_warmup = _slice_tail(group_warmup, keep_count)
+    loss_start = _slice_tail(loss_start, keep_count)
+    loss_end = _slice_tail(loss_end, keep_count)
+    loss_drop = _slice_tail(loss_drop, keep_count)
+    val_metric = _slice_tail(val_metric, keep_count)
+    estimated_total_seconds = _slice_tail(estimated_total_seconds, keep_count)
+    eval_limit_seconds = _slice_tail(eval_limit_seconds, keep_count)
+    warmup_dense_reward = _slice_tail(warmup_dense_reward, keep_count)
+    anti_collapse_trainable_ok = _slice_tail(anti_collapse_trainable_ok, keep_count)
+    xml_tag_exact = _slice_tail(xml_tag_exact, keep_count)
+    dual_backbone_ok = _slice_tail(dual_backbone_ok, keep_count)
+    format_violation = _slice_tail(format_violation, keep_count)
+    backbone_model_names = _slice_tail(backbone_model_names, keep_count)
 
     return RewardLogData(
         run_name=log_dir.name or str(log_dir),
+        total_file_samples=total_file_samples,
+        current_run_sample_count=keep_count,
+        trimmed_stale_samples=trimmed_stale_samples,
         sample_index=list(range(1, len(reward) + 1)),
         reward=reward,
         reward_positive=reward_positive,
@@ -524,6 +582,9 @@ def compute_summary(data: RewardLogData, window: int) -> dict[str, float]:
     )
     return {
         "count": float(data.count),
+        "total_file_samples": float(data.total_file_samples),
+        "current_run_sample_count": float(data.current_run_sample_count),
+        "trimmed_stale_samples": float(data.trimmed_stale_samples),
         "reward_min": min(data.reward),
         "reward_max": max(data.reward),
         "reward_mean": _mean(data.reward),
@@ -711,7 +772,12 @@ def plot_dashboard(data: RewardLogData, output_path: Path, window: int, title: s
 
 def print_summary(summary: dict[str, float], run_name: str) -> None:
     print(f"Run: {run_name}")
-    print(f"Samples: {int(summary['count'])}")
+    print(
+        "Samples: "
+        f"{int(summary['count'])}, "
+        f"file_total={_format_count(summary['total_file_samples'])}, "
+        f"trimmed_stale={_format_count(summary['trimmed_stale_samples'])}"
+    )
     print(
         "Reward: "
         f"min={_format_metric(summary['reward_min'])}, max={_format_metric(summary['reward_max'])}, "

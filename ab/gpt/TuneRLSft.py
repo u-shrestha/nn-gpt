@@ -610,6 +610,10 @@ def bootstrap_sft_runtime() -> None:
 
     log_dir = TuneRL.run_log_dir()
     os.makedirs(log_dir, exist_ok=True)
+    samples_file = Path(log_dir) / "generation_samples.jsonl"
+    if samples_file.exists():
+        print(f"Removing stale reward samples log: {samples_file}")
+        samples_file.unlink()
     TuneRL.code_logger = TuneRLRaw.RawCodeLogger(log_dir)
 
     print(f"Cleaning existing models in {TuneRL.run_epoch_dir()}...")
