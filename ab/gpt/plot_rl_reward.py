@@ -23,6 +23,7 @@ PROGRESS_PATTERN = re.compile(
     r"timeout_count=(?P<timeout_count>\d+)\s+"
     r"improved_count=(?P<improved_count>\d+)"
 )
+_MISSING = object()
 
 
 @dataclass
@@ -135,15 +136,27 @@ def _require_bool(container: dict[str, Any], key: str, line_no: int) -> float:
     return 1.0 if value else 0.0
 
 
-def _require_bool_alias(container: dict[str, Any], key: str, aliases: Sequence[str], line_no: int) -> float:
+def _coerce_bool(value: Any, field_name: str, line_no: int) -> float:
+    if not isinstance(value, bool):
+        raise ValueError(f"Line {line_no}: field '{field_name}' must be boolean")
+    return 1.0 if value else 0.0
+
+
+def _require_bool_alias(
+    container: dict[str, Any],
+    key: str,
+    aliases: Sequence[str],
+    line_no: int,
+    *,
+    default: object = _MISSING,
+) -> float:
     candidate_keys = (key, *aliases)
     for candidate in candidate_keys:
         if candidate not in container:
             continue
-        value = container[candidate]
-        if not isinstance(value, bool):
-            raise ValueError(f"Line {line_no}: field '{candidate}' must be boolean")
-        return 1.0 if value else 0.0
+        return _coerce_bool(container[candidate], candidate, line_no)
+    if default is not _MISSING:
+        return 1.0 if bool(default) else 0.0
     alias_text = ", ".join(repr(alias) for alias in aliases)
     raise ValueError(f"Line {line_no}: missing required boolean field '{key}' (accepted aliases: {alias_text})")
 
@@ -157,6 +170,17 @@ def _optional_numeric(container: dict[str, Any] | None, key: str, line_no: int) 
     return float(value)
 
 
+def _optional_numeric_alias(container: dict[str, Any], key: str, aliases: Sequence[str], line_no: int) -> float:
+    for candidate in (key, *aliases):
+        if candidate not in container or container[candidate] is None:
+            continue
+        value = container[candidate]
+        if not _is_number(value):
+            raise ValueError(f"Line {line_no}: field '{candidate}' must be numeric or null when present")
+        return float(value)
+    return float("nan")
+
+
 def _optional_bool(container: dict[str, Any] | None, key: str, line_no: int) -> float:
     if container is None or key not in container or container[key] is None:
         return float("nan")
@@ -166,6 +190,18 @@ def _optional_bool(container: dict[str, Any] | None, key: str, line_no: int) -> 
     return 1.0 if value else 0.0
 
 
+def _optional_int(container: dict[str, Any], key: str, line_no: int, *, default: int = 0) -> int:
+    if key not in container or container[key] is None:
+        return default
+    value = container[key]
+    if not _is_number(value):
+        raise ValueError(f"Line {line_no}: field '{key}' must be an integer when present")
+    numeric = float(value)
+    if not numeric.is_integer():
+        raise ValueError(f"Line {line_no}: field '{key}' must be an integer")
+    return int(numeric)
+
+
 def _optional_string_list(container: dict[str, Any], key: str, line_no: int) -> list[str]:
     if key not in container or container[key] is None:
         return []
@@ -173,6 +209,31 @@ def _optional_string_list(container: dict[str, Any], key: str, line_no: int) -> 
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"Line {line_no}: field '{key}' must be a list of strings when present")
     return list(value)
+
+
+def _compat_loss_drop_ok(api_result: dict[str, Any], line_no: int) -> float:
+    if "loss_drop_ok" in api_result:
+        return _coerce_bool(api_result["loss_drop_ok"], "loss_drop_ok", line_no)
+
+    loss_start = _optional_numeric_alias(api_result, "loss_start", (), line_no)
+    loss_end = _optional_numeric_alias(api_result, "loss_end", (), line_no)
+    loss_drop = _optional_numeric_alias(api_result, "loss_drop", (), line_no)
+
+    if not math.isnan(loss_start) and not math.isnan(loss_end):
+        rel_drop_ok = loss_start > 0.0 and (loss_end <= loss_start * 0.98)
+        return 1.0 if (loss_end < (loss_start - 1e-3) or rel_drop_ok) else 0.0
+    if not math.isnan(loss_drop):
+        return 1.0 if loss_drop > 1e-3 else 0.0
+    return 0.0
+
+
+def _compat_group_improved(api_result: dict[str, Any], line_no: int) -> float:
+    if "group_train_acc_improved" in api_result:
+        return _coerce_bool(api_result["group_train_acc_improved"], "group_train_acc_improved", line_no)
+    group_gain = _optional_numeric_alias(api_result, "group_train_acc_gain", (), line_no)
+    if math.isnan(group_gain):
+        return 0.0
+    return 1.0 if group_gain > 0.0 else 0.0
 
 
 def rolling_nanmean(values: Sequence[float], window: int) -> list[float]:
@@ -301,25 +362,25 @@ def load_reward_log(log_dir: Path) -> RewardLogData:
             reward_positive.append(1.0 if reward_value > 0.0 else 0.0)
             built_ok.append(_require_bool(api_result, "built_ok", line_no))
             forward_shape_ok.append(_require_bool_alias(api_result, "forward_shape_ok", ("forward_ok",), line_no))
-            backward_ok.append(_require_bool(api_result, "backward_ok", line_no))
-            loss_drop_ok.append(_require_bool(api_result, "loss_drop_ok", line_no))
-            timed_out.append(_require_bool(api_result, "timed_out", line_no))
-            train_acc.append(_require_optional_numeric(api_result, "train_acc", line_no))
-            seed_accuracy_baseline.append(_require_optional_numeric(api_result, "seed_accuracy_baseline", line_no))
-            seed_train_acc_gap.append(_require_optional_numeric(api_result, "seed_train_acc_gap", line_no))
-            group_baseline_train_acc.append(_require_optional_numeric(api_result, "group_baseline_train_acc", line_no))
-            group_train_acc_gain.append(_require_optional_numeric(api_result, "group_train_acc_gain", line_no))
-            group_train_acc_improved.append(_require_bool(api_result, "group_train_acc_improved", line_no))
-            reward_batch_index.append(_require_int(api_result, "reward_batch_index", line_no))
-            reward_group_id.append(_require_int(api_result, "reward_group_id", line_no))
-            group_warmup.append(_require_bool(api_result, "group_warmup", line_no))
-            loss_start.append(_require_optional_numeric(api_result, "loss_start", line_no))
-            loss_end.append(_require_optional_numeric(api_result, "loss_end", line_no))
-            loss_drop.append(_require_optional_numeric(api_result, "loss_drop", line_no))
-            val_metric.append(_require_optional_numeric(api_result, "val_metric", line_no))
-            estimated_total_seconds.append(_require_optional_numeric(api_result, "estimated_total_seconds", line_no))
-            eval_limit_seconds.append(_require_optional_numeric(api_result, "eval_limit_seconds", line_no))
-            warmup_dense_reward.append(_require_optional_numeric(api_result, "warmup_dense_reward", line_no))
+            backward_ok.append(_require_bool_alias(api_result, "backward_ok", ("trained_step_ok",), line_no, default=False))
+            loss_drop_ok.append(_compat_loss_drop_ok(api_result, line_no))
+            timed_out.append(_require_bool_alias(api_result, "timed_out", (), line_no, default=False))
+            train_acc.append(_optional_numeric_alias(api_result, "train_acc", (), line_no))
+            seed_accuracy_baseline.append(_optional_numeric_alias(api_result, "seed_accuracy_baseline", ("accuracy_baseline",), line_no))
+            seed_train_acc_gap.append(_optional_numeric_alias(api_result, "seed_train_acc_gap", ("train_acc_gain",), line_no))
+            group_baseline_train_acc.append(_optional_numeric_alias(api_result, "group_baseline_train_acc", (), line_no))
+            group_train_acc_gain.append(_optional_numeric_alias(api_result, "group_train_acc_gain", (), line_no))
+            group_train_acc_improved.append(_compat_group_improved(api_result, line_no))
+            reward_batch_index.append(_optional_int(api_result, "reward_batch_index", line_no, default=0))
+            reward_group_id.append(_optional_int(api_result, "reward_group_id", line_no, default=0))
+            group_warmup.append(_require_bool_alias(api_result, "group_warmup", (), line_no, default=False))
+            loss_start.append(_optional_numeric_alias(api_result, "loss_start", (), line_no))
+            loss_end.append(_optional_numeric_alias(api_result, "loss_end", (), line_no))
+            loss_drop.append(_optional_numeric_alias(api_result, "loss_drop", (), line_no))
+            val_metric.append(_optional_numeric_alias(api_result, "val_metric", (), line_no))
+            estimated_total_seconds.append(_optional_numeric_alias(api_result, "estimated_total_seconds", (), line_no))
+            eval_limit_seconds.append(_optional_numeric_alias(api_result, "eval_limit_seconds", (), line_no))
+            warmup_dense_reward.append(_optional_numeric_alias(api_result, "warmup_dense_reward", (), line_no))
             anti_collapse_trainable_ok.append(_optional_bool(anti_collapse, "trainable_ok", line_no))
             xml_tag_exact.append(_optional_bool(raw_extraction, "xml_tag_exact", line_no))
             dual_backbone_ok.append(_optional_bool(raw_extraction, "dual_backbone_ok", line_no))
