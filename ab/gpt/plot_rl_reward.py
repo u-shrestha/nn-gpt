@@ -142,6 +142,25 @@ def _coerce_bool(value: Any, field_name: str, line_no: int) -> float:
     return 1.0 if value else 0.0
 
 
+def _bool_from_candidates(container: dict[str, Any], candidate_keys: Sequence[str], line_no: int) -> float | None:
+    for candidate in candidate_keys:
+        if candidate not in container or container[candidate] is None:
+            continue
+        return _coerce_bool(container[candidate], candidate, line_no)
+    return None
+
+
+def _has_numeric_candidate(container: dict[str, Any], candidate_keys: Sequence[str], line_no: int) -> bool:
+    for candidate in candidate_keys:
+        if candidate not in container or container[candidate] is None:
+            continue
+        value = container[candidate]
+        if not _is_number(value):
+            raise ValueError(f"Line {line_no}: field '{candidate}' must be numeric or null when present")
+        return True
+    return False
+
+
 def _require_bool_alias(
     container: dict[str, Any],
     key: str,
@@ -227,6 +246,40 @@ def _compat_loss_drop_ok(api_result: dict[str, Any], line_no: int) -> float:
     return 0.0
 
 
+def _compat_built_ok(api_result: dict[str, Any], line_no: int) -> float:
+    explicit = _bool_from_candidates(api_result, ("built_ok",), line_no)
+    if explicit is not None:
+        return explicit
+    if _bool_from_candidates(api_result, ("forward_shape_ok", "forward_ok", "trained_step_ok", "backward_ok"), line_no) == 1.0:
+        return 1.0
+    if _has_numeric_candidate(api_result, ("loss_start", "loss_end", "loss_drop", "train_acc", "val_metric", "latency_ms", "params_m"), line_no):
+        return 1.0
+    return 0.0
+
+
+def _compat_forward_shape_ok(api_result: dict[str, Any], line_no: int) -> float:
+    explicit = _bool_from_candidates(api_result, ("forward_shape_ok", "forward_ok"), line_no)
+    if explicit is not None:
+        return explicit
+    if _bool_from_candidates(api_result, ("trained_step_ok", "backward_ok"), line_no) == 1.0:
+        return 1.0
+    if _has_numeric_candidate(api_result, ("loss_start", "loss_end", "loss_drop", "train_acc", "val_metric"), line_no):
+        return 1.0
+    built_ok = _bool_from_candidates(api_result, ("built_ok",), line_no)
+    if built_ok == 0.0:
+        return 0.0
+    return 0.0
+
+
+def _compat_backward_ok(api_result: dict[str, Any], line_no: int) -> float:
+    explicit = _bool_from_candidates(api_result, ("backward_ok", "trained_step_ok"), line_no)
+    if explicit is not None:
+        return explicit
+    if _has_numeric_candidate(api_result, ("loss_start", "loss_end", "loss_drop", "train_acc", "val_metric"), line_no):
+        return 1.0
+    return 0.0
+
+
 def _compat_group_improved(api_result: dict[str, Any], line_no: int) -> float:
     if "group_train_acc_improved" in api_result:
         return _coerce_bool(api_result["group_train_acc_improved"], "group_train_acc_improved", line_no)
@@ -234,6 +287,13 @@ def _compat_group_improved(api_result: dict[str, Any], line_no: int) -> float:
     if math.isnan(group_gain):
         return 0.0
     return 1.0 if group_gain > 0.0 else 0.0
+
+
+def _compat_group_warmup(api_result: dict[str, Any], line_no: int, reward_group_id_value: int) -> float:
+    explicit = _bool_from_candidates(api_result, ("group_warmup",), line_no)
+    if explicit is not None:
+        return explicit
+    return 1.0 if reward_group_id_value == 0 else 0.0
 
 
 def rolling_nanmean(values: Sequence[float], window: int) -> list[float]:
@@ -357,12 +417,14 @@ def load_reward_log(log_dir: Path) -> RewardLogData:
             api_result = _require_mapping(record, "api_result", line_no)
             raw_extraction = _optional_mapping(api_result, "raw_extraction", line_no)
             anti_collapse = _optional_mapping(api_result, "anti_collapse", line_no)
+            reward_batch_index_value = _optional_int(api_result, "reward_batch_index", line_no, default=0)
+            reward_group_id_value = _optional_int(api_result, "reward_group_id", line_no, default=0)
 
             reward.append(reward_value)
             reward_positive.append(1.0 if reward_value > 0.0 else 0.0)
-            built_ok.append(_require_bool(api_result, "built_ok", line_no))
-            forward_shape_ok.append(_require_bool_alias(api_result, "forward_shape_ok", ("forward_ok",), line_no))
-            backward_ok.append(_require_bool_alias(api_result, "backward_ok", ("trained_step_ok",), line_no, default=False))
+            built_ok.append(_compat_built_ok(api_result, line_no))
+            forward_shape_ok.append(_compat_forward_shape_ok(api_result, line_no))
+            backward_ok.append(_compat_backward_ok(api_result, line_no))
             loss_drop_ok.append(_compat_loss_drop_ok(api_result, line_no))
             timed_out.append(_require_bool_alias(api_result, "timed_out", (), line_no, default=False))
             train_acc.append(_optional_numeric_alias(api_result, "train_acc", (), line_no))
@@ -371,9 +433,9 @@ def load_reward_log(log_dir: Path) -> RewardLogData:
             group_baseline_train_acc.append(_optional_numeric_alias(api_result, "group_baseline_train_acc", (), line_no))
             group_train_acc_gain.append(_optional_numeric_alias(api_result, "group_train_acc_gain", (), line_no))
             group_train_acc_improved.append(_compat_group_improved(api_result, line_no))
-            reward_batch_index.append(_optional_int(api_result, "reward_batch_index", line_no, default=0))
-            reward_group_id.append(_optional_int(api_result, "reward_group_id", line_no, default=0))
-            group_warmup.append(_require_bool_alias(api_result, "group_warmup", (), line_no, default=False))
+            reward_batch_index.append(reward_batch_index_value)
+            reward_group_id.append(reward_group_id_value)
+            group_warmup.append(_compat_group_warmup(api_result, line_no, reward_group_id_value))
             loss_start.append(_optional_numeric_alias(api_result, "loss_start", (), line_no))
             loss_end.append(_optional_numeric_alias(api_result, "loss_end", (), line_no))
             loss_drop.append(_optional_numeric_alias(api_result, "loss_drop", (), line_no))
