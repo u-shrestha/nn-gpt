@@ -1,8 +1,10 @@
 import os
 import multiprocessing as mp
 import shutil
+import random
 from pathlib import Path
 from typing import Any, Dict, List
+from torch.utils.data import Dataset as TorchDataset
 
 
 # ── SFT runtime configuration ─────────────────────────────────────────────
@@ -19,6 +21,7 @@ SFT_NUM_GENERATIONS = 8
 SFT_GRAD_ACCUM = 8
 SFT_MAX_COMPLETION_LENGTH = 1536
 SFT_DATASET_LIMIT = 500
+SFT_FEEDBACK_CHAR_BUDGET = 1200
 SFT_LR = 5e-5
 SFT_NUM_EPOCHS = 5
 SFT_LORA_R = 16
@@ -407,9 +410,87 @@ def sft_reward_fn(
 SFT_DISCOVERY_PROMPT_TEMPLATE = SFTUtil.open_discovery_rl_prompt_template
 
 
+class DynamicSFTPromptDataset(TorchDataset):
+    column_names = ["prompt", "accuracy", "goal_name", "target_tags", "goal_profile_id"]
+
+    def __init__(
+        self,
+        rows: List[Dict[str, Any]],
+        tokenizer,
+        *,
+        block_signature: str,
+        init_signature: str,
+        forward_signature: str,
+    ) -> None:
+        self.rows = list(rows)
+        self.tokenizer = tokenizer
+        self.block_signature = block_signature
+        self.init_signature = init_signature
+        self.forward_signature = forward_signature
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def select(self, indices) -> "DynamicSFTPromptDataset":
+        if hasattr(indices, "tolist"):
+            indices = indices.tolist()
+        return DynamicSFTPromptDataset(
+            [self.rows[int(index)] for index in indices],
+            self.tokenizer,
+            block_signature=self.block_signature,
+            init_signature=self.init_signature,
+            forward_signature=self.forward_signature,
+        )
+
+    def _render_prompt(self, row: Dict[str, Any]) -> str:
+        profile = SFTUtil.open_discovery_goal_profiles[int(row["goal_profile_id"])]
+        module_hints = (
+            "self.backbone_a",
+            "self.backbone_b",
+            *profile["module_hints"],
+        )
+        user_prompt = SFT_DISCOVERY_PROMPT_TEMPLATE.format(
+            accuracy=row["accuracy"],
+            skeleton_code=SFTUtil.open_discovery_skeleton_code,
+            available_backbones=", ".join(SFTUtil.available_backbones),
+            legacy_patterns=", ".join(SFTUtil.legacy_patterns),
+            goal_name=profile["name"],
+            target_tags=", ".join(profile["tags"]),
+            design_brief=profile["brief"],
+            module_hints=", ".join(module_hints),
+            block_signature=self.block_signature,
+            init_signature=self.init_signature,
+            forward_signature=self.forward_signature,
+        )
+        feedback_text = TuneRL.render_prompt_feedback_text(
+            feedback_char_budget=SFT_FEEDBACK_CHAR_BUDGET,
+        )
+        feedback_section = "\n\n### Current Optimization Feedback\n" + feedback_text.strip() + "\n"
+        marker = "### Output Requirement (STRICT)"
+        if marker in user_prompt:
+            user_prompt = user_prompt.replace(marker, feedback_section + "\n" + marker, 1)
+        else:
+            user_prompt = user_prompt + feedback_section
+        messages = [{"role": "user", "content": user_prompt}]
+        return self.tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=False,
+        )
+
+    def __getitem__(self, index: int) -> Dict[str, Any]:
+        row = self.rows[int(index)]
+        return {
+            "prompt": self._render_prompt(row),
+            "accuracy": row["accuracy"],
+            "goal_name": row["goal_name"],
+            "target_tags": row["target_tags"],
+            "goal_profile_id": row["goal_profile_id"],
+        }
+
+
 def load_rl_dataset_sft(tokenizer) -> TuneRL.Dataset:
-    """Load SFT-aligned RL prompts without a pre-filled assistant prefix."""
-    from datasets import Dataset
+    """Load SFT-aligned RL prompts while rendering feedback lazily at access time."""
     from ab.gpt.TuneRLRaw import BLOCK_SIGNATURE, FORWARD_SIGNATURE, INIT_SIGNATURE
 
     data = TuneRL.api.data(task="img-classification", nn_prefixes=("rl-bb-test1",))
@@ -420,47 +501,30 @@ def load_rl_dataset_sft(tokenizer) -> TuneRL.Dataset:
     print(f"Loaded {len(data)} examples for SFT RL")
     TuneRL.bootstrap_trainset_reference_library(data)
 
-    prompts = []
-    legacy_patterns = ", ".join(SFTUtil.legacy_patterns)
+    rows: List[Dict[str, Any]] = []
 
     for _, row in data.iterrows():
         accuracy = TuneRL._coerce_accuracy_baseline(row.get("accuracy"), context="seed row accuracy")
-        for profile in SFTUtil.open_discovery_goal_profiles:
-            module_hints = (
-                "self.backbone_a",
-                "self.backbone_b",
-                *profile["module_hints"],
-            )
-            user_prompt = SFT_DISCOVERY_PROMPT_TEMPLATE.format(
-                accuracy=accuracy,
-                skeleton_code=SFTUtil.open_discovery_skeleton_code,
-                available_backbones=", ".join(SFTUtil.available_backbones),
-                legacy_patterns=legacy_patterns,
-                goal_name=profile["name"],
-                target_tags=", ".join(profile["tags"]),
-                design_brief=profile["brief"],
-                module_hints=", ".join(module_hints),
-                block_signature=BLOCK_SIGNATURE,
-                init_signature=INIT_SIGNATURE,
-                forward_signature=FORWARD_SIGNATURE,
-            )
-
-            messages = [{"role": "user", "content": user_prompt}]
-            prompt_str = tokenizer.apply_chat_template(
-                messages,
-                add_generation_prompt=True,
-                tokenize=False,
-            )
-            prompts.append(
+        for profile_id, profile in enumerate(SFTUtil.open_discovery_goal_profiles):
+            rows.append(
                 {
-                    "prompt": prompt_str,
                     "accuracy": accuracy,
                     "goal_name": profile["name"],
                     "target_tags": ", ".join(profile["tags"]),
+                    "goal_profile_id": profile_id,
                 }
             )
 
-    return Dataset.from_list(prompts).shuffle(seed=42)
+    random.Random(42).shuffle(rows)
+    if len(rows) > SFT_DATASET_LIMIT:
+        rows = rows[:SFT_DATASET_LIMIT]
+    return DynamicSFTPromptDataset(
+        rows,
+        tokenizer,
+        block_signature=BLOCK_SIGNATURE,
+        init_signature=INIT_SIGNATURE,
+        forward_signature=FORWARD_SIGNATURE,
+    )
 
 
 def sft_run_epoch_dir(*args) -> Path:
@@ -610,10 +674,17 @@ def bootstrap_sft_runtime() -> None:
 
     log_dir = TuneRL.run_log_dir()
     os.makedirs(log_dir, exist_ok=True)
-    samples_file = Path(log_dir) / "generation_samples.jsonl"
-    if samples_file.exists():
-        print(f"Removing stale reward samples log: {samples_file}")
-        samples_file.unlink()
+    stale_files = (
+        "generation_samples.jsonl",
+        "group_progress.jsonl",
+        "group_feedback_samples.jsonl",
+        "best_group_feedback.json",
+    )
+    for filename in stale_files:
+        path = Path(log_dir) / filename
+        if path.exists():
+            print(f"Removing stale runtime log: {path}")
+            path.unlink()
     TuneRL.code_logger = TuneRLRaw.RawCodeLogger(log_dir)
 
     print(f"Cleaning existing models in {TuneRL.run_epoch_dir()}...")

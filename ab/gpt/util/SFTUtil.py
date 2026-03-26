@@ -401,6 +401,9 @@ Produce one trainable architecture that improves short-budget training accuracy 
    - Treat `{accuracy}` only as seed context, not as the target reward baseline
    - Architecture changes must serve train accuracy, not novelty for its own sake
    - Avoid decorative complexity, unused modules, or graph edits that do not improve learning signal
+   - Trainable but non-improving samples receive only weak reward
+   - Beating the previous strong group matters more than merely staying valid
+   - Refreshing the current best group gets the strongest reward
 
 3. Keep a descriptive `self.pattern`
    - Set `self.pattern` to a concise descriptive name
@@ -430,6 +433,9 @@ Produce one trainable architecture that improves short-budget training accuracy 
    - Use the Optimization Target Tags above with actual code structure, not just naming
    - Prefer visible modules such as: {module_hints}
    - Do not define new classes or helper methods beyond the 3 required definitions
+   - If reusing a strong motif, mutate locally with a better stem, projector, bridge, or fuse stage instead of resubmitting the same shallow graph
+   - Do not submit a classifier-only parallel fuse unless it clearly beats the current target
+   - Make the target tags visible in real code structure, not only in `self.pattern`
 
 7. Forward-path restrictions
    - Keep `forward` as straight-line assignments plus a final return
