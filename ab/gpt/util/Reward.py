@@ -49,28 +49,55 @@ class EvalTimeBudget:
             2 + int(cfg.train_steps) + max(1, int(cfg.train_steps)) + max(1, int(cfg.max_val_batches)),
         )
 
+    def check(self, phase: str) -> None:
+        self._maybe_raise_elapsed(phase)
+        self._maybe_raise_estimate(phase)
+
     def mark_build_complete(self) -> None:
         self.completed_units += 1
+        self.check("build")
 
     def mark_forward_complete(self) -> None:
         self.completed_units += 1
+        self.check("forward")
 
-    def mark_train_batch(self) -> None:
+    def mark_train_batch_start(self) -> None:
+        self.check("train")
+
+    def mark_train_batch_end(self) -> None:
         self.observed_train_batches += 1
         self.completed_units += 1
-        self._maybe_raise("train")
+        self.check("train")
 
-    def mark_accuracy_batch(self, phase: str) -> None:
+    def mark_accuracy_batch_start(self, phase: str) -> None:
+        self.check(phase)
+
+    def mark_accuracy_batch_end(self, phase: str) -> None:
         self.completed_units += 1
-        self._maybe_raise(phase)
+        self.check(phase)
 
-    def _maybe_raise(self, phase: str) -> None:
-        if self.observed_train_batches < self.budget_probe_batches:
-            return
+    def _estimate_total_seconds(self) -> float:
         elapsed = max(1e-3, time.time() - self.start_time)
         completed_units = max(1, self.completed_units)
         estimated_total_seconds = elapsed * self.total_units / completed_units
         self.estimated_total_seconds = estimated_total_seconds
+        return estimated_total_seconds
+
+    def _maybe_raise_elapsed(self, phase: str) -> None:
+        elapsed = max(1e-3, time.time() - self.start_time)
+        if elapsed <= self.eval_limit_seconds:
+            return
+        estimated_total_seconds = max(elapsed, self._estimate_total_seconds())
+        raise EvalTimeException(
+            estimated_total_seconds=estimated_total_seconds,
+            eval_limit_seconds=self.eval_limit_seconds,
+            phase=phase,
+        )
+
+    def _maybe_raise_estimate(self, phase: str) -> None:
+        if self.observed_train_batches < self.budget_probe_batches:
+            return
+        estimated_total_seconds = self._estimate_total_seconds()
         if estimated_total_seconds > self.eval_limit_seconds:
             raise EvalTimeException(
                 estimated_total_seconds=estimated_total_seconds,
@@ -485,6 +512,22 @@ def _train_steps(
         opt = torch.optim.SGD(trainable_params, lr=1e-3, momentum=0.9)
         criterion = nn.CrossEntropyLoss()
         for x, y in train_loader:
+            if time_budget is not None:
+                try:
+                    time_budget.mark_train_batch_start()
+                except EvalTimeException as exc:
+                    exc.partial.update(
+                        {
+                            "backward_ok": False,
+                            "trained_step_ok": False,
+                            "loss_start": loss_start,
+                            "loss_end": loss_end,
+                            "loss_drop": None if loss_start is None or loss_end is None else float(loss_start - loss_end),
+                            "loss_drop_ok": False,
+                            "steps_completed": steps_completed,
+                        }
+                    )
+                    raise
             x = x.to(device)
             y = y.to(device)
             opt.zero_grad(set_to_none=True)
@@ -532,7 +575,7 @@ def _train_steps(
             steps_completed += 1
             if time_budget is not None:
                 try:
-                    time_budget.mark_train_batch()
+                    time_budget.mark_train_batch_end()
                 except EvalTimeException as exc:
                     exc.partial.update(
                         {
@@ -605,6 +648,17 @@ def _quick_accuracy(
     batches_seen = 0
 
     for x, y in data_loader:
+        if time_budget is not None:
+            try:
+                time_budget.mark_accuracy_batch_start(phase)
+            except EvalTimeException as exc:
+                exc.partial.update(
+                    {
+                        "batches_seen": batches_seen,
+                        "partial_accuracy": (correct / total) if total > 0 else None,
+                    }
+                )
+                raise
         x = x.to(device)
         y = y.to(device)
         logits = model(x)
@@ -616,7 +670,7 @@ def _quick_accuracy(
         batches_seen += 1
         if time_budget is not None:
             try:
-                time_budget.mark_accuracy_batch(phase)
+                time_budget.mark_accuracy_batch_end(phase)
             except EvalTimeException as exc:
                 exc.partial.update(
                     {
@@ -754,6 +808,68 @@ def _empty_eval_result(
     return result
 
 
+def _timeout_eval_result(
+    *,
+    error: str,
+    estimated_total_seconds: Optional[float],
+    eval_limit_seconds: Optional[int],
+    seed_accuracy_baseline: Optional[float] = None,
+    backbone_model_names: Optional[list[str]] = None,
+    built_ok: bool = False,
+    forward_ok: bool = False,
+    forward_shape_ok: bool = False,
+    trained_step_ok: bool = False,
+    backward_ok: bool = False,
+    loss_start: Optional[float] = None,
+    loss_end: Optional[float] = None,
+    loss_drop: Optional[float] = None,
+    loss_drop_ok: bool = False,
+    latency_ms: Optional[float] = None,
+    params_m: Optional[float] = None,
+    kl_div: Optional[float] = None,
+    weights: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    components = compute_cv_reward_simple(
+        built_ok=built_ok,
+        forward_shape_ok=forward_shape_ok,
+        backward_ok=backward_ok,
+        loss_drop_ok=loss_drop_ok,
+        val_metric=None,
+        val_metric_baseline=None,
+        latency_ms=latency_ms,
+        params_m=params_m,
+        flops_g=None,
+        critic_score=None,
+        kl_div=kl_div,
+        weights=weights,
+    )
+    return {
+        "reward": components["reward"],
+        "components": components,
+        **{
+            **_base_eval_result(
+                seed_accuracy_baseline=seed_accuracy_baseline,
+                eval_limit_seconds=eval_limit_seconds,
+                backbone_model_names=backbone_model_names,
+            ),
+            "built_ok": built_ok,
+            "forward_ok": forward_ok,
+            "forward_shape_ok": forward_shape_ok,
+            "trained_step_ok": trained_step_ok,
+            "backward_ok": backward_ok,
+            "loss_start": loss_start,
+            "loss_end": loss_end,
+            "loss_drop": loss_drop,
+            "loss_drop_ok": loss_drop_ok,
+            "latency_ms": latency_ms,
+            "params_m": params_m,
+            "timed_out": True,
+            "estimated_total_seconds": estimated_total_seconds,
+            "error": error,
+        },
+    }
+
+
 def evaluate_and_reward(
     *,
     # Either pass a ready model OR a builder that returns nn.Module
@@ -838,9 +954,12 @@ def evaluate_and_reward(
             except Exception:
                 built_ok = False
                 mdl = None
+        else:
+            time_budget.check("build")
 
         # If build failed, compute minimal reward and return
         if not built_ok or mdl is None:
+            time_budget.check("build")
             components = compute_cv_reward_simple(
                 built_ok=False,
                 forward_shape_ok=False,
@@ -878,6 +997,8 @@ def evaluate_and_reward(
             latency_ms = forward_result["latency_ms"]
         if forward_ok:
             time_budget.mark_forward_complete()
+        else:
+            time_budget.check("forward")
 
         # 3) Mini training steps
         if train_loader is None or val_loader is None:
@@ -926,42 +1047,28 @@ def evaluate_and_reward(
             loss_start = partial.get("loss_start", loss_start)
             loss_end = partial.get("loss_end", loss_end)
             loss_drop = partial.get("loss_drop", loss_drop)
-            components = compute_cv_reward_simple(
+            backward_ok = bool(partial.get("backward_ok", False))
+            trained_step_ok = bool(partial.get("trained_step_ok", False))
+            return _timeout_eval_result(
+                error=f"{type(exc).__name__}: {exc}",
+                estimated_total_seconds=exc.estimated_total_seconds,
+                eval_limit_seconds=cfg.eval_limit_seconds,
+                seed_accuracy_baseline=seed_accuracy_baseline,
+                backbone_model_names=backbone_model_names,
                 built_ok=built_ok,
+                forward_ok=forward_ok,
                 forward_shape_ok=forward_shape_ok,
-                backward_ok=False,
+                trained_step_ok=trained_step_ok,
+                backward_ok=backward_ok,
+                loss_start=loss_start,
+                loss_end=loss_end,
+                loss_drop=loss_drop,
                 loss_drop_ok=False,
-                val_metric=None,
-                val_metric_baseline=val_metric_baseline,
                 latency_ms=latency_ms,
                 params_m=params_m,
-                flops_g=None,
-                critic_score=None,
                 kl_div=cfg.kl_div,
                 weights=cfg.weights,
             )
-            return {
-                "reward": components["reward"],
-                "components": components,
-                **{
-                    **_base_eval_result(
-                        seed_accuracy_baseline=seed_accuracy_baseline,
-                        eval_limit_seconds=cfg.eval_limit_seconds,
-                        backbone_model_names=backbone_model_names,
-                    ),
-                    "built_ok": built_ok,
-                    "forward_ok": forward_ok,
-                    "forward_shape_ok": forward_shape_ok,
-                    "loss_start": loss_start,
-                    "loss_end": loss_end,
-                    "loss_drop": loss_drop,
-                    "latency_ms": latency_ms,
-                    "params_m": params_m,
-                    "timed_out": True,
-                    "estimated_total_seconds": exc.estimated_total_seconds,
-                    "error": f"{type(exc).__name__}: {exc}",
-                },
-            }
 
         # 5) Optional critic score
         if cfg.critic_fn is not None:
@@ -1029,6 +1136,33 @@ def evaluate_and_reward(
                 "estimated_total_seconds": time_budget.estimated_total_seconds,
             },
         }
+    except EvalTimeException as exc:
+        partial = exc.partial or {}
+        loss_start = partial.get("loss_start", loss_start)
+        loss_end = partial.get("loss_end", loss_end)
+        loss_drop = partial.get("loss_drop", loss_drop)
+        backward_ok = bool(partial.get("backward_ok", backward_ok))
+        trained_step_ok = bool(partial.get("trained_step_ok", trained_step_ok))
+        return _timeout_eval_result(
+            error=f"{type(exc).__name__}: {exc}",
+            estimated_total_seconds=exc.estimated_total_seconds,
+            eval_limit_seconds=cfg.eval_limit_seconds,
+            seed_accuracy_baseline=seed_accuracy_baseline,
+            backbone_model_names=backbone_model_names,
+            built_ok=built_ok,
+            forward_ok=forward_ok,
+            forward_shape_ok=forward_shape_ok,
+            trained_step_ok=trained_step_ok,
+            backward_ok=backward_ok,
+            loss_start=loss_start,
+            loss_end=loss_end,
+            loss_drop=loss_drop,
+            loss_drop_ok=False,
+            latency_ms=latency_ms,
+            params_m=params_m,
+            kl_div=cfg.kl_div,
+            weights=cfg.weights,
+        )
 
     finally:
         # Clean up memory explicitly and GUARANTEED
@@ -1102,6 +1236,9 @@ def _loader_cache_key(cfg: EvalConfig) -> Tuple[Any, ...]:
 
 def _get_or_create_eval_worker() -> _PersistentEvalWorkerSession:
     global _PERSISTENT_EVAL_WORKER
+    if _PERSISTENT_EVAL_WORKER is not None and not _PERSISTENT_EVAL_WORKER.diagnostics().get("alive", False):
+        _PERSISTENT_EVAL_WORKER.close(force=True)
+        _PERSISTENT_EVAL_WORKER = None
     if _PERSISTENT_EVAL_WORKER is None:
         _PERSISTENT_EVAL_WORKER = _PersistentEvalWorkerSession()
     return _PERSISTENT_EVAL_WORKER
@@ -1205,7 +1342,18 @@ def evaluate_code_and_reward(
         "completion_index": completion_index,
         "batch_last_item": batch_last_item,
     }
-    return worker.request(payload, timeout=360)
+    request_timeout = 360.0
+    try:
+        return worker.request(payload, timeout=request_timeout)
+    except PersistentEvalWorkerError as exc:
+        shutdown_eval_worker()
+        return _timeout_eval_result(
+            error=f"{type(exc).__name__}: {exc}",
+            estimated_total_seconds=float(request_timeout),
+            eval_limit_seconds=effective_cfg.eval_limit_seconds,
+            seed_accuracy_baseline=seed_accuracy_baseline,
+            backbone_model_names=_extract_backbone_model_names_from_code(code),
+        )
 
 
 def _persistent_eval_worker_loop(conn) -> None:

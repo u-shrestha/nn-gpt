@@ -332,8 +332,6 @@ def evaluate_code_and_reward_cifar(
             batch_last_item=batch_last_item,
         )
     except Exception as exc:
-        if isinstance(exc, RewardUtil.PersistentEvalWorkerError):
-            raise
         return _cifar_eval_error(exc, seed_accuracy_baseline=seed_accuracy_baseline)
 
 
