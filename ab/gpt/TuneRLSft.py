@@ -579,7 +579,7 @@ def run_sft_training():
         trust_remote_code=True,
         quantization_config=bnb_config,
         device_map={"": train_device},
-        torch_dtype=precision["torch_dtype"],
+        dtype=precision["torch_dtype"],
     )
     TuneRL.log_memory_snapshot("sft/base_model_loaded")
 

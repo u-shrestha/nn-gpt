@@ -156,13 +156,15 @@ def env_float(name: str, default: float) -> float:
 
 
 def best_mixed_precision() -> Dict[str, Any]:
+    bf16_requested = os.getenv("NNGPT_RL_USE_BF16", "").strip().lower() in {"1", "true", "yes", "on"}
     bf16_ok = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-    torch_dtype = torch.bfloat16 if bf16_ok else torch.float16
+    use_bf16 = bool(bf16_requested and bf16_ok)
+    torch_dtype = torch.bfloat16 if use_bf16 else torch.float16
     return {
-        "bf16": bool(bf16_ok),
-        "fp16": not bool(bf16_ok),
+        "bf16": use_bf16,
+        "fp16": not use_bf16,
         "torch_dtype": torch_dtype,
-        "label": "bf16" if bf16_ok else "fp16",
+        "label": "bf16" if use_bf16 else "fp16",
     }
 
 
@@ -1732,7 +1734,7 @@ def main():
         trust_remote_code=True,
         quantization_config=bnb_config,
         device_map="auto",
-        torch_dtype=precision["torch_dtype"],
+        dtype=precision["torch_dtype"],
     )
 
     if LOAD_EXISTING_MODEL and os.path.exists(SAVED_MODEL_PATH):
