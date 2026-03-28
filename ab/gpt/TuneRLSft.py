@@ -593,6 +593,7 @@ def run_sft_training():
         model = model.merge_and_unload()
 
     model = TuneRL.prepare_model_for_kbit_training(model)
+    TuneRL.align_generation_head_dtype(model, precision["torch_dtype"])
 
     peft_config = TuneRL.LoraConfig(
         r=SFT_LORA_R,
@@ -603,6 +604,7 @@ def run_sft_training():
         task_type="CAUSAL_LM",
     )
     model = TuneRL.get_peft_model(model, peft_config)
+    TuneRL.align_generation_head_dtype(model, precision["torch_dtype"])
 
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()

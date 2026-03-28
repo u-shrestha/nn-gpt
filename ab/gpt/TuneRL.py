@@ -166,6 +166,46 @@ def best_mixed_precision() -> Dict[str, Any]:
     }
 
 
+def align_generation_head_dtype(model, torch_dtype: torch.dtype) -> None:
+    aligned_modules = []
+
+    def _cast_module(module, label: str) -> None:
+        if module is None or not hasattr(module, "weight"):
+            return
+        weight = getattr(module, "weight", None)
+        if weight is None:
+            return
+        if weight.dtype == torch_dtype:
+            return
+        module.to(dtype=torch_dtype)
+        aligned_modules.append(f"{label}:{weight.dtype}->{torch_dtype}")
+
+    _cast_module(getattr(model, "lm_head", None), "lm_head")
+
+    try:
+        _cast_module(model.get_output_embeddings(), "output_embeddings")
+    except Exception:
+        pass
+
+    base_model = getattr(model, "base_model", None)
+    if base_model is not None:
+        _cast_module(getattr(base_model, "lm_head", None), "base_model.lm_head")
+        try:
+            _cast_module(base_model.get_output_embeddings(), "base_model.output_embeddings")
+        except Exception:
+            pass
+
+    config = getattr(model, "config", None)
+    if config is not None:
+        try:
+            config.torch_dtype = torch_dtype
+        except Exception:
+            pass
+
+    if aligned_modules:
+        print(f"[RL] Output dtype alignment: {', '.join(aligned_modules)}")
+
+
 def _clip(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, float(value)))
 
@@ -1688,6 +1728,7 @@ def main():
         model = model.merge_and_unload()
 
     model = prepare_model_for_kbit_training(model)
+    align_generation_head_dtype(model, precision["torch_dtype"])
 
     # Apply LoRA specifically for RL phase
     peft_config = LoraConfig(
@@ -1699,6 +1740,7 @@ def main():
         task_type="CAUSAL_LM"
     )
     model = get_peft_model(model, peft_config)
+    align_generation_head_dtype(model, precision["torch_dtype"])
 
     # Enable gradient checkpointing to save memory
     model.gradient_checkpointing_enable()
