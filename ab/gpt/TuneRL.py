@@ -168,32 +168,45 @@ def best_mixed_precision() -> Dict[str, Any]:
 
 def align_generation_head_dtype(model, torch_dtype: torch.dtype) -> None:
     aligned_modules = []
+    visited_models = set()
+    visited_modules = set()
 
     def _cast_module(module, label: str) -> None:
         if module is None or not hasattr(module, "weight"):
             return
+        module_id = id(module)
+        if module_id in visited_modules:
+            return
+        visited_modules.add(module_id)
         weight = getattr(module, "weight", None)
         if weight is None:
             return
-        if weight.dtype == torch_dtype:
+        before_dtype = weight.dtype
+        if before_dtype == torch_dtype:
             return
         module.to(dtype=torch_dtype)
-        aligned_modules.append(f"{label}:{weight.dtype}->{torch_dtype}")
+        aligned_modules.append(f"{label}:{before_dtype}->{torch_dtype}")
 
-    _cast_module(getattr(model, "lm_head", None), "lm_head")
+    def _walk_model_tree(current_model, prefix: str) -> None:
+        if current_model is None:
+            return
+        model_id = id(current_model)
+        if model_id in visited_models:
+            return
+        visited_models.add(model_id)
 
-    try:
-        _cast_module(model.get_output_embeddings(), "output_embeddings")
-    except Exception:
-        pass
-
-    base_model = getattr(model, "base_model", None)
-    if base_model is not None:
-        _cast_module(getattr(base_model, "lm_head", None), "base_model.lm_head")
+        _cast_module(getattr(current_model, "lm_head", None), f"{prefix}.lm_head")
         try:
-            _cast_module(base_model.get_output_embeddings(), "base_model.output_embeddings")
+            _cast_module(current_model.get_output_embeddings(), f"{prefix}.output_embeddings")
         except Exception:
             pass
+
+        for attr_name in ("base_model", "model", "module"):
+            nested_model = getattr(current_model, attr_name, None)
+            if nested_model is not None and nested_model is not current_model:
+                _walk_model_tree(nested_model, f"{prefix}.{attr_name}")
+
+    _walk_model_tree(model, "model")
 
     config = getattr(model, "config", None)
     if config is not None:
