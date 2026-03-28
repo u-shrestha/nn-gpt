@@ -2,11 +2,10 @@ import argparse
 from typing import Literal
 
 import torch
-from ab.gpt.util.Const import nngpt_dir, new_out_file, NN_TRAIN_EPOCHS
+from ab.gpt.util.Const import nngpt_dir, NN_TRAIN_EPOCHS
 
 from ab.nn.util.Const import out_dir
 
-from pathlib import Path
 import json
 from ab.gpt.util.Const import conf_llm_dir
 
