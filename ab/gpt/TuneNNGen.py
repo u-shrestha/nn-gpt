@@ -327,7 +327,8 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
             prompt_batch=prompt_batch,
             use_agents=use_agents,
             use_predictor=use_predictor,
-            enable_merge=enable_merge
+            enable_merge=enable_merge,
+            use_unsloth = unsloth_opt
         )
 
     except KeyboardInterrupt:
