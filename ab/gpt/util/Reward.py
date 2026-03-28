@@ -4,6 +4,7 @@ import atexit
 import time
 import gc
 import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor
 import os
 import re
 
@@ -106,22 +107,58 @@ class EvalTimeBudget:
             )
 
 
+def get_reward_worker_plan() -> Dict[str, Any]:
+    visible_gpu_count = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
+    if visible_gpu_count <= 0:
+        return {
+            "mode": "cpu_fallback",
+            "visible_gpu_count": 0,
+            "train_gpu": None,
+            "reward_gpu_indices": [],
+            "shared_train_gpu": False,
+            "pool_size": 1,
+        }
+    if visible_gpu_count == 1:
+        return {
+            "mode": "single_gpu_shared",
+            "visible_gpu_count": 1,
+            "train_gpu": 0,
+            "reward_gpu_indices": [0],
+            "shared_train_gpu": True,
+            "pool_size": 1,
+        }
+    reward_gpu_indices = list(range(1, visible_gpu_count))
+    return {
+        "mode": "multi_gpu_pool",
+        "visible_gpu_count": visible_gpu_count,
+        "train_gpu": 0,
+        "reward_gpu_indices": reward_gpu_indices,
+        "shared_train_gpu": False,
+        "pool_size": len(reward_gpu_indices),
+    }
+
+
 class _PersistentEvalWorkerSession:
-    def __init__(self) -> None:
+    def __init__(self, *, assigned_gpu: Optional[int], worker_slot: int) -> None:
         from ab.gpt.util.reward_worker_bootstrap import reward_worker_main
 
+        self._assigned_gpu = assigned_gpu
+        self._worker_slot = int(worker_slot)
         self.ctx = mp.get_context("spawn")
         self._parent_conn, child_conn = self.ctx.Pipe()
         self._process = self.ctx.Process(
             target=reward_worker_main,
-            args=(child_conn,),
+            args=(child_conn, assigned_gpu),
         )
         self._process.start()
         child_conn.close()
         self._worker_info = self._wait_for_ready(timeout=30.0)
         print(
             "[Reward Worker] Ready "
+            f"slot={self._worker_slot} "
             f"pid={self._worker_info['pid']}, "
+            f"assigned_gpu={self._worker_info['assigned_gpu']}, "
+            f"worker_device={self._worker_info['worker_device']}, "
             f"cuda_visible_devices={self._worker_info['cuda_visible_devices']!r}, "
             f"cuda_available={self._worker_info['cuda_available']}, "
             f"cuda_device_count={self._worker_info['cuda_device_count']}, "
@@ -186,7 +223,16 @@ class _PersistentEvalWorkerSession:
                 f"Persistent eval worker returned unexpected startup message: {response!r}"
             )
 
-        required_keys = {"pid", "cuda_visible_devices", "cuda_available", "cuda_device_count", "rss_gib", "torch_home"}
+        required_keys = {
+            "pid",
+            "assigned_gpu",
+            "worker_device",
+            "cuda_visible_devices",
+            "cuda_available",
+            "cuda_device_count",
+            "rss_gib",
+            "torch_home",
+        }
         missing = sorted(required_keys.difference(response))
         if missing:
             self.close(force=True)
@@ -195,25 +241,47 @@ class _PersistentEvalWorkerSession:
             )
         cuda_visible_devices = str(response["cuda_visible_devices"]).strip()
         cuda_device_count = int(response["cuda_device_count"])
-        if cuda_visible_devices not in {"", "-1"}:
-            self.close(force=True)
-            raise PersistentEvalWorkerError(
-                "Persistent eval worker must hide CUDA devices, but reported "
-                f"CUDA_VISIBLE_DEVICES={response['cuda_visible_devices']!r}"
-            )
-        if cuda_device_count != 0:
-            self.close(force=True)
-            raise PersistentEvalWorkerError(
-                "Persistent eval worker must be CPU-only, but reported CUDA visibility "
-                f"(available={response['cuda_available']}, count={response['cuda_device_count']})"
-            )
+        assigned_gpu = response["assigned_gpu"]
+        worker_device = str(response["worker_device"])
+        if self._assigned_gpu is None:
+            if worker_device != "cpu":
+                self.close(force=True)
+                raise PersistentEvalWorkerError(
+                    f"CPU reward worker returned unexpected device {worker_device!r}"
+                )
+            if cuda_visible_devices not in {"", "-1"} or cuda_device_count != 0:
+                self.close(force=True)
+                raise PersistentEvalWorkerError(
+                    "CPU reward worker unexpectedly reported CUDA visibility "
+                    f"(CUDA_VISIBLE_DEVICES={response['cuda_visible_devices']!r}, count={response['cuda_device_count']})"
+                )
+        else:
+            if assigned_gpu != self._assigned_gpu:
+                self.close(force=True)
+                raise PersistentEvalWorkerError(
+                    f"Reward worker slot {self._worker_slot} bound unexpected GPU {assigned_gpu!r}, expected {self._assigned_gpu!r}"
+                )
+            if worker_device != "cuda:0":
+                self.close(force=True)
+                raise PersistentEvalWorkerError(
+                    f"GPU reward worker returned unexpected local device {worker_device!r}"
+                )
+            if cuda_device_count != 1 or not bool(response["cuda_available"]):
+                self.close(force=True)
+                raise PersistentEvalWorkerError(
+                    "GPU reward worker must expose exactly one visible CUDA device, but reported "
+                    f"(available={response['cuda_available']}, count={response['cuda_device_count']})"
+                )
         return {
             "pid": int(response["pid"]),
+            "assigned_gpu": assigned_gpu,
+            "worker_device": worker_device,
             "cuda_visible_devices": str(response["cuda_visible_devices"]),
             "cuda_available": bool(response["cuda_available"]),
             "cuda_device_count": int(response["cuda_device_count"]),
             "rss_gib": float(response["rss_gib"]),
             "torch_home": str(response["torch_home"]),
+            "slot": self._worker_slot,
         }
 
     def diagnostics(self) -> Dict[str, Any]:
@@ -240,7 +308,174 @@ class _PersistentEvalWorkerSession:
             pass
 
 
-_PERSISTENT_EVAL_WORKER: Optional[_PersistentEvalWorkerSession] = None
+class _EvalWorkerPool:
+    def __init__(self) -> None:
+        self._plan = get_reward_worker_plan()
+        self._sessions: list[_PersistentEvalWorkerSession] = []
+        try:
+            if self._plan["reward_gpu_indices"]:
+                for slot, assigned_gpu in enumerate(self._plan["reward_gpu_indices"]):
+                    self._sessions.append(
+                        _PersistentEvalWorkerSession(
+                            assigned_gpu=int(assigned_gpu),
+                            worker_slot=slot,
+                        )
+                    )
+            else:
+                self._sessions.append(_PersistentEvalWorkerSession(assigned_gpu=None, worker_slot=0))
+        except Exception:
+            for session in self._sessions:
+                session.close(force=True)
+            self._sessions = [_PersistentEvalWorkerSession(assigned_gpu=None, worker_slot=0)]
+            self._plan = {
+                **self._plan,
+                "mode": "cpu_fallback",
+                "reward_gpu_indices": [],
+                "shared_train_gpu": False,
+                "pool_size": 1,
+            }
+        print(
+            "[Reward Worker Pool] "
+            f"mode={self._plan['mode']} "
+            f"visible_gpu_count={self._plan['visible_gpu_count']} "
+            f"train_gpu={self._plan['train_gpu']} "
+            f"reward_gpu_indices={self._plan['reward_gpu_indices']}"
+        )
+
+    def worker_count(self) -> int:
+        return len(self._sessions)
+
+    def primary_device(self) -> str:
+        if not self._sessions:
+            return "cpu"
+        return str(self._sessions[0].diagnostics().get("worker_device", "cpu"))
+
+    def diagnostics(self) -> Dict[str, Any]:
+        workers = [session.diagnostics() for session in self._sessions]
+        total_rss_gib = sum(float(worker.get("rss_gib") or 0.0) for worker in workers)
+        primary = workers[0] if workers else {}
+        return {
+            **primary,
+            "mode": self._plan["mode"],
+            "visible_gpu_count": self._plan["visible_gpu_count"],
+            "train_gpu": self._plan["train_gpu"],
+            "reward_gpu_indices": list(self._plan["reward_gpu_indices"]),
+            "shared_train_gpu": bool(self._plan["shared_train_gpu"]),
+            "pool_size": len(workers),
+            "total_rss_gib": total_rss_gib,
+            "workers": workers,
+            "worker_pids": [worker["pid"] for worker in workers],
+        }
+
+    def _timeout_result_for_entry(
+        self,
+        entry: Dict[str, Any],
+        *,
+        error: str,
+        estimated_total_seconds: float,
+        assigned_gpu: Optional[int],
+        worker_device: str,
+    ) -> Dict[str, Any]:
+        result = _timeout_eval_result(
+            error=error,
+            estimated_total_seconds=estimated_total_seconds,
+            eval_limit_seconds=entry["effective_cfg"].eval_limit_seconds,
+            seed_accuracy_baseline=entry.get("seed_accuracy_baseline"),
+            backbone_model_names=entry.get("backbone_model_names"),
+        )
+        result["assigned_gpu"] = assigned_gpu
+        result["worker_device"] = worker_device
+        return result
+
+    def _replace_session(self, slot: int) -> _PersistentEvalWorkerSession:
+        old_session = self._sessions[slot]
+        old_info = old_session.diagnostics()
+        assigned_gpu = old_info.get("assigned_gpu")
+        old_session.close(force=True)
+        try:
+            new_session = _PersistentEvalWorkerSession(
+                assigned_gpu=assigned_gpu if assigned_gpu is not None else None,
+                worker_slot=slot,
+            )
+        except Exception:
+            new_session = _PersistentEvalWorkerSession(assigned_gpu=None, worker_slot=slot)
+        self._sessions[slot] = new_session
+        return new_session
+
+    def _request_entry(self, slot: int, entry: Dict[str, Any], *, timeout: float) -> Dict[str, Any]:
+        session = self._sessions[slot]
+        session_info = session.diagnostics()
+        assigned_gpu = session_info.get("assigned_gpu")
+        worker_device = str(session_info.get("worker_device", "cpu"))
+        try:
+            result = session.request(entry["payload"], timeout=timeout)
+        except PersistentEvalWorkerError as exc:
+            self._replace_session(slot)
+            return self._timeout_result_for_entry(
+                entry,
+                error=f"{type(exc).__name__}: {exc}",
+                estimated_total_seconds=float(timeout),
+                assigned_gpu=assigned_gpu,
+                worker_device=worker_device,
+            )
+        result["assigned_gpu"] = assigned_gpu
+        result["worker_device"] = worker_device
+        return result
+
+    def request_entry(self, entry: Dict[str, Any], *, timeout: float) -> Dict[str, Any]:
+        return self._request_entry(0, entry, timeout=timeout)
+
+    def map_entries(self, entries: list[Dict[str, Any]], *, timeout: float) -> list[Dict[str, Any]]:
+        if not entries:
+            return []
+        if self.worker_count() <= 1:
+            return [self.request_entry(entry, timeout=timeout) for entry in entries]
+
+        indexed_results: list[Optional[Dict[str, Any]]] = [None] * len(entries)
+        assignments: list[list[tuple[int, Dict[str, Any]]]] = [[] for _ in self._sessions]
+        for index, entry in enumerate(entries):
+            slot = index % self.worker_count()
+            assignments[slot].append((index, entry))
+
+        def _process_worker_tasks(slot: int, tasks: list[tuple[int, Dict[str, Any]]]) -> list[tuple[int, Dict[str, Any]]]:
+            results: list[tuple[int, Dict[str, Any]]] = []
+            for index, entry in tasks:
+                results.append((index, self._request_entry(slot, entry, timeout=timeout)))
+            return results
+
+        non_empty_assignments = [(slot, tasks) for slot, tasks in enumerate(assignments) if tasks]
+        with ThreadPoolExecutor(max_workers=len(non_empty_assignments)) as executor:
+            futures = [
+                executor.submit(_process_worker_tasks, slot, tasks)
+                for slot, tasks in non_empty_assignments
+            ]
+            for future in futures:
+                for index, result in future.result():
+                    indexed_results[index] = result
+
+        return [
+            result
+            if result is not None
+            else self._timeout_result_for_entry(
+                entries[index],
+                error="PersistentEvalWorkerError: missing result from worker pool dispatch",
+                estimated_total_seconds=timeout,
+                assigned_gpu=None,
+                worker_device="cpu",
+            )
+            for index, result in enumerate(indexed_results)
+        ]
+
+    def close(self) -> None:
+        for session in self._sessions:
+            try:
+                session.close()
+            except Exception:
+                pass
+        self._sessions.clear()
+
+
+_EVAL_WORKER_POOL: Optional[_EvalWorkerPool] = None
 
 
 def _read_process_rss_gib() -> Optional[float]:
@@ -736,12 +971,14 @@ def _build_cifar10_loaders(cfg: "EvalConfig") -> Tuple[DataLoader, DataLoader]:
         batch_size=train_batch,
         shuffle=True,
         num_workers=0,
+        pin_memory=str(cfg.device).startswith("cuda"),
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=val_batch,
         shuffle=False,
         num_workers=0,
+        pin_memory=str(cfg.device).startswith("cuda"),
     )
     return train_loader, val_loader
 
@@ -1234,44 +1471,61 @@ def _loader_cache_key(cfg: EvalConfig) -> Tuple[Any, ...]:
     )
 
 
-def _get_or_create_eval_worker() -> _PersistentEvalWorkerSession:
-    global _PERSISTENT_EVAL_WORKER
-    if _PERSISTENT_EVAL_WORKER is not None and not _PERSISTENT_EVAL_WORKER.diagnostics().get("alive", False):
-        _PERSISTENT_EVAL_WORKER.close(force=True)
-        _PERSISTENT_EVAL_WORKER = None
-    if _PERSISTENT_EVAL_WORKER is None:
-        _PERSISTENT_EVAL_WORKER = _PersistentEvalWorkerSession()
-    return _PERSISTENT_EVAL_WORKER
+def _get_or_create_eval_worker_pool() -> _EvalWorkerPool:
+    global _EVAL_WORKER_POOL
+    if _EVAL_WORKER_POOL is not None:
+        diagnostics = _EVAL_WORKER_POOL.diagnostics()
+        workers = diagnostics.get("workers", [])
+        if not workers or not all(bool(worker.get("alive", False)) for worker in workers):
+            _EVAL_WORKER_POOL.close()
+            _EVAL_WORKER_POOL = None
+    if _EVAL_WORKER_POOL is None:
+        _EVAL_WORKER_POOL = _EvalWorkerPool()
+    return _EVAL_WORKER_POOL
 
 
 def shutdown_eval_worker() -> None:
-    global _PERSISTENT_EVAL_WORKER
-    if _PERSISTENT_EVAL_WORKER is None:
+    global _EVAL_WORKER_POOL
+    if _EVAL_WORKER_POOL is None:
         return
-    info = _PERSISTENT_EVAL_WORKER.diagnostics()
+    info = _EVAL_WORKER_POOL.diagnostics()
     print(
-        "[Reward Worker] Shutdown "
-        f"pid={info['pid']}, "
-        f"alive={info['alive']}, "
-        f"rss_gib={info['rss_gib']:.2f}, "
-        f"torch_home={info['torch_home']!r}"
+        "[Reward Worker Pool] Shutdown "
+        f"mode={info['mode']} "
+        f"pool_size={info['pool_size']} "
+        f"worker_pids={info['worker_pids']} "
+        f"total_rss_gib={info['total_rss_gib']:.2f}"
     )
-    _PERSISTENT_EVAL_WORKER.close()
-    _PERSISTENT_EVAL_WORKER = None
+    _EVAL_WORKER_POOL.close()
+    _EVAL_WORKER_POOL = None
 
 
 def get_eval_worker_diagnostics() -> Optional[Dict[str, Any]]:
-    if _PERSISTENT_EVAL_WORKER is None:
+    if _EVAL_WORKER_POOL is None:
         return None
-    return _PERSISTENT_EVAL_WORKER.diagnostics()
+    return _EVAL_WORKER_POOL.diagnostics()
 
 
-def _persistent_eval_worker_entry(conn) -> None:
+def _worker_cuda_memory_gib() -> Tuple[Optional[float], Optional[float]]:
+    if not torch.cuda.is_available():
+        return 0.0, 0.0
+    try:
+        allocated = torch.cuda.memory_allocated() / float(1024 ** 3)
+        reserved = torch.cuda.memory_reserved() / float(1024 ** 3)
+        return allocated, reserved
+    except RuntimeError:
+        return None, None
+
+
+def _persistent_eval_worker_entry(conn, assigned_gpu: Optional[int]) -> None:
+    worker_device = "cuda:0" if assigned_gpu is not None else "cpu"
     try:
         conn.send(
             {
                 "cmd": "worker_ready",
                 "pid": os.getpid(),
+                "assigned_gpu": assigned_gpu,
+                "worker_device": worker_device,
                 "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
                 "cuda_available": bool(torch.cuda.is_available()),
                 "cuda_device_count": int(torch.cuda.device_count()),
@@ -1279,7 +1533,7 @@ def _persistent_eval_worker_entry(conn) -> None:
                 "torch_home": os.environ.get("TORCH_HOME", ""),
             }
         )
-        _persistent_eval_worker_loop(conn)
+        _persistent_eval_worker_loop(conn, worker_device=worker_device, assigned_gpu=assigned_gpu)
     except Exception as exc:
         try:
             conn.send(
@@ -1312,8 +1566,39 @@ def evaluate_code_and_reward(
     completion_index: Optional[int] = None,
     batch_last_item: bool = False,
 ) -> Dict[str, Any]:
-    worker = _get_or_create_eval_worker()
-    worker_device = "cpu"
+    entry = _prepare_eval_request_entry(
+        code=code,
+        in_shape=in_shape,
+        out_shape=out_shape,
+        prm=prm,
+        device=device,
+        val_metric_baseline=val_metric_baseline,
+        seed_accuracy_baseline=seed_accuracy_baseline,
+        cfg=cfg,
+        reward_batch_index=reward_batch_index,
+        completion_index=completion_index,
+        batch_last_item=batch_last_item,
+    )
+    worker_pool = _get_or_create_eval_worker_pool()
+    return worker_pool.request_entry(entry, timeout=360.0)
+
+
+def _prepare_eval_request_entry(
+    *,
+    code: str,
+    in_shape: Tuple[int, int, int, int],
+    out_shape: Tuple[int, ...],
+    prm: Optional[Dict[str, Any]],
+    device: str,
+    val_metric_baseline: Optional[float],
+    seed_accuracy_baseline: Optional[float],
+    cfg: Optional[EvalConfig],
+    reward_batch_index: Optional[int],
+    completion_index: Optional[int],
+    batch_last_item: bool,
+) -> Dict[str, Any]:
+    worker_pool = _get_or_create_eval_worker_pool()
+    worker_device = worker_pool.primary_device()
     effective_cfg = replace(
         cfg,
         device=worker_device,
@@ -1328,35 +1613,53 @@ def evaluate_code_and_reward(
         critic_fn=None,
         weights=None,
     )
-    payload = {
-        "cmd": "evaluate",
-        "code": code,
-        "in_shape": tuple(in_shape),
-        "out_shape": tuple(out_shape),
-        "prm": prm,
-        "device": worker_device,
-        "val_metric_baseline": val_metric_baseline,
+    return {
+        "payload": {
+            "cmd": "evaluate",
+            "code": code,
+            "in_shape": tuple(in_shape),
+            "out_shape": tuple(out_shape),
+            "prm": prm,
+            "device": worker_device,
+            "val_metric_baseline": val_metric_baseline,
+            "seed_accuracy_baseline": seed_accuracy_baseline,
+            "cfg": _serialize_eval_cfg(effective_cfg),
+            "reward_batch_index": reward_batch_index,
+            "completion_index": completion_index,
+            "batch_last_item": batch_last_item,
+        },
+        "effective_cfg": effective_cfg,
         "seed_accuracy_baseline": seed_accuracy_baseline,
-        "cfg": _serialize_eval_cfg(effective_cfg),
-        "reward_batch_index": reward_batch_index,
-        "completion_index": completion_index,
-        "batch_last_item": batch_last_item,
+        "backbone_model_names": _extract_backbone_model_names_from_code(code),
     }
-    request_timeout = 360.0
-    try:
-        return worker.request(payload, timeout=request_timeout)
-    except PersistentEvalWorkerError as exc:
-        shutdown_eval_worker()
-        return _timeout_eval_result(
-            error=f"{type(exc).__name__}: {exc}",
-            estimated_total_seconds=float(request_timeout),
-            eval_limit_seconds=effective_cfg.eval_limit_seconds,
-            seed_accuracy_baseline=seed_accuracy_baseline,
-            backbone_model_names=_extract_backbone_model_names_from_code(code),
+
+
+def evaluate_code_and_reward_batch(
+    request_specs: list[Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    if not request_specs:
+        return []
+    entries = [
+        _prepare_eval_request_entry(
+            code=str(spec["code"]),
+            in_shape=tuple(spec.get("in_shape", (8, 3, 32, 32))),
+            out_shape=tuple(spec.get("out_shape", (10,))),
+            prm=spec.get("prm"),
+            device=str(spec.get("device", "cpu")),
+            val_metric_baseline=spec.get("val_metric_baseline"),
+            seed_accuracy_baseline=spec.get("seed_accuracy_baseline"),
+            cfg=spec.get("cfg"),
+            reward_batch_index=spec.get("reward_batch_index"),
+            completion_index=spec.get("completion_index"),
+            batch_last_item=bool(spec.get("batch_last_item", False)),
         )
+        for spec in request_specs
+    ]
+    worker_pool = _get_or_create_eval_worker_pool()
+    return worker_pool.map_entries(entries, timeout=360.0)
 
 
-def _persistent_eval_worker_loop(conn) -> None:
+def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Optional[int]) -> None:
     loader_cache: Dict[Tuple[Any, ...], Tuple[DataLoader, DataLoader]] = {}
     last_reward_batch_index = None
     last_completion_index = None
@@ -1387,17 +1690,24 @@ def _persistent_eval_worker_loop(conn) -> None:
             last_reward_batch_index = reward_batch_index
             last_completion_index = completion_index
             if completion_index == 0:
+                cuda_allocated_gib, cuda_reserved_gib = _worker_cuda_memory_gib()
                 print(
                     "[Reward Worker Memory] "
                     f"stage=batch_start "
                     f"pid={os.getpid()} "
+                    f"assigned_gpu={assigned_gpu} "
+                    f"worker_device={worker_device} "
                     f"reward_batch_index={reward_batch_index} "
                     f"completion_index={completion_index} "
                     f"rss_gib={_format_mem_value(_read_process_rss_gib())} "
+                    f"cuda_allocated_gib={_format_mem_value(cuda_allocated_gib)} "
+                    f"cuda_reserved_gib={_format_mem_value(cuda_reserved_gib)} "
                     f"torch_home={os.environ.get('TORCH_HOME', '')!r}"
                 )
 
             try:
+                if worker_device.startswith("cuda") and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 result = _evaluate_code_and_reward_direct(
                     request["code"],
                     in_shape=tuple(request["in_shape"]),
@@ -1419,26 +1729,40 @@ def _persistent_eval_worker_loop(conn) -> None:
                     backbone_model_names=_extract_backbone_model_names_from_code(request.get("code", "")),
                 )
                 result["components"]["reward"] = -1.0
+            result["assigned_gpu"] = assigned_gpu
+            result["worker_device"] = worker_device
             if bool(request.get("batch_last_item")):
+                if worker_device.startswith("cuda") and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                cuda_allocated_gib, cuda_reserved_gib = _worker_cuda_memory_gib()
                 print(
                     "[Reward Worker Memory] "
                     f"stage=batch_end "
                     f"pid={os.getpid()} "
+                    f"assigned_gpu={assigned_gpu} "
+                    f"worker_device={worker_device} "
                     f"reward_batch_index={reward_batch_index} "
                     f"completion_index={completion_index} "
                     f"rss_gib={_format_mem_value(_read_process_rss_gib())} "
+                    f"cuda_allocated_gib={_format_mem_value(cuda_allocated_gib)} "
+                    f"cuda_reserved_gib={_format_mem_value(cuda_reserved_gib)} "
                     f"torch_home={os.environ.get('TORCH_HOME', '')!r}"
                 )
 
             conn.send(result)
     finally:
+        cuda_allocated_gib, cuda_reserved_gib = _worker_cuda_memory_gib()
         print(
             "[Reward Worker Memory] "
             f"stage=shutdown "
             f"pid={os.getpid()} "
+            f"assigned_gpu={assigned_gpu} "
+            f"worker_device={worker_device} "
             f"reward_batch_index={last_reward_batch_index} "
             f"completion_index={last_completion_index} "
             f"rss_gib={_format_mem_value(_read_process_rss_gib())} "
+            f"cuda_allocated_gib={_format_mem_value(cuda_allocated_gib)} "
+            f"cuda_reserved_gib={_format_mem_value(cuda_reserved_gib)} "
             f"torch_home={os.environ.get('TORCH_HOME', '')!r}"
         )
         loader_cache.clear()

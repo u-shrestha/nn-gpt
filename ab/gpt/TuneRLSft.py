@@ -275,7 +275,9 @@ def evaluate_code_and_reward_cifar(
     batch_last_item: bool = False,
 ) -> Dict[str, Any]:
     try:
-        eval_device = "cpu"
+        import torch
+
+        eval_device = "cuda" if torch.cuda.is_available() else "cpu"
         if prm is None:
             prm = {"lr": 1e-2, "momentum": 0.9, "dropout": 0.3}
         defaults = {"lr": 1e-2, "momentum": 0.9, "batch": SFT_EVAL_BATCH_SIZE, "epoch": 1}
@@ -539,9 +541,9 @@ def run_sft_training():
     if not torch.cuda.is_available():
         raise RuntimeError("SFT RL requires CUDA for GRPO training, but no CUDA device is available")
     visible_cuda_devices = torch.cuda.device_count()
-    if visible_cuda_devices != 1:
+    if visible_cuda_devices < 1:
         raise RuntimeError(
-            f"SFT RL requires exactly one visible CUDA device, got {visible_cuda_devices}"
+            f"SFT RL requires at least one visible CUDA device, got {visible_cuda_devices}"
         )
     torch.cuda.set_device(0)
     train_device = "cuda:0"
@@ -552,7 +554,15 @@ def run_sft_training():
 
     print(f"Using RL base model: {TuneRL.base_model}")
     print(f"[SFT RL] Fixed training device: {train_device}")
+    print(f"[SFT RL] Visible CUDA devices: {visible_cuda_devices}")
     print(f"[SFT RL] Mixed precision: {precision['label']} (torch_dtype={precision['torch_dtype']})")
+    reward_worker_plan = RewardUtil.get_reward_worker_plan()
+    print(
+        "[SFT RL] Reward Worker Plan: "
+        f"mode={reward_worker_plan['mode']} "
+        f"train_gpu={reward_worker_plan['train_gpu']} "
+        f"reward_gpu_indices={reward_worker_plan['reward_gpu_indices']}"
+    )
     _print_runtime_cache_roots()
     tokenizer_source = getattr(TuneRL, "tokenizer_source", TuneRL.base_model)
     if tokenizer_source != TuneRL.base_model:

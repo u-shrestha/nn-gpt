@@ -17,6 +17,7 @@ from ab.nn.util.Util import create_file
 from ab.gpt.util.Reward import (
     PersistentEvalWorkerError,
     evaluate_code_and_reward,
+    evaluate_code_and_reward_batch,
     get_eval_worker_diagnostics,
     shutdown_eval_worker,
 )
@@ -562,7 +563,7 @@ def log_memory_snapshot(stage: str, *, group_context: Optional[Dict[str, Any]] =
     effective_group_context = group_context or current_reward_group_context()
     cuda_allocated_gib, cuda_reserved_gib = _cuda_memory_gib()
     worker_info = get_eval_worker_diagnostics()
-    worker_pid = worker_info["pid"] if worker_info else None
+    worker_pid = worker_info.get("worker_pids", [worker_info.get("pid")]) if worker_info else None
     print(
         "[Memory] "
         f"stage={stage} "
@@ -647,7 +648,7 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
         "dominant_family_share": dominant_family_share,
         "trainable_samples": current_group_train_acc_count,
         "main_process_rss_gib": _read_process_rss_gib(),
-        "worker_rss_gib": worker_info["rss_gib"] if worker_info else None,
+        "worker_rss_gib": worker_info.get("total_rss_gib", worker_info.get("rss_gib")) if worker_info else None,
         "prev_group_feedback": _feedback_summary_payload(prev_group_feedback),
         "best_group_feedback": _feedback_summary_payload(best_group_feedback),
     }
@@ -1169,6 +1170,7 @@ def base_discovery_reward_fn(
     completion: str,
     *,
     seed_accuracy_baseline: float,
+    precomputed_eval_result: Optional[Dict[str, Any]] = None,
     graph_info=None,
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
@@ -1218,18 +1220,21 @@ def base_discovery_reward_fn(
             backbone_model_names=backbone_model_names,
         )
 
-    res = evaluate_code_and_reward(
-        final_code,
-        in_shape=(1, 3, 224, 224),
-        out_shape=(10,),
-        prm={'lr': 0.01, 'batch': 16, 'dropout': 0.3, 'momentum': 0.9,
-             'transform': 'norm_256_flip', 'epoch': 1},
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        seed_accuracy_baseline=seed_accuracy_baseline,
-        reward_batch_index=reward_batch_index,
-        completion_index=completion_index,
-        batch_last_item=batch_last_item,
-    )
+    if precomputed_eval_result is not None:
+        res = dict(precomputed_eval_result)
+    else:
+        res = evaluate_code_and_reward(
+            final_code,
+            in_shape=(1, 3, 224, 224),
+            out_shape=(10,),
+            prm={'lr': 0.01, 'batch': 16, 'dropout': 0.3, 'momentum': 0.9,
+                 'transform': 'norm_256_flip', 'epoch': 1},
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            seed_accuracy_baseline=seed_accuracy_baseline,
+            reward_batch_index=reward_batch_index,
+            completion_index=completion_index,
+            batch_last_item=batch_last_item,
+        )
 
     if not res.get('built_ok'):
         res['r_build_partial'] = _compute_build_partial_reward(res)
@@ -1420,6 +1425,7 @@ def reward_fn(
     completion: str,
     *,
     seed_accuracy_baseline: float,
+    precomputed_eval_result: Optional[Dict[str, Any]] = None,
     graph_info=None,
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
@@ -1436,6 +1442,7 @@ def reward_fn(
     return base_discovery_reward_fn(
         completion,
         seed_accuracy_baseline=seed_accuracy_baseline,
+        precomputed_eval_result=precomputed_eval_result,
         graph_info=graph_info,
         batch_graph_hashes=batch_graph_hashes,
         batch_family_hashes=batch_family_hashes,
@@ -1484,7 +1491,7 @@ def compute_reward(prompts, completions, **kwargs):
     import ab.gpt.TuneRLRaw as TuneRLRaw
 
     global B_index
-    rewards = []
+    rewards = [-1.0] * len(completions)
     TuneRLRaw.clear_extraction_meta_cache()
     seed_accuracy_baselines = require_sample_accuracy_baselines(kwargs, len(completions))
     group_context = current_reward_group_context()
@@ -1516,10 +1523,54 @@ def compute_reward(prompts, completions, **kwargs):
         batch_prompt_goal_tags = [extract_prompt_goal_tags(prompt) for prompt in prompts]
         archive_snapshot_family_counts = dict(family_hash_archive_counts)
         scored_results = []
+        batched_eval_indices: List[int] = []
+        batched_eval_specs: List[Dict[str, Any]] = []
+        precomputed_eval_results: Dict[int, Dict[str, Any]] = {}
+
+        for i, completion in enumerate(completions):
+            graph_info = batch_graph_infos[i]
+            block_code, init_code, forward_code = extract_completion_blocks(completion)
+            if not block_code or not init_code or not forward_code:
+                continue
+            if "self.pattern" in forward_code:
+                continue
+            if graph_info is None:
+                continue
+            pattern_override = graph_info.suggested_pattern_name if not graph_info.has_custom_pattern_name else ""
+            final_code = reconstruct_code(completion, pattern_name_override=pattern_override)
+            if not final_code:
+                continue
+            batched_eval_indices.append(i)
+            batched_eval_specs.append(
+                {
+                    "code": final_code,
+                    "in_shape": (1, 3, 224, 224),
+                    "out_shape": (10,),
+                    "prm": {
+                        "lr": 0.01,
+                        "batch": 16,
+                        "dropout": 0.3,
+                        "momentum": 0.9,
+                        "transform": "norm_256_flip",
+                        "epoch": 1,
+                    },
+                    "device": "cuda" if torch.cuda.is_available() else "cpu",
+                    "seed_accuracy_baseline": seed_accuracy_baselines[i],
+                    "reward_batch_index": group_context["reward_batch_index"],
+                    "completion_index": i,
+                    "batch_last_item": i == (len(completions) - 1),
+                }
+            )
+
+        if batched_eval_specs:
+            torch.cuda.empty_cache()
+            batched_eval_results = evaluate_code_and_reward_batch(batched_eval_specs)
+            torch.cuda.empty_cache()
+            for index, eval_result in zip(batched_eval_indices, batched_eval_results):
+                precomputed_eval_results[index] = eval_result
 
         for i, (prompt, completion) in enumerate(zip(prompts, completions)):
             code_logger.log_to_file("=" * 50)
-            torch.cuda.empty_cache()
 
             try:
                 graph_info = batch_graph_infos[i]
@@ -1527,6 +1578,7 @@ def compute_reward(prompts, completions, **kwargs):
                 res = reward_fn(
                     completion,
                     seed_accuracy_baseline=seed_accuracy_baselines[i],
+                    precomputed_eval_result=precomputed_eval_results.get(i),
                     graph_info=graph_info,
                     batch_graph_hashes=batch_graph_hashes,
                     batch_family_hashes=batch_family_hashes,
@@ -1544,8 +1596,14 @@ def compute_reward(prompts, completions, **kwargs):
                     seed_accuracy_baseline=seed_accuracy_baselines[i],
                     group_context=group_context,
                 )
+                assigned_gpu = res.get("assigned_gpu")
+                worker_device = res.get("worker_device")
+                if worker_device is not None:
+                    code_logger.log_to_file(
+                        f"[Reward Dispatch] Batch index {i}, assigned_gpu={assigned_gpu}, worker_device={worker_device}"
+                    )
                 score = res.get('reward', -2.0)
-                rewards.append(score)
+                rewards[i] = score
                 scored_results.append(
                     {
                         "index": i,
@@ -1561,7 +1619,6 @@ def compute_reward(prompts, completions, **kwargs):
                 raise
             except Exception as e:
                 code_logger.log_to_file(f"Reward calculation failed at index {i}: {e}")
-                rewards.append(-1.0)
                 failure_result = _attach_group_context(
                     {
                         "reward": -1.0,
@@ -1583,6 +1640,7 @@ def compute_reward(prompts, completions, **kwargs):
                     seed_accuracy_baseline=seed_accuracy_baselines[i],
                     group_context=group_context,
                 )
+                rewards[i] = -1.0
                 scored_results.append(
                     {
                         "index": i,
