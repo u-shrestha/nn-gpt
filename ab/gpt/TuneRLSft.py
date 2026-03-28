@@ -548,9 +548,11 @@ def run_sft_training():
 
     torch.cuda.empty_cache()
     TuneRL.reset_reward_runtime_state()
+    precision = TuneRL.best_mixed_precision()
 
     print(f"Using RL base model: {TuneRL.base_model}")
     print(f"[SFT RL] Fixed training device: {train_device}")
+    print(f"[SFT RL] Mixed precision: {precision['label']} (torch_dtype={precision['torch_dtype']})")
     _print_runtime_cache_roots()
     tokenizer_source = getattr(TuneRL, "tokenizer_source", TuneRL.base_model)
     if tokenizer_source != TuneRL.base_model:
@@ -567,7 +569,7 @@ def run_sft_training():
 
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=precision["torch_dtype"],
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
     )
@@ -577,6 +579,7 @@ def run_sft_training():
         trust_remote_code=True,
         quantization_config=bnb_config,
         device_map={"": train_device},
+        torch_dtype=precision["torch_dtype"],
     )
     TuneRL.log_memory_snapshot("sft/base_model_loaded")
 
@@ -588,6 +591,8 @@ def run_sft_training():
         print(f"Loading initial SFT adapter from {SFT_INIT_ADAPTER}...")
         model = TuneRL.PeftModel.from_pretrained(model, SFT_INIT_ADAPTER)
         model = model.merge_and_unload()
+
+    model = TuneRL.prepare_model_for_kbit_training(model)
 
     peft_config = TuneRL.LoraConfig(
         r=SFT_LORA_R,
@@ -616,7 +621,8 @@ def run_sft_training():
         logging_steps=1,
         output_dir=SFT_TRAINER_OUT,
         eval_strategy="no",
-        bf16=True,
+        bf16=precision["bf16"],
+        fp16=precision["fp16"],
         gradient_checkpointing=True,
         num_generations=SFT_NUM_GENERATIONS,
     )

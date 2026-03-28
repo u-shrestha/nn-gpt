@@ -1,7 +1,7 @@
 import ast
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments
-from peft import LoraConfig, get_peft_model, PeftModel
+from peft import LoraConfig, get_peft_model, PeftModel, prepare_model_for_kbit_training
 from trl.trainer.grpo_trainer import GRPOTrainer
 from trl.trainer.grpo_config import GRPOConfig
 from datasets import Dataset
@@ -153,6 +153,17 @@ def env_float(name: str, default: float) -> float:
     if value is None or value == "":
         return default
     return float(value)
+
+
+def best_mixed_precision() -> Dict[str, Any]:
+    bf16_ok = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    torch_dtype = torch.bfloat16 if bf16_ok else torch.float16
+    return {
+        "bf16": bool(bf16_ok),
+        "fp16": not bool(bf16_ok),
+        "torch_dtype": torch_dtype,
+        "label": "bf16" if bf16_ok else "fp16",
+    }
 
 
 def _clip(value: float, lower: float, upper: float) -> float:
@@ -1640,8 +1651,10 @@ def load_rl_dataset(tokenizer):
 def main():
     torch.cuda.empty_cache()  
     reset_reward_runtime_state()
+    precision = best_mixed_precision()
 
     print(f"Using RL base model: {base_model}")
+    print(f"[RL] Mixed precision: {precision['label']} (torch_dtype={precision['torch_dtype']})")
     tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -1655,7 +1668,7 @@ def main():
     from transformers import BitsAndBytesConfig
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=precision["torch_dtype"],
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
     )
@@ -1666,12 +1679,15 @@ def main():
         trust_remote_code=True,
         quantization_config=bnb_config,
         device_map="auto",
+        torch_dtype=precision["torch_dtype"],
     )
 
     if LOAD_EXISTING_MODEL and os.path.exists(SAVED_MODEL_PATH):
         print(f"Loading extra SFT adapter from {SAVED_MODEL_PATH}...")
         model = PeftModel.from_pretrained(model, SAVED_MODEL_PATH)
         model = model.merge_and_unload()
+
+    model = prepare_model_for_kbit_training(model)
 
     # Apply LoRA specifically for RL phase
     peft_config = LoraConfig(
@@ -1702,7 +1718,8 @@ def main():
         logging_steps=1,
         output_dir=os.getenv("NNGPT_RL_TRAINER_OUT", "./grpo_backbone_outputs"),
         eval_strategy="no",
-        bf16=True,
+        bf16=precision["bf16"],
+        fp16=precision["fp16"],
         gradient_checkpointing=True,
         num_generations=env_int("NNGPT_RL_NUM_GENERATIONS", 8),
     )
