@@ -48,7 +48,7 @@ class SimpleCodeLogger:
                 self.warmup_trainable_count += 1
                 if float(reward) > 0.0:
                     self.warmup_positive_count += 1
-            if (not api_result.get("group_warmup")) and trainable_ok and float(api_result.get("group_train_acc_gain") or 0.0) > 0.0:
+            if (not api_result.get("group_warmup")) and trainable_ok and bool(api_result.get("group_train_acc_improved")):
                 self.improved_count += 1
         
         self.log_to_file(f"Generation {self.total_count}: Reward={reward:.4f}")
@@ -90,4 +90,3 @@ class SimpleCodeLogger:
             json.dump(log_data, f, indent=2, ensure_ascii=False)
         
         print(f"log save to {self.log_file}")
-

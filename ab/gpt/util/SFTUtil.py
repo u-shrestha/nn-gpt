@@ -404,6 +404,8 @@ Produce one trainable architecture that improves short-budget training accuracy 
    - Trainable but non-improving samples receive only weak reward
    - Beating the previous strong group matters more than merely staying valid
    - Refreshing the current best group gets the strongest reward
+   - Dominant-family repeats that do not beat the current target are penalized
+   - Plain classifier-only parallel fuse is penalized unless it clearly beats the previous-group target
 
 3. Keep a descriptive `self.pattern`
    - Set `self.pattern` to a concise descriptive name
@@ -434,6 +436,7 @@ Produce one trainable architecture that improves short-budget training accuracy 
    - Prefer visible modules such as: {module_hints}
    - Do not define new classes or helper methods beyond the 3 required definitions
    - If reusing a strong motif, mutate locally with a better stem, projector, bridge, or fuse stage instead of resubmitting the same shallow graph
+   - Make a local improvement that can plausibly beat the previous-group target, not just another valid variant of the same graph
    - Do not submit a classifier-only parallel fuse unless it clearly beats the current target
    - Make the target tags visible in real code structure, not only in `self.pattern`
 
