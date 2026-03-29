@@ -45,9 +45,21 @@ class EvalTimeBudget:
         self.completed_units = 0
         self.observed_train_batches = 0
         self.estimated_total_seconds: Optional[float] = None
+        self.total_units = 1
+
+    def set_expected_work(
+        self,
+        *,
+        train_batches: int,
+        train_accuracy_batches: int,
+        val_accuracy_batches: int,
+    ) -> None:
         self.total_units = max(
             1,
-            2 + int(cfg.train_steps) + max(1, int(cfg.train_steps)) + max(1, int(cfg.max_val_batches)),
+            2
+            + max(0, int(train_batches))
+            + max(1, int(train_accuracy_batches))
+            + max(1, int(val_accuracy_batches)),
         )
 
     def check(self, phase: str) -> None:
@@ -718,13 +730,16 @@ def _toy_loader(
 def _train_steps(
     model: nn.Module,
     train_loader: DataLoader,
-    steps: int = 8,
+    *,
+    epochs: int = 1,
+    max_steps: Optional[int] = None,
     device: str = "cpu",
     n_classes: int = 10,
     time_budget: Optional[EvalTimeBudget] = None,
 ) -> Dict[str, Any]:
     """
-    Mini-batch training steps. Returns training diagnostics.
+    Train for full epochs over the provided loader, optionally capped by max_steps.
+    Returns training diagnostics.
     """
     model.train()
     _freeze_dual_backbones(model)
@@ -746,85 +761,92 @@ def _train_steps(
             }
         opt = torch.optim.SGD(trainable_params, lr=1e-3, momentum=0.9)
         criterion = nn.CrossEntropyLoss()
-        for x, y in train_loader:
-            if time_budget is not None:
-                try:
-                    time_budget.mark_train_batch_start()
-                except EvalTimeException as exc:
-                    exc.partial.update(
-                        {
-                            "backward_ok": False,
-                            "trained_step_ok": False,
-                            "loss_start": loss_start,
-                            "loss_end": loss_end,
-                            "loss_drop": None if loss_start is None or loss_end is None else float(loss_start - loss_end),
-                            "loss_drop_ok": False,
-                            "steps_completed": steps_completed,
-                        }
-                    )
-                    raise
-            x = x.to(device)
-            y = y.to(device)
-            opt.zero_grad(set_to_none=True)
-            logits = model(x)
-            if not isinstance(logits, torch.Tensor) or logits.dim() != 2:
-                return {
-                    "backward_ok": False,
-                    "trained_step_ok": False,
-                    "loss_start": None,
-                    "loss_end": None,
-                    "loss_drop": None,
-                    "loss_drop_ok": False,
-                    "steps_completed": steps_completed,
-                    "error": f"RuntimeError: logits must be (N, C), got {tuple(logits.shape) if hasattr(logits, 'shape') else type(logits)}",
-                }
-            if logits.shape[0] != y.shape[0] or logits.shape[1] != n_classes:
-                return {
-                    "backward_ok": False,
-                    "trained_step_ok": False,
-                    "loss_start": None,
-                    "loss_end": None,
-                    "loss_drop": None,
-                    "loss_drop_ok": False,
-                    "steps_completed": steps_completed,
-                    "error": f"RuntimeError: logits shape {tuple(logits.shape)} incompatible with labels {tuple(y.shape)} / classes {n_classes}",
-                }
-            loss = criterion(logits, y)
-            if torch.isnan(loss) or torch.isinf(loss):
-                return {
-                    "backward_ok": False,
-                    "trained_step_ok": False,
-                    "loss_start": None,
-                    "loss_end": None,
-                    "loss_drop": None,
-                    "loss_drop_ok": False,
-                    "steps_completed": steps_completed,
-                    "error": "RuntimeError: loss is NaN or Inf",
-                }
-            loss_value = float(loss.detach().item())
-            if loss_start is None:
-                loss_start = loss_value
-            loss.backward()
-            opt.step()
-            loss_end = loss_value
-            steps_completed += 1
-            if time_budget is not None:
-                try:
-                    time_budget.mark_train_batch_end()
-                except EvalTimeException as exc:
-                    exc.partial.update(
-                        {
-                            "backward_ok": False,
-                            "trained_step_ok": False,
-                            "loss_start": loss_start,
-                            "loss_end": loss_end,
-                            "loss_drop": None if loss_start is None or loss_end is None else float(loss_start - loss_end),
-                            "loss_drop_ok": False,
-                            "steps_completed": steps_completed,
-                        }
-                    )
-                    raise
-            if steps_completed >= steps:
+        effective_epochs = max(1, int(epochs))
+        effective_max_steps = None if max_steps is None or int(max_steps) <= 0 else int(max_steps)
+        stop_early = False
+        for _epoch_index in range(effective_epochs):
+            for x, y in train_loader:
+                if time_budget is not None:
+                    try:
+                        time_budget.mark_train_batch_start()
+                    except EvalTimeException as exc:
+                        exc.partial.update(
+                            {
+                                "backward_ok": False,
+                                "trained_step_ok": False,
+                                "loss_start": loss_start,
+                                "loss_end": loss_end,
+                                "loss_drop": None if loss_start is None or loss_end is None else float(loss_start - loss_end),
+                                "loss_drop_ok": False,
+                                "steps_completed": steps_completed,
+                            }
+                        )
+                        raise
+                x = x.to(device)
+                y = y.to(device)
+                opt.zero_grad(set_to_none=True)
+                logits = model(x)
+                if not isinstance(logits, torch.Tensor) or logits.dim() != 2:
+                    return {
+                        "backward_ok": False,
+                        "trained_step_ok": False,
+                        "loss_start": None,
+                        "loss_end": None,
+                        "loss_drop": None,
+                        "loss_drop_ok": False,
+                        "steps_completed": steps_completed,
+                        "error": f"RuntimeError: logits must be (N, C), got {tuple(logits.shape) if hasattr(logits, 'shape') else type(logits)}",
+                    }
+                if logits.shape[0] != y.shape[0] or logits.shape[1] != n_classes:
+                    return {
+                        "backward_ok": False,
+                        "trained_step_ok": False,
+                        "loss_start": None,
+                        "loss_end": None,
+                        "loss_drop": None,
+                        "loss_drop_ok": False,
+                        "steps_completed": steps_completed,
+                        "error": f"RuntimeError: logits shape {tuple(logits.shape)} incompatible with labels {tuple(y.shape)} / classes {n_classes}",
+                    }
+                loss = criterion(logits, y)
+                if torch.isnan(loss) or torch.isinf(loss):
+                    return {
+                        "backward_ok": False,
+                        "trained_step_ok": False,
+                        "loss_start": None,
+                        "loss_end": None,
+                        "loss_drop": None,
+                        "loss_drop_ok": False,
+                        "steps_completed": steps_completed,
+                        "error": "RuntimeError: loss is NaN or Inf",
+                    }
+                loss_value = float(loss.detach().item())
+                if loss_start is None:
+                    loss_start = loss_value
+                loss.backward()
+                opt.step()
+                loss_end = loss_value
+                steps_completed += 1
+                if time_budget is not None:
+                    try:
+                        time_budget.mark_train_batch_end()
+                    except EvalTimeException as exc:
+                        exc.partial.update(
+                            {
+                                "backward_ok": False,
+                                "trained_step_ok": False,
+                                "loss_start": loss_start,
+                                "loss_end": loss_end,
+                                "loss_drop": None if loss_start is None or loss_end is None else float(loss_start - loss_end),
+                                "loss_drop_ok": False,
+                                "steps_completed": steps_completed,
+                            }
+                        )
+                        raise
+                if effective_max_steps is not None and steps_completed >= effective_max_steps:
+                    stop_early = True
+                    break
+            if stop_early:
                 break
         if steps_completed == 0 or loss_start is None or loss_end is None:
             return {
@@ -992,7 +1014,8 @@ class EvalConfig:
     device: str = "cpu"
     input_shape: Tuple[int, int, int, int] = (2, 3, 32, 32)  # (B,C,H,W)
     n_classes: int = 10
-    train_steps: int = 8
+    train_epochs: int = 1
+    train_steps: Optional[int] = None
     max_val_batches: int = 2
     default_batch_size: int = 32
     train_subset_size: int = 256
@@ -1008,6 +1031,57 @@ class EvalConfig:
     weights: Optional[Dict[str, float]] = None
     eval_limit_seconds: int = 270
     budget_probe_batches: int = 2
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    return parsed if parsed > 0 else int(default)
+
+
+def _normalize_optional_steps(value: Any) -> Optional[int]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _build_effective_eval_cfg(
+    *,
+    cfg: Optional["EvalConfig"],
+    prm: Optional[Dict[str, Any]],
+    device: str,
+    in_shape: Tuple[int, int, int, int],
+    out_shape: Tuple[int, ...],
+) -> "EvalConfig":
+    prm_payload = dict(prm or {})
+    base_cfg = cfg if cfg is not None else EvalConfig(
+        device=device,
+        input_shape=in_shape,
+        n_classes=int(out_shape[0]),
+        measure_latency=True,
+        kl_div=None,
+        critic_fn=None,
+        weights=None,
+    )
+    return replace(
+        base_cfg,
+        device=device,
+        input_shape=tuple(base_cfg.input_shape if cfg is not None else in_shape),
+        n_classes=int(base_cfg.n_classes if cfg is not None else out_shape[0]),
+        train_epochs=_coerce_positive_int(
+            prm_payload.get("epoch"),
+            getattr(base_cfg, "train_epochs", 1),
+        ),
+        train_steps=_normalize_optional_steps(getattr(base_cfg, "train_steps", None)),
+        default_batch_size=_coerce_positive_int(
+            prm_payload.get("batch"),
+            getattr(base_cfg, "default_batch_size", 32),
+        ),
+    )
 
 
 def _empty_eval_result(
@@ -1129,7 +1203,7 @@ def evaluate_and_reward(
     End-to-end:
       1) Build model (if builder provided)
       2) Forward sanity
-      3) 1..K train steps
+      3) Train full epoch(s)
       4) Quick validation (accuracy)
       5) (optional) critic score / KL
       6) Compute scalar reward
@@ -1176,6 +1250,8 @@ def evaluate_and_reward(
     local_val_loader = None
 
     try:
+        effective_train_epochs = _coerce_positive_int(getattr(cfg, "train_epochs", 1), 1)
+        effective_train_step_cap = _normalize_optional_steps(getattr(cfg, "train_steps", None))
         if mdl is None and build_fn is not None:
             try:
                 mdl = build_fn()
@@ -1237,15 +1313,26 @@ def evaluate_and_reward(
         else:
             time_budget.check("forward")
 
-        # 3) Mini training steps
+        # 3) Train full epoch(s) on the reward subset.
         if train_loader is None or val_loader is None:
             local_train_loader, local_val_loader = _build_cifar10_loaders(cfg)
         used_train_loader = train_loader if train_loader is not None else local_train_loader
+        used_val_loader = val_loader if val_loader is not None else local_val_loader
+        expected_train_batches = max(1, len(used_train_loader) * effective_train_epochs)
+        if effective_train_step_cap is not None:
+            expected_train_batches = min(expected_train_batches, effective_train_step_cap)
+        effective_val_batches = max(1, min(cfg.max_val_batches, len(used_val_loader)))
+        time_budget.set_expected_work(
+            train_batches=expected_train_batches,
+            train_accuracy_batches=max(1, len(used_train_loader)),
+            val_accuracy_batches=effective_val_batches,
+        )
         try:
             train_result = _train_steps(
                 mdl,
                 used_train_loader,
-                steps=cfg.train_steps,
+                epochs=effective_train_epochs,
+                max_steps=effective_train_step_cap,
                 device=device,
                 n_classes=cfg.n_classes,
                 time_budget=time_budget,
@@ -1258,8 +1345,7 @@ def evaluate_and_reward(
             loss_drop_ok = bool(train_result["loss_drop_ok"])
 
             # 4) Quick validation (accuracy)
-            used_val_loader = val_loader if val_loader is not None else local_val_loader
-            train_metric_batches = max(1, min(cfg.train_steps, int(train_result["steps_completed"] or 0) or cfg.train_steps))
+            train_metric_batches = max(1, len(used_train_loader))
             train_acc = _quick_accuracy(
                 mdl,
                 used_train_loader,
@@ -1599,19 +1685,12 @@ def _prepare_eval_request_entry(
 ) -> Dict[str, Any]:
     worker_pool = _get_or_create_eval_worker_pool()
     worker_device = worker_pool.primary_device()
-    effective_cfg = replace(
-        cfg,
+    effective_cfg = _build_effective_eval_cfg(
+        cfg=cfg,
+        prm=prm,
         device=worker_device,
-    ) if cfg is not None else EvalConfig(
-        device=worker_device,
-        input_shape=in_shape,
-        n_classes=int(out_shape[0]),
-        train_steps=8,
-        max_val_batches=2,
-        measure_latency=True,
-        kl_div=None,
-        critic_fn=None,
-        weights=None,
+        in_shape=in_shape,
+        out_shape=out_shape,
     )
     return {
         "payload": {
@@ -1793,18 +1872,13 @@ def _evaluate_code_and_reward_direct(
     defaults = {"lr": 1e-2, "momentum": 0.9, "batch": 32, "epoch": 1, "transform": None}
     prm = {**defaults, **prm}
     backbone_model_names = _extract_backbone_model_names_from_code(code)
-    if cfg is None:
-        cfg = EvalConfig(
-            device=device,
-            input_shape=in_shape,
-            n_classes=int(out_shape[0]),
-            train_steps=8,
-            max_val_batches=2,
-            measure_latency=True,
-            kl_div=None,
-            critic_fn=None,
-            weights=None,
-        )
+    cfg = _build_effective_eval_cfg(
+        cfg=cfg,
+        prm=prm,
+        device=device,
+        in_shape=in_shape,
+        out_shape=out_shape,
+    )
 
     try:
         builder = build_fn_from_code(code, in_shape, out_shape, prm, device)

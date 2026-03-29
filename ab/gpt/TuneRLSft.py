@@ -28,12 +28,12 @@ SFT_LORA_R = 16
 SFT_LORA_ALPHA = 32
 SFT_LORA_DROPOUT = 0.05
 
-# CIFAR-10 quick evaluation proxy for RL reward.
+# CIFAR-10 reward evaluation proxy.
 SFT_EVAL_IMAGE_SIZE = 256
 SFT_EVAL_BATCH_SIZE = 32
 SFT_EVAL_TRAIN_SUBSET = 256
 SFT_EVAL_VAL_SUBSET = 128
-SFT_EVAL_TRAIN_STEPS = 8
+SFT_EVAL_TRAIN_EPOCHS = 1
 SFT_EVAL_VAL_BATCHES = 2
 SFT_EVAL_DATA_ROOT = "data_v2"
 SFT_EVAL_DOWNLOAD = True
@@ -288,7 +288,7 @@ def evaluate_code_and_reward_cifar(
                 device=eval_device,
                 input_shape=in_shape,
                 n_classes=int(out_shape[0]),
-                train_steps=SFT_EVAL_TRAIN_STEPS,
+                train_epochs=int(prm.get("epoch", SFT_EVAL_TRAIN_EPOCHS) or SFT_EVAL_TRAIN_EPOCHS),
                 max_val_batches=SFT_EVAL_VAL_BATCHES,
                 default_batch_size=SFT_EVAL_BATCH_SIZE,
                 train_subset_size=SFT_EVAL_TRAIN_SUBSET,
@@ -305,6 +305,7 @@ def evaluate_code_and_reward_cifar(
                 device=eval_device,
                 input_shape=cfg.input_shape,
                 n_classes=cfg.n_classes,
+                train_epochs=int(prm.get("epoch", getattr(cfg, "train_epochs", SFT_EVAL_TRAIN_EPOCHS)) or SFT_EVAL_TRAIN_EPOCHS),
                 train_steps=cfg.train_steps,
                 max_val_batches=cfg.max_val_batches,
                 default_batch_size=cfg.default_batch_size,
@@ -723,7 +724,7 @@ def main() -> None:
     print(
         f"[SFT RL] CIFAR-10 eval: resize={SFT_EVAL_IMAGE_SIZE}, batch<={SFT_EVAL_BATCH_SIZE}, "
         f"train_subset={SFT_EVAL_TRAIN_SUBSET}, val_subset={SFT_EVAL_VAL_SUBSET}, "
-        f"train_steps={SFT_EVAL_TRAIN_STEPS}, val_batches={SFT_EVAL_VAL_BATCHES}, "
+        f"train_epochs={SFT_EVAL_TRAIN_EPOCHS}, val_batches={SFT_EVAL_VAL_BATCHES}, "
         f"baseline={SFT_VAL_METRIC_BASELINE:.2f}"
     )
     print(f"[SFT RL] Save RL adapter: {SFT_SAVE_RL_MODEL}")
