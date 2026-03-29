@@ -7,7 +7,7 @@ import torch
 import random
 import numpy as np
 from typing import Optional
-from llm_client import LLMClient
+from ab.gpt.markov.llm_client import LLMClient
 
 _PROMPT_COMMON_TAIL = """
 ## Reference Code (Best Implementation So Far)

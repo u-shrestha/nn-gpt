@@ -8,7 +8,7 @@ import os
 import json
 from typing import Optional
 
-from llm_client import LLMClient
+from ab.gpt.markov.llm_client import LLMClient
 
 
 # Prompt template from Prompt Improver.md

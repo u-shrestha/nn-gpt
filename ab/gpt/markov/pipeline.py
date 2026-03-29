@@ -17,12 +17,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from config import PipelineConfig, DEFAULT_CONFIG
-from llm_client import LLMClient
-from code_generator import CodeGenerator, get_prompt_template
-from code_extractor import CodeExtractor
-from evaluator import Evaluator, EvaluationResult
-from prompt_improver import PromptImprover
+from ab.gpt.markov.config import PipelineConfig, DEFAULT_CONFIG
+from ab.gpt.markov.llm_client import LLMClient
+from ab.gpt.markov.code_generator import CodeGenerator, get_prompt_template
+from ab.gpt.markov.code_extractor import CodeExtractor
+from ab.gpt.markov.evaluator import Evaluator, EvaluationResult
+from ab.gpt.markov.prompt_improver import PromptImprover
 
 
 class Pipeline:
