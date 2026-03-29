@@ -5,27 +5,32 @@ Resource-Efficient Iterative prompt-improvement pipeline: uses an LLM to generat
 ## Environment and dependencies
 
 - **Python**: 3.10 recommended
-- **Dependencies**: `pip install -r requirements.txt`
-
-
-If you use a remote API, set the env var (e.g. `export SiliconCloud_Key="..."`) and do not commit the key.
+- **Dependencies**: 
+  ```bash
+  cd /path/to/nngpt
+  pip install -e .
+  ```
 
 ## How to run
 
-### Option 1: Call the pipeline directly
-
 ```bash
-python pipeline.py --model <HuggingFace_model_name> --dataset <cifar10|cifar100|imagenette> \
-  --max-iterations <N> --target-accuracy <0~1> --output-dir <output_directory>
+python -m ab.gpt.markov.pipeline \
+  --model <HuggingFace_model_name> \
+  --dataset <cifar10|cifar100|imagenette> \
+  --max-iterations <N> \
+  --target-accuracy <0~1> \
+  --output-dir <output_directory> \
 ```
 
-- Add `--remote` when using a remote API
-- Common args: `--epochs`, `--batch-size`, `--history-size`
-- Ablation: `--no-improver`, `--no-reference`, `--no-history`
-
-### Option 2: Use the scripts
-
-- **Full pipeline**: run `./run.sh`. 
+Example:
+```bash
+python -m ab.gpt.markov.pipeline \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --dataset cifar10 \
+  --max-iterations 10 \
+  --target-accuracy 0.9 \
+  --output-dir ./output
+```
 
 ## Output
 
