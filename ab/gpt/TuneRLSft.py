@@ -372,6 +372,7 @@ def sft_reward_fn(
     completion: str,
     *,
     seed_accuracy_baseline: float,
+    precomputed_eval_result: Dict[str, Any] | None = None,
     graph_info=None,
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
@@ -387,6 +388,7 @@ def sft_reward_fn(
     res = TuneRLRaw.raw_reward_fn(
         completion,
         seed_accuracy_baseline=seed_accuracy_baseline,
+        precomputed_eval_result=precomputed_eval_result,
         graph_info=graph_info,
         batch_graph_hashes=batch_graph_hashes,
         batch_family_hashes=batch_family_hashes,
