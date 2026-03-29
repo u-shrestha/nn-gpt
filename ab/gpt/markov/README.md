@@ -27,9 +27,9 @@ Example:
 python -m ab.gpt.markov.pipeline \
   --model Qwen/Qwen2.5-7B-Instruct \
   --dataset cifar10 \
-  --max-iterations 10 \
+  --max-iterations 2000 \
   --target-accuracy 0.9 \
-  --output-dir ./output
+  --output-dir ./out/markov
 ```
 
 ## Output
