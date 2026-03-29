@@ -139,13 +139,13 @@ def get_reward_worker_plan() -> Dict[str, Any]:
             "shared_train_gpu": True,
             "pool_size": 1,
         }
-    reward_gpu_indices = list(range(1, visible_gpu_count))
+    reward_gpu_indices = list(range(visible_gpu_count))
     return {
         "mode": "multi_gpu_pool",
         "visible_gpu_count": visible_gpu_count,
         "train_gpu": 0,
         "reward_gpu_indices": reward_gpu_indices,
-        "shared_train_gpu": False,
+        "shared_train_gpu": True,
         "pool_size": len(reward_gpu_indices),
     }
 
