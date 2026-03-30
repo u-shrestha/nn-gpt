@@ -175,19 +175,29 @@ class Net(nn.Module):
         
     def train_setup(self, prm):
         self.to(self.device)
+        self.freeze_backbones = bool(prm.get('freeze_backbones', getattr(self, 'freeze_backbones', True)))
         for backbone in (self.backbone_a, self.backbone_b):
             for param in backbone.parameters():
-                param.requires_grad = False
-            backbone.eval()
+                param.requires_grad = not self.freeze_backbones
+            if self.freeze_backbones:
+                backbone.eval()
+            else:
+                backbone.train()
         self.criterion = nn.CrossEntropyLoss().to(self.device)
         trainable_params = [param for param in self.parameters() if param.requires_grad]
+        if not trainable_params:
+            raise RuntimeError("No trainable parameters remain after applying freeze_backbones")
         self.optimizer = torch.optim.SGD(trainable_params, lr=prm['lr'], momentum=prm['momentum'])
         self._scaler = make_scaler(enabled=self.use_amp)
 
     def learn(self, train_data):
         self.train()
-        self.backbone_a.eval()
-        self.backbone_b.eval()
+        if self.freeze_backbones:
+            self.backbone_a.eval()
+            self.backbone_b.eval()
+        else:
+            self.backbone_a.train()
+            self.backbone_b.train()
         scaler = self._scaler
         train_iter = iter(train_data)
         try:

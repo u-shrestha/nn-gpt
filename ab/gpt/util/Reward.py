@@ -5,13 +5,19 @@ import time
 import gc
 import multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor
+import importlib
 import os
 import re
+import sys
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, Subset
+
+
+_NN_DATASET_IMPORT_READY = False
 
 
 class PersistentEvalWorkerError(RuntimeError):
@@ -1349,6 +1355,10 @@ class EvalConfig:
     run_unfrozen_backbone_eval: bool = False
     full_test_acc: bool = False
     reward_target_metric: str = "frozen_test_acc"
+    formal_nn_eval: bool = False
+    formal_task: str = "img-classification"
+    formal_dataset: str = "cifar-10"
+    formal_metric: str = "acc"
 
 
 def _coerce_positive_int(value: Any, default: int) -> int:
@@ -1400,6 +1410,256 @@ def _build_effective_eval_cfg(
             getattr(base_cfg, "default_batch_size", 32),
         ),
     )
+
+
+def _is_formal_nn_eval_enabled(cfg: Optional["EvalConfig"]) -> bool:
+    return bool(cfg is not None and getattr(cfg, "formal_nn_eval", False))
+
+
+def _candidate_nn_dataset_roots() -> list[Path]:
+    repo_root = Path(__file__).resolve().parents[3]
+    roots: list[Path] = []
+    raw_env = os.environ.get("NNGPT_NN_DATASET_ROOT")
+    if raw_env:
+        roots.append(Path(raw_env).expanduser())
+    roots.extend(
+        [
+            repo_root.parent / "nn-dataset",
+            repo_root / "nn-dataset",
+            Path.cwd().resolve().parent / "nn-dataset",
+        ]
+    )
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root.resolve()) if root.exists() else str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(root)
+    return deduped
+
+
+def _ensure_nn_dataset_importable() -> Optional[Path]:
+    global _NN_DATASET_IMPORT_READY
+    if _NN_DATASET_IMPORT_READY:
+        for root in _candidate_nn_dataset_roots():
+            if (root / "ab" / "nn" / "api.py").exists():
+                return root
+        return None
+
+    for root in _candidate_nn_dataset_roots():
+        api_file = root / "ab" / "nn" / "api.py"
+        if not api_file.exists():
+            continue
+        root_str = str(root)
+        if root_str not in sys.path:
+            sys.path.insert(0, root_str)
+        importlib.invalidate_caches()
+        try:
+            import ab  # type: ignore
+            ab_path = str(root / "ab")
+            if ab_path not in list(getattr(ab, "__path__", [])):
+                ab.__path__.append(ab_path)
+            import ab.nn.api  # type: ignore
+            _NN_DATASET_IMPORT_READY = True
+            return root
+        except Exception:
+            continue
+    return None
+
+
+def _formal_first_batch_loss(trainer: Any, prm: Dict[str, Any]) -> Optional[float]:
+    try:
+        trainer.model.train_setup(prm)
+        trainer.model.eval()
+        batch = next(iter(trainer.train_loader))
+        inputs, labels = batch
+        inputs = inputs.to(trainer.device)
+        labels = labels.to(trainer.device)
+        outputs = trainer.model(inputs)
+        criterion = getattr(trainer.model, "criterion", None)
+        if criterion is None:
+            criterion = nn.CrossEntropyLoss().to(trainer.device)
+        loss = criterion(outputs, labels)
+        if not torch.isfinite(loss):
+            return None
+        return float(loss.detach().item())
+    except Exception:
+        return None
+
+
+def _formal_eval_with_nn_dataset(
+    code: str,
+    *,
+    prm: Dict[str, Any],
+    cfg: "EvalConfig",
+    freeze_backbones: bool,
+    seed_accuracy_baseline: Optional[float],
+    backbone_model_names: list[str],
+) -> Dict[str, Any]:
+    nn_dataset_root = _ensure_nn_dataset_importable()
+    if nn_dataset_root is None:
+        raise RuntimeError(
+            "Formal nn-dataset evaluation requested, but nn-dataset could not be located. "
+            "Set NNGPT_NN_DATASET_ROOT or place nn-dataset next to nn-gpt."
+        )
+
+    from ab.nn.util.Const import ab_root_path, out  # type: ignore
+    from ab.nn.util.Loader import load_dataset  # type: ignore
+    from ab.nn.util.Train import Train  # type: ignore
+    from ab.nn.util.Util import create_file, release_memory, uuid4  # type: ignore
+
+    model_name = f"rl-eval-{uuid4([code, os.getpid(), time.time_ns(), freeze_backbones])}"
+    tmp_module = ".".join((out, "nn", "tmp"))
+    tmp_module_name = f"{tmp_module}.{model_name}"
+    tmp_dir = ab_root_path / tmp_module.replace(".", "/")
+    create_file(tmp_dir, "__init__.py")
+    temp_file_path = tmp_dir / f"{model_name}.py"
+
+    trainer = None
+    train_set = None
+    test_set = None
+    try:
+        temp_file_path.write_text(code, encoding="utf-8")
+        safe_prm = dict(prm)
+        safe_prm["freeze_backbones"] = bool(freeze_backbones)
+        out_shape, _minimum_accuracy, train_set, test_set = load_dataset(
+            str(getattr(cfg, "formal_task", "img-classification")),
+            str(getattr(cfg, "formal_dataset", "cifar-10")),
+            str(safe_prm["transform"]),
+        )
+        num_workers = int(safe_prm.get("num_workers", 1))
+        trainer = Train(
+            config=(
+                str(getattr(cfg, "formal_task", "img-classification")),
+                str(getattr(cfg, "formal_dataset", "cifar-10")),
+                str(getattr(cfg, "formal_metric", "acc")),
+                model_name,
+            ),
+            out_shape=out_shape,
+            minimum_accuracy=-1.0,
+            batch=int(safe_prm["batch"]),
+            nn_module=tmp_module_name,
+            task=str(getattr(cfg, "formal_task", "img-classification")),
+            train_dataset=train_set,
+            test_dataset=test_set,
+            metric=str(getattr(cfg, "formal_metric", "acc")),
+            num_workers=num_workers,
+            prm=safe_prm,
+            save_to_db=False,
+            is_code=True,
+        )
+        params_m = _count_params_m(trainer.model)
+        forward_result = _quick_forward(
+            trainer.model,
+            tuple(trainer.in_shape),
+            device=str(trainer.device),
+            n_classes=int(out_shape[0]),
+        )
+        initial_loss = _formal_first_batch_loss(trainer, safe_prm)
+        accuracy, _accuracy_to_time, duration_ns = trainer.train_n_eval(
+            int(safe_prm.get("epoch", 1) or 1),
+            max(1.0 / 60.0, float(cfg.eval_limit_seconds) / 60.0),
+            False,
+            False,
+            train_set,
+            save_path=None,
+        )
+        epoch_metrics = trainer.epoch_history[-1] if trainer.epoch_history else None
+        train_acc = float(epoch_metrics.train_accuracy) if epoch_metrics is not None else None
+        test_acc = float(epoch_metrics.test_accuracy) if epoch_metrics is not None else float(accuracy)
+        loss_end = float(epoch_metrics.train_loss) if epoch_metrics is not None else None
+        loss_drop = None if initial_loss is None or loss_end is None else float(initial_loss - loss_end)
+        rel_drop_ok = bool(
+            initial_loss is not None
+            and loss_end is not None
+            and initial_loss > 0.0
+            and loss_end <= initial_loss * 0.98
+        )
+        loss_drop_ok = bool(
+            initial_loss is not None
+            and loss_end is not None
+            and (loss_end < (initial_loss - 1e-3) or rel_drop_ok)
+        )
+        components = compute_cv_reward_simple(
+            built_ok=True,
+            forward_shape_ok=bool(forward_result.get("forward_shape_ok")),
+            backward_ok=True,
+            loss_drop_ok=loss_drop_ok,
+            val_metric=test_acc,
+            val_metric_baseline=None,
+            latency_ms=forward_result.get("latency_ms"),
+            params_m=params_m,
+            flops_g=None,
+            critic_score=None,
+            kl_div=cfg.kl_div,
+            weights=cfg.weights,
+        )
+        return {
+            "reward": components["reward"],
+            "components": components,
+            **{
+                **_base_eval_result(
+                    seed_accuracy_baseline=seed_accuracy_baseline,
+                    eval_limit_seconds=cfg.eval_limit_seconds,
+                    backbone_model_names=backbone_model_names,
+                ),
+                "test_acc": test_acc,
+                "val_metric": test_acc,
+                "built_ok": True,
+                "forward_ok": bool(forward_result.get("forward_ok")),
+                "forward_shape_ok": bool(forward_result.get("forward_shape_ok")),
+                "trained_step_ok": True,
+                "backward_ok": True,
+                "loss_start": initial_loss,
+                "loss_end": loss_end,
+                "loss_drop": loss_drop,
+                "loss_drop_ok": loss_drop_ok,
+                "train_acc": train_acc,
+                "seed_train_acc_gap": None if train_acc is None or seed_accuracy_baseline is None else float(train_acc - seed_accuracy_baseline),
+                "seed_train_acc_improved": bool(
+                    train_acc is not None
+                    and seed_accuracy_baseline is not None
+                    and float(train_acc - seed_accuracy_baseline) > 0.0
+                ),
+                "train_acc_gain": None if train_acc is None or seed_accuracy_baseline is None else float(train_acc - seed_accuracy_baseline),
+                "train_acc_improved": bool(
+                    train_acc is not None
+                    and seed_accuracy_baseline is not None
+                    and float(train_acc - seed_accuracy_baseline) > 0.0
+                ),
+                "latency_ms": forward_result.get("latency_ms"),
+                "params_m": params_m,
+                "estimated_total_seconds": float(duration_ns) / 1e9,
+            },
+        }
+    finally:
+        try:
+            if temp_file_path.exists():
+                temp_file_path.unlink()
+        except Exception:
+            pass
+        sys.modules.pop(tmp_module_name, None)
+        gc.collect()
+        if trainer is not None:
+            try:
+                del trainer.model
+            except Exception:
+                pass
+        try:
+            del train_set
+        except Exception:
+            pass
+        try:
+            del test_set
+        except Exception:
+            pass
+        try:
+            release_memory()
+        except Exception:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 def _empty_eval_result(
@@ -2093,10 +2353,13 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
                 continue
 
             cfg = _deserialize_eval_cfg(request.get("cfg"))
-            loader_key = _loader_cache_key(cfg)
-            if loader_key not in loader_cache:
-                loader_cache[loader_key] = _build_cifar10_loaders(cfg)
-            train_loader, val_loader = loader_cache[loader_key]
+            train_loader = None
+            val_loader = None
+            if not _is_formal_nn_eval_enabled(cfg):
+                loader_key = _loader_cache_key(cfg)
+                if loader_key not in loader_cache:
+                    loader_cache[loader_key] = _build_cifar10_loaders(cfg)
+                train_loader, val_loader = loader_cache[loader_key]
             reward_batch_index = request.get("reward_batch_index")
             completion_index = request.get("completion_index")
             last_reward_batch_index = reward_batch_index
@@ -2216,6 +2479,56 @@ def _evaluate_code_and_reward_direct(
         in_shape=in_shape,
         out_shape=out_shape,
     )
+
+    if _is_formal_nn_eval_enabled(cfg):
+        try:
+            frozen_result = _formal_eval_with_nn_dataset(
+                code,
+                prm=prm,
+                cfg=cfg,
+                freeze_backbones=True,
+                seed_accuracy_baseline=seed_accuracy_baseline,
+                backbone_model_names=backbone_model_names,
+            )
+            unfrozen_result = None
+            if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)):
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+                unfrozen_result = _formal_eval_with_nn_dataset(
+                    code,
+                    prm=prm,
+                    cfg=cfg,
+                    freeze_backbones=False,
+                    seed_accuracy_baseline=seed_accuracy_baseline,
+                    backbone_model_names=backbone_model_names,
+                )
+            return _merge_dual_eval_results(
+                frozen_result=frozen_result,
+                unfrozen_result=unfrozen_result,
+                cfg=cfg,
+            )
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = f"{error_type}: {e}"
+            failure_result = _empty_eval_result(
+                error=error_msg,
+                seed_accuracy_baseline=seed_accuracy_baseline,
+                eval_limit_seconds=cfg.eval_limit_seconds,
+                backbone_model_names=backbone_model_names,
+            )
+            failure_result["frozen_eval"] = _nested_eval_payload(
+                failure_result,
+                eval_mode="frozen",
+                backbone_frozen=True,
+            )
+            if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)):
+                failure_result["unfrozen_eval"] = _nested_eval_payload(
+                    failure_result,
+                    eval_mode="unfrozen",
+                    backbone_frozen=False,
+                )
+            return failure_result
 
     try:
         builder = build_fn_from_code(code, in_shape, out_shape, prm, device)

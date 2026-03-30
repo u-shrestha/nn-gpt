@@ -389,6 +389,10 @@ def evaluate_code_and_reward_cifar(
                 run_unfrozen_backbone_eval=SFT_EVAL_RUN_UNFROZEN,
                 full_test_acc=SFT_EVAL_FULL_TEST_ACC,
                 reward_target_metric="frozen_test_acc",
+                formal_nn_eval=True,
+                formal_task="img-classification",
+                formal_dataset="cifar-10",
+                formal_metric="acc",
             )
         else:
             cfg = RewardUtil.EvalConfig(
@@ -412,6 +416,10 @@ def evaluate_code_and_reward_cifar(
                 run_unfrozen_backbone_eval=cfg.run_unfrozen_backbone_eval,
                 full_test_acc=cfg.full_test_acc,
                 reward_target_metric=cfg.reward_target_metric,
+                formal_nn_eval=getattr(cfg, "formal_nn_eval", True),
+                formal_task=getattr(cfg, "formal_task", "img-classification"),
+                formal_dataset=getattr(cfg, "formal_dataset", "cifar-10"),
+                formal_metric=getattr(cfg, "formal_metric", "acc"),
             )
 
         return RewardUtil.evaluate_code_and_reward(
@@ -466,6 +474,10 @@ def build_sft_reward_eval_cfg(
             run_unfrozen_backbone_eval=SFT_EVAL_RUN_UNFROZEN,
             full_test_acc=SFT_EVAL_FULL_TEST_ACC,
             reward_target_metric="frozen_test_acc",
+            formal_nn_eval=True,
+            formal_task="img-classification",
+            formal_dataset="cifar-10",
+            formal_metric="acc",
         )
 
     return RewardUtil.EvalConfig(
@@ -489,6 +501,10 @@ def build_sft_reward_eval_cfg(
         run_unfrozen_backbone_eval=cfg.run_unfrozen_backbone_eval,
         full_test_acc=cfg.full_test_acc,
         reward_target_metric=cfg.reward_target_metric,
+        formal_nn_eval=getattr(cfg, "formal_nn_eval", True),
+        formal_task=getattr(cfg, "formal_task", "img-classification"),
+        formal_dataset=getattr(cfg, "formal_dataset", "cifar-10"),
+        formal_metric=getattr(cfg, "formal_metric", "acc"),
     )
 
 
@@ -953,8 +969,8 @@ def main() -> None:
         print(f"[SFT RL] Init adapter path: {SFT_INIT_ADAPTER}")
     print(f"[SFT RL] Temperature: {SFT_TEMPERATURE}")
     print(
-        f"[SFT RL] CIFAR-10 eval: resize={SFT_EVAL_IMAGE_SIZE}, batch<={SFT_EVAL_BATCH_SIZE}, "
-        f"train_subset={SFT_EVAL_TRAIN_SUBSET}, "
+        f"[SFT RL] CIFAR-10 eval: backend=nn-dataset-formal, resize={SFT_EVAL_IMAGE_SIZE}, batch<={SFT_EVAL_BATCH_SIZE}, "
+        f"train_set=full, "
         f"{'test_subset=full' if SFT_EVAL_FULL_TEST_ACC else f'val_subset={SFT_EVAL_VAL_SUBSET}'}, "
         f"train_epochs={SFT_EVAL_TRAIN_EPOCHS}, val_batches={SFT_EVAL_VAL_BATCHES}, "
         f"full_test_acc={SFT_EVAL_FULL_TEST_ACC}, run_unfrozen={SFT_EVAL_RUN_UNFROZEN}, "
