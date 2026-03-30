@@ -47,6 +47,13 @@ def _safe_int_env(name: str, default: int) -> int:
         return int(default)
 
 
+def _safe_bool_env(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return bool(default)
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _visible_cuda_device_tokens() -> Optional[list[str]]:
     raw = os.environ.get("CUDA_VISIBLE_DEVICES")
     if raw is None:
@@ -189,6 +196,7 @@ class EvalTimeBudget:
 def get_reward_worker_plan() -> Dict[str, Any]:
     runtime = get_distributed_runtime_info()
     visible_gpu_count = int(runtime["visible_gpu_count"])
+    deepspeed_enabled = _safe_bool_env("NNGPT_SFT_USE_DEEPSPEED", False)
     if visible_gpu_count <= 0:
         return {
             "mode": "cpu_fallback",
@@ -198,6 +206,8 @@ def get_reward_worker_plan() -> Dict[str, Any]:
             "reward_gpu_tokens": [],
             "shared_train_gpu": False,
             "pool_size": 1,
+            "workers_per_gpu": 1,
+            "deepspeed_enabled": deepspeed_enabled,
             "distributed": bool(runtime["distributed"]),
             "rank": int(runtime["rank"]),
             "local_rank": int(runtime["local_rank"]),
@@ -205,20 +215,23 @@ def get_reward_worker_plan() -> Dict[str, Any]:
         }
     if runtime["distributed"]:
         train_gpu = runtime["train_gpu"]
-        reward_gpu_indices = [int(train_gpu)] if train_gpu is not None else []
+        workers_per_gpu = 2 if deepspeed_enabled else 1
+        reward_gpu_indices = [int(train_gpu)] * workers_per_gpu if train_gpu is not None else []
         reward_gpu_tokens = (
-            [str(runtime["train_gpu_token"])]
+            [str(runtime["train_gpu_token"])] * workers_per_gpu
             if runtime["train_gpu_token"] is not None
             else []
         )
         return {
-            "mode": "distributed_local_gpu",
+            "mode": "distributed_local_gpu_dual" if workers_per_gpu > 1 else "distributed_local_gpu",
             "visible_gpu_count": visible_gpu_count,
             "train_gpu": train_gpu,
             "reward_gpu_indices": reward_gpu_indices,
             "reward_gpu_tokens": reward_gpu_tokens,
             "shared_train_gpu": True,
             "pool_size": max(1, len(reward_gpu_indices)),
+            "workers_per_gpu": workers_per_gpu,
+            "deepspeed_enabled": deepspeed_enabled,
             "distributed": True,
             "rank": int(runtime["rank"]),
             "local_rank": int(runtime["local_rank"]),
@@ -233,6 +246,8 @@ def get_reward_worker_plan() -> Dict[str, Any]:
             "reward_gpu_tokens": [str(runtime["train_gpu_token"] or "0")],
             "shared_train_gpu": True,
             "pool_size": 1,
+            "workers_per_gpu": 1,
+            "deepspeed_enabled": deepspeed_enabled,
             "distributed": False,
             "rank": int(runtime["rank"]),
             "local_rank": int(runtime["local_rank"]),
@@ -248,6 +263,8 @@ def get_reward_worker_plan() -> Dict[str, Any]:
         "reward_gpu_tokens": reward_gpu_tokens,
         "shared_train_gpu": True,
         "pool_size": len(reward_gpu_indices),
+        "workers_per_gpu": 1,
+        "deepspeed_enabled": deepspeed_enabled,
         "distributed": False,
         "rank": int(runtime["rank"]),
         "local_rank": int(runtime["local_rank"]),
@@ -495,15 +512,18 @@ class _EvalWorkerPool:
                 "reward_gpu_tokens": [],
                 "shared_train_gpu": False,
                 "pool_size": 1,
+                "workers_per_gpu": 1,
             }
         print(
             "[Reward Worker Pool] "
             f"mode={self._plan['mode']} "
             f"visible_gpu_count={self._plan['visible_gpu_count']} "
+            f"deepspeed_enabled={self._plan.get('deepspeed_enabled', False)} "
             f"rank={self._plan['rank']} "
             f"local_rank={self._plan['local_rank']} "
             f"world_size={self._plan['world_size']} "
             f"train_gpu={self._plan['train_gpu']} "
+            f"workers_per_gpu={self._plan.get('workers_per_gpu', 1)} "
             f"reward_gpu_indices={self._plan['reward_gpu_indices']} "
             f"reward_gpu_tokens={self._plan.get('reward_gpu_tokens', [])}"
         )
@@ -533,6 +553,8 @@ class _EvalWorkerPool:
             "reward_gpu_tokens": list(self._plan.get("reward_gpu_tokens") or []),
             "shared_train_gpu": bool(self._plan["shared_train_gpu"]),
             "pool_size": len(workers),
+            "workers_per_gpu": int(self._plan.get("workers_per_gpu", 1)),
+            "deepspeed_enabled": bool(self._plan.get("deepspeed_enabled", False)),
             "total_rss_gib": total_rss_gib,
             "workers": workers,
             "worker_pids": [worker["pid"] for worker in workers],
@@ -546,6 +568,7 @@ class _EvalWorkerPool:
         estimated_total_seconds: float,
         assigned_gpu: Optional[int],
         worker_device: str,
+        worker_slot: int,
     ) -> Dict[str, Any]:
         result = _timeout_eval_result(
             error=error,
@@ -556,6 +579,7 @@ class _EvalWorkerPool:
         )
         result["assigned_gpu"] = assigned_gpu
         result["worker_device"] = worker_device
+        result["worker_slot"] = worker_slot
         return result
 
     def _replace_session(self, slot: int) -> _PersistentEvalWorkerSession:
@@ -584,6 +608,8 @@ class _EvalWorkerPool:
         session_info = session.diagnostics()
         assigned_gpu = session_info.get("assigned_gpu")
         worker_device = str(session_info.get("worker_device", "cpu"))
+        worker_slot = int(session_info.get("slot", slot))
+        entry["payload"]["worker_slot"] = worker_slot
         try:
             result = session.request(entry["payload"], timeout=timeout)
         except PersistentEvalWorkerError as exc:
@@ -594,12 +620,16 @@ class _EvalWorkerPool:
                 estimated_total_seconds=float(timeout),
                 assigned_gpu=assigned_gpu,
                 worker_device=worker_device,
+                worker_slot=worker_slot,
             )
         result["assigned_gpu"] = assigned_gpu
         result["worker_device"] = worker_device
+        result["worker_slot"] = worker_slot
         return result
 
     def request_entry(self, entry: Dict[str, Any], *, timeout: float) -> Dict[str, Any]:
+        entry["payload"]["worker_batch_first_item"] = True
+        entry["payload"]["worker_batch_last_item"] = True
         return self._request_entry(0, entry, timeout=timeout)
 
     def map_entries(self, entries: list[Dict[str, Any]], *, timeout: float) -> list[Dict[str, Any]]:
@@ -616,7 +646,9 @@ class _EvalWorkerPool:
 
         def _process_worker_tasks(slot: int, tasks: list[tuple[int, Dict[str, Any]]]) -> list[tuple[int, Dict[str, Any]]]:
             results: list[tuple[int, Dict[str, Any]]] = []
-            for index, entry in tasks:
+            for task_index, (index, entry) in enumerate(tasks):
+                entry["payload"]["worker_batch_first_item"] = task_index == 0
+                entry["payload"]["worker_batch_last_item"] = task_index == (len(tasks) - 1)
                 results.append((index, self._request_entry(slot, entry, timeout=timeout)))
             return results
 
@@ -639,6 +671,7 @@ class _EvalWorkerPool:
                 estimated_total_seconds=timeout,
                 assigned_gpu=None,
                 worker_device="cpu",
+                worker_slot=-1,
             )
             for index, result in enumerate(indexed_results)
         ]
@@ -1871,6 +1904,7 @@ def shutdown_eval_worker() -> None:
         "[Reward Worker Pool] Shutdown "
         f"mode={info['mode']} "
         f"pool_size={info['pool_size']} "
+        f"workers_per_gpu={info.get('workers_per_gpu', 1)} "
         f"worker_pids={info['worker_pids']} "
         f"total_rss_gib={info['total_rss_gib']:.2f}"
     )
@@ -2067,12 +2101,13 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
             completion_index = request.get("completion_index")
             last_reward_batch_index = reward_batch_index
             last_completion_index = completion_index
-            if completion_index == 0:
+            if bool(request.get("worker_batch_first_item")):
                 cuda_allocated_gib, cuda_reserved_gib = _worker_cuda_memory_gib()
                 print(
                     "[Reward Worker Memory] "
                     f"stage=batch_start "
                     f"pid={os.getpid()} "
+                    f"worker_slot={request.get('worker_slot')} "
                     f"assigned_gpu={assigned_gpu} "
                     f"worker_device={worker_device} "
                     f"reward_batch_index={reward_batch_index} "
@@ -2109,7 +2144,8 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
                 result["components"]["reward"] = -1.0
             result["assigned_gpu"] = assigned_gpu
             result["worker_device"] = worker_device
-            if bool(request.get("batch_last_item")):
+            result["worker_slot"] = request.get("worker_slot", None)
+            if bool(request.get("worker_batch_last_item")):
                 if worker_device.startswith("cuda") and torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 cuda_allocated_gib, cuda_reserved_gib = _worker_cuda_memory_gib()
@@ -2117,6 +2153,7 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
                     "[Reward Worker Memory] "
                     f"stage=batch_end "
                     f"pid={os.getpid()} "
+                    f"worker_slot={request.get('worker_slot')} "
                     f"assigned_gpu={assigned_gpu} "
                     f"worker_device={worker_device} "
                     f"reward_batch_index={reward_batch_index} "
@@ -2134,6 +2171,7 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
             "[Reward Worker Memory] "
             f"stage=shutdown "
             f"pid={os.getpid()} "
+            f"worker_slot={request.get('worker_slot') if 'request' in locals() and isinstance(request, dict) else None} "
             f"assigned_gpu={assigned_gpu} "
             f"worker_device={worker_device} "
             f"reward_batch_index={last_reward_batch_index} "

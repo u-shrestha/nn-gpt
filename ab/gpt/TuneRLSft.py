@@ -2,9 +2,12 @@ import os
 import multiprocessing as mp
 import shutil
 import random
+import inspect
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 from torch.utils.data import Dataset as TorchDataset
+from ab.gpt.util.Const import conf_dir
 
 
 # ── SFT runtime configuration ─────────────────────────────────────────────
@@ -27,6 +30,7 @@ SFT_NUM_EPOCHS = 5
 SFT_LORA_R = 16
 SFT_LORA_ALPHA = 32
 SFT_LORA_DROPOUT = 0.05
+SFT_DEEPSPEED_DEFAULT_CONFIG = str(conf_dir / "DeepSpeedSftGrpo.json")
 
 # CIFAR-10 reward evaluation proxy.
 SFT_EVAL_IMAGE_SIZE = 256
@@ -116,6 +120,69 @@ def resolve_sft_model_sources() -> tuple[str, str, str]:
         return SFT_BASE_MODEL_ID, str(repo_tokenizer_dir), "model-id+out/tokenizer"
 
     return SFT_BASE_MODEL_ID, SFT_BASE_MODEL_ID, "model-id"
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return bool(default)
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _runtime_is_main_process(runtime: Dict[str, Any]) -> bool:
+    return int(runtime.get("rank", 0)) == 0
+
+
+def _resolve_sft_deepspeed_enabled(runtime: Dict[str, Any]) -> bool:
+    raw = os.getenv("NNGPT_SFT_USE_DEEPSPEED")
+    if raw is None or raw == "":
+        return int(runtime.get("world_size", 1)) > 1
+    return _env_flag("NNGPT_SFT_USE_DEEPSPEED", False)
+
+
+def _resolve_sft_deepspeed_config_path() -> str:
+    raw_path = os.getenv("NNGPT_SFT_DEEPSPEED_CONFIG", SFT_DEEPSPEED_DEFAULT_CONFIG)
+    config_path = Path(raw_path).expanduser()
+    if not config_path.exists():
+        raise FileNotFoundError(f"SFT DeepSpeed config not found: {config_path}")
+    return str(config_path)
+
+
+def _maybe_init_hf_deepspeed_config(config_path: str) -> Any:
+    last_error: Exception | None = None
+    for module_name in ("transformers.integrations", "transformers.deepspeed"):
+        try:
+            module = __import__(module_name, fromlist=["HfDeepSpeedConfig"])
+            config_cls = getattr(module, "HfDeepSpeedConfig", None)
+            if config_cls is not None:
+                return config_cls(config_path)
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(
+        "DeepSpeed ZeRO-3 requested for SFT GRPO, but HfDeepSpeedConfig could not be imported"
+    ) from last_error
+
+
+def _bootstrap_sentinel_path(log_dir: str) -> Path:
+    return Path(log_dir) / ".sft_bootstrap_complete"
+
+
+def _wait_for_bootstrap_sentinel(
+    sentinel_path: Path,
+    *,
+    timeout_seconds: float = 600.0,
+    min_mtime: float | None = None,
+) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if sentinel_path.exists():
+            try:
+                if min_mtime is None or sentinel_path.stat().st_mtime >= min_mtime:
+                    return
+            except OSError:
+                pass
+        time.sleep(1.0)
+    raise TimeoutError(f"Timed out waiting for rank0 bootstrap sentinel: {sentinel_path}")
 
 
 def _cifar_eval_error(error: Exception, *, seed_accuracy_baseline: float | None = None) -> Dict[str, Any]:
@@ -558,6 +625,39 @@ def sft_run_epoch_dir(*args) -> Path:
     return epoch_dir
 
 
+def _build_sft_grpo_config(
+    *,
+    precision: Dict[str, Any],
+    use_deepspeed: bool,
+    deepspeed_config_path: str | None,
+) -> Any:
+    config_signature = inspect.signature(TuneRL.GRPOConfig.__init__)
+    config_kwargs: Dict[str, Any] = {
+        "temperature": SFT_TEMPERATURE,
+        "learning_rate": SFT_LR,
+        "max_completion_length": SFT_MAX_COMPLETION_LENGTH,
+        "per_device_train_batch_size": 1,
+        "gradient_accumulation_steps": SFT_GRAD_ACCUM,
+        "lr_scheduler_type": "cosine",
+        "num_train_epochs": SFT_NUM_EPOCHS,
+        "remove_unused_columns": False,
+        "logging_steps": 1,
+        "output_dir": SFT_TRAINER_OUT,
+        "eval_strategy": "no",
+        "bf16": precision["bf16"],
+        "fp16": precision["fp16"],
+        "gradient_checkpointing": True,
+        "num_generations": SFT_NUM_GENERATIONS,
+    }
+    if use_deepspeed:
+        if "deepspeed" not in config_signature.parameters:
+            raise RuntimeError("Installed GRPOConfig does not support the `deepspeed` argument")
+        config_kwargs["deepspeed"] = deepspeed_config_path
+        if "ds3_gather_for_generation" in config_signature.parameters:
+            config_kwargs["ds3_gather_for_generation"] = False
+    return TuneRL.GRPOConfig(**config_kwargs)
+
+
 def run_sft_training():
     import torch
     from transformers import BitsAndBytesConfig
@@ -585,18 +685,32 @@ def run_sft_training():
             "SFT RL resolved an invalid local CUDA rank: "
             f"local_rank={local_rank}, raw_local_rank={raw_local_rank}, visible_cuda_devices={visible_cuda_devices}"
         )
+    use_deepspeed = _resolve_sft_deepspeed_enabled(runtime)
+    deepspeed_config_path = _resolve_sft_deepspeed_config_path() if use_deepspeed else None
+    os.environ["NNGPT_SFT_USE_DEEPSPEED"] = "1" if use_deepspeed else "0"
+    if deepspeed_config_path is not None:
+        os.environ["NNGPT_SFT_DEEPSPEED_CONFIG"] = deepspeed_config_path
     torch.cuda.set_device(local_rank)
     train_device = f"cuda:{local_rank}"
 
     torch.cuda.empty_cache()
     TuneRL.reset_reward_runtime_state()
     precision = TuneRL.best_mixed_precision()
+    grpo_config = _build_sft_grpo_config(
+        precision=precision,
+        use_deepspeed=use_deepspeed,
+        deepspeed_config_path=deepspeed_config_path,
+    )
+    hf_deepspeed_config = _maybe_init_hf_deepspeed_config(deepspeed_config_path) if use_deepspeed else None
 
     print(f"Using RL base model: {TuneRL.base_model}")
     print(
         "[SFT RL] Distributed Runtime: "
         f"rank={rank} local_rank={local_rank} raw_local_rank={raw_local_rank} world_size={world_size}"
     )
+    print(f"[SFT RL] DeepSpeed Enabled: {use_deepspeed}")
+    if deepspeed_config_path is not None:
+        print(f"[SFT RL] DeepSpeed Config: {deepspeed_config_path}")
     print(f"[SFT RL] Fixed training device: {train_device}")
     print(f"[SFT RL] Visible CUDA devices: {visible_cuda_devices}")
     print(f"[SFT RL] Mixed precision: {precision['label']} (torch_dtype={precision['torch_dtype']})")
@@ -604,6 +718,7 @@ def run_sft_training():
     print(
         "[SFT RL] Reward Worker Plan: "
         f"mode={reward_worker_plan['mode']} "
+        f"reward_workers_per_gpu={reward_worker_plan.get('workers_per_gpu', 1)} "
         f"rank={reward_worker_plan['rank']} "
         f"local_rank={reward_worker_plan['local_rank']} "
         f"world_size={reward_worker_plan['world_size']} "
@@ -632,13 +747,18 @@ def run_sft_training():
         bnb_4bit_quant_type="nf4",
     )
 
+    model_load_kwargs: Dict[str, Any] = {
+        "trust_remote_code": True,
+        "quantization_config": bnb_config,
+        "dtype": precision["torch_dtype"],
+    }
+    if not use_deepspeed:
+        model_load_kwargs["device_map"] = {"": train_device}
     model = TuneRL.AutoModelForCausalLM.from_pretrained(
         TuneRL.base_model,
-        trust_remote_code=True,
-        quantization_config=bnb_config,
-        device_map={"": train_device},
-        dtype=precision["torch_dtype"],
+        **model_load_kwargs,
     )
+    _ = hf_deepspeed_config
     TuneRL.log_memory_snapshot("sft/base_model_loaded")
 
     if SFT_LOAD_INITIAL_ADAPTER:
@@ -668,24 +788,6 @@ def run_sft_training():
     model.enable_input_require_grads()
     model.print_trainable_parameters()
     TuneRL.log_memory_snapshot("sft/lora_wrapped")
-
-    grpo_config = TuneRL.GRPOConfig(
-        temperature=SFT_TEMPERATURE,
-        learning_rate=SFT_LR,
-        max_completion_length=SFT_MAX_COMPLETION_LENGTH,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=SFT_GRAD_ACCUM,
-        lr_scheduler_type="cosine",
-        num_train_epochs=SFT_NUM_EPOCHS,
-        remove_unused_columns=False,
-        logging_steps=1,
-        output_dir=SFT_TRAINER_OUT,
-        eval_strategy="no",
-        bf16=precision["bf16"],
-        fp16=precision["fp16"],
-        gradient_checkpointing=True,
-        num_generations=SFT_NUM_GENERATIONS,
-    )
 
     trainer = TuneRL.GRPOTrainer(
         model=model,
@@ -735,24 +837,38 @@ def bootstrap_sft_runtime() -> None:
     """Initialize logging and reset extraction cache."""
     TuneRLRaw.clear_extraction_meta_cache()
     RewardUtil.shutdown_eval_worker()
+    runtime = RewardUtil.get_distributed_runtime_info()
+    is_main = _runtime_is_main_process(runtime)
 
     log_dir = TuneRL.run_log_dir()
     os.makedirs(log_dir, exist_ok=True)
+    sentinel_path = _bootstrap_sentinel_path(log_dir)
+    trainer_out_dir = Path(SFT_TRAINER_OUT)
+    wait_start = time.time()
     stale_files = (
         "generation_samples.jsonl",
         "group_progress.jsonl",
         "group_feedback_samples.jsonl",
         "best_group_feedback.json",
     )
-    for filename in stale_files:
-        path = Path(log_dir) / filename
-        if path.exists():
-            print(f"Removing stale runtime log: {path}")
-            path.unlink()
-    TuneRL.code_logger = TuneRLRaw.RawCodeLogger(log_dir)
+    if is_main:
+        if sentinel_path.exists():
+            sentinel_path.unlink()
+        for filename in stale_files:
+            path = Path(log_dir) / filename
+            if path.exists():
+                print(f"Removing stale runtime log: {path}")
+                path.unlink()
+        print(f"Cleaning existing models in {TuneRL.run_epoch_dir()}...")
+        shutil.rmtree(TuneRL.run_epoch_dir(), ignore_errors=True)
+        print(f"Cleaning existing trainer outputs in {trainer_out_dir}...")
+        shutil.rmtree(trainer_out_dir, ignore_errors=True)
+        TuneRL.code_logger = TuneRLRaw.RawCodeLogger(log_dir)
+        sentinel_path.write_text(str(os.getpid()), encoding="utf-8")
+        return
 
-    print(f"Cleaning existing models in {TuneRL.run_epoch_dir()}...")
-    shutil.rmtree(TuneRL.run_epoch_dir(), ignore_errors=True)
+    TuneRL.code_logger = TuneRL.NullCodeLogger()
+    _wait_for_bootstrap_sentinel(sentinel_path, min_mtime=wait_start)
 
 
 def main() -> None:
