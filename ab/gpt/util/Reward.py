@@ -619,7 +619,7 @@ def _merge_dual_eval_results(
     *,
     frozen_result: Dict[str, Any],
     unfrozen_result: Optional[Dict[str, Any]],
-    cfg: EvalConfig,
+    cfg: "EvalConfig",
 ) -> Dict[str, Any]:
     merged = dict(frozen_result)
     frozen_train_acc = frozen_result.get("train_acc")
@@ -665,7 +665,7 @@ def _merge_dual_eval_results(
     return merged
 
 
-def _request_timeout_seconds(cfg: EvalConfig) -> float:
+def _request_timeout_seconds(cfg: "EvalConfig") -> float:
     eval_runs = 2 if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)) else 1
     base_timeout = float(max(1, int(getattr(cfg, "eval_limit_seconds", 270))))
     return max(360.0, (base_timeout * eval_runs) + 120.0)
