@@ -163,24 +163,31 @@ def _maybe_init_hf_deepspeed_config(config_path: str) -> Any:
     ) from last_error
 
 
-def _bootstrap_sentinel_path(log_dir: str) -> Path:
-    return Path(log_dir) / ".sft_bootstrap_complete"
+def _bootstrap_run_token(runtime: Dict[str, Any] | None = None) -> str:
+    runtime = runtime or {}
+    for value in (
+        os.getenv("TORCHELASTIC_RUN_ID"),
+        os.getenv("MASTER_PORT"),
+        os.getenv("SLURM_JOB_ID"),
+    ):
+        if value:
+            return str(value)
+    return f"rank0_world{int(runtime.get('world_size', 1))}"
+
+
+def _bootstrap_sentinel_path(log_dir: str, runtime: Dict[str, Any] | None = None) -> Path:
+    return Path(log_dir) / f".sft_bootstrap_complete.{_bootstrap_run_token(runtime)}"
 
 
 def _wait_for_bootstrap_sentinel(
     sentinel_path: Path,
     *,
     timeout_seconds: float = 600.0,
-    min_mtime: float | None = None,
 ) -> None:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         if sentinel_path.exists():
-            try:
-                if min_mtime is None or sentinel_path.stat().st_mtime >= min_mtime:
-                    return
-            except OSError:
-                pass
+            return
         time.sleep(1.0)
     raise TimeoutError(f"Timed out waiting for rank0 bootstrap sentinel: {sentinel_path}")
 
@@ -842,9 +849,8 @@ def bootstrap_sft_runtime() -> None:
 
     log_dir = TuneRL.run_log_dir()
     os.makedirs(log_dir, exist_ok=True)
-    sentinel_path = _bootstrap_sentinel_path(log_dir)
+    sentinel_path = _bootstrap_sentinel_path(log_dir, runtime)
     trainer_out_dir = Path(SFT_TRAINER_OUT)
-    wait_start = time.time()
     stale_files = (
         "generation_samples.jsonl",
         "group_progress.jsonl",
@@ -868,7 +874,7 @@ def bootstrap_sft_runtime() -> None:
         return
 
     TuneRL.code_logger = TuneRL.NullCodeLogger()
-    _wait_for_bootstrap_sentinel(sentinel_path, min_mtime=wait_start)
+    _wait_for_bootstrap_sentinel(sentinel_path)
 
 
 def main() -> None:
