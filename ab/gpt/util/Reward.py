@@ -536,6 +536,7 @@ def _base_eval_result(
 ) -> Dict[str, Any]:
     return {
         "val_metric": None,
+        "test_acc": None,
         "built_ok": False,
         "forward_ok": False,
         "forward_shape_ok": False,
@@ -565,7 +566,109 @@ def _base_eval_result(
         "eval_limit_seconds": eval_limit_seconds,
         "warmup_dense_reward": None,
         "backbone_model_names": list(backbone_model_names or []),
+        "frozen_train_acc": None,
+        "frozen_test_acc": None,
+        "unfrozen_train_acc": None,
+        "unfrozen_test_acc": None,
+        "frozen_eval": None,
+        "unfrozen_eval": None,
+        "reward_target_metric": "frozen_test_acc",
+        "reward_target_value": None,
     }
+
+
+def _nested_eval_payload(
+    result: Optional[Dict[str, Any]],
+    *,
+    eval_mode: str,
+    backbone_frozen: bool,
+) -> Optional[Dict[str, Any]]:
+    if result is None:
+        return None
+    return {
+        "eval_mode": eval_mode,
+        "backbone_frozen": backbone_frozen,
+        "reward": result.get("reward"),
+        "components": dict(result.get("components") or {}),
+        "built_ok": result.get("built_ok"),
+        "forward_ok": result.get("forward_ok"),
+        "forward_shape_ok": result.get("forward_shape_ok"),
+        "trained_step_ok": result.get("trained_step_ok"),
+        "backward_ok": result.get("backward_ok"),
+        "loss_start": result.get("loss_start"),
+        "loss_end": result.get("loss_end"),
+        "loss_drop": result.get("loss_drop"),
+        "loss_drop_ok": result.get("loss_drop_ok"),
+        "train_acc": result.get("train_acc"),
+        "test_acc": result.get("test_acc", result.get("val_metric")),
+        "val_metric": result.get("val_metric"),
+        "latency_ms": result.get("latency_ms"),
+        "params_m": result.get("params_m"),
+        "timed_out": result.get("timed_out", False),
+        "estimated_total_seconds": result.get("estimated_total_seconds"),
+        "eval_limit_seconds": result.get("eval_limit_seconds"),
+        "backbone_model_names": list(result.get("backbone_model_names") or []),
+        "seed_accuracy_baseline": result.get("seed_accuracy_baseline"),
+        "seed_train_acc_gap": result.get("seed_train_acc_gap"),
+        "seed_train_acc_improved": result.get("seed_train_acc_improved"),
+        "error": result.get("error"),
+    }
+
+
+def _merge_dual_eval_results(
+    *,
+    frozen_result: Dict[str, Any],
+    unfrozen_result: Optional[Dict[str, Any]],
+    cfg: EvalConfig,
+) -> Dict[str, Any]:
+    merged = dict(frozen_result)
+    frozen_train_acc = frozen_result.get("train_acc")
+    frozen_test_acc = frozen_result.get("test_acc", frozen_result.get("val_metric"))
+    unfrozen_train_acc = None if unfrozen_result is None else unfrozen_result.get("train_acc")
+    unfrozen_test_acc = None if unfrozen_result is None else unfrozen_result.get("test_acc", unfrozen_result.get("val_metric"))
+    reward_target_metric = str(getattr(cfg, "reward_target_metric", "frozen_test_acc") or "frozen_test_acc")
+
+    if reward_target_metric == "frozen_test_acc":
+        reward_target_value = frozen_test_acc
+    elif reward_target_metric == "frozen_train_acc":
+        reward_target_value = frozen_train_acc
+    elif reward_target_metric == "unfrozen_test_acc":
+        reward_target_value = unfrozen_test_acc
+    elif reward_target_metric == "unfrozen_train_acc":
+        reward_target_value = unfrozen_train_acc
+    else:
+        reward_target_value = frozen_test_acc
+
+    merged.update(
+        {
+            "test_acc": frozen_test_acc,
+            "train_acc": frozen_train_acc,
+            "val_metric": frozen_test_acc,
+            "frozen_train_acc": frozen_train_acc,
+            "frozen_test_acc": frozen_test_acc,
+            "unfrozen_train_acc": unfrozen_train_acc,
+            "unfrozen_test_acc": unfrozen_test_acc,
+            "frozen_eval": _nested_eval_payload(
+                frozen_result,
+                eval_mode="frozen",
+                backbone_frozen=True,
+            ),
+            "unfrozen_eval": _nested_eval_payload(
+                unfrozen_result,
+                eval_mode="unfrozen",
+                backbone_frozen=False,
+            ),
+            "reward_target_metric": reward_target_metric,
+            "reward_target_value": reward_target_value,
+        }
+    )
+    return merged
+
+
+def _request_timeout_seconds(cfg: EvalConfig) -> float:
+    eval_runs = 2 if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)) else 1
+    base_timeout = float(max(1, int(getattr(cfg, "eval_limit_seconds", 270))))
+    return max(360.0, (base_timeout * eval_runs) + 120.0)
 
 def compute_cv_reward_simple(
     *,
@@ -666,6 +769,19 @@ def _freeze_dual_backbones(model: nn.Module) -> None:
         backbone.eval()
 
 
+def _set_dual_backbones_trainable(model: nn.Module, *, freeze_backbones: bool) -> None:
+    for backbone_name in ("backbone_a", "backbone_b"):
+        backbone = getattr(model, backbone_name, None)
+        if backbone is None:
+            continue
+        for param in backbone.parameters():
+            param.requires_grad = not freeze_backbones
+        if freeze_backbones:
+            backbone.eval()
+        else:
+            backbone.train()
+
+
 def _trainable_parameters(model: nn.Module) -> list[nn.Parameter]:
     return [param for param in model.parameters() if param.requires_grad]
 
@@ -736,13 +852,14 @@ def _train_steps(
     device: str = "cpu",
     n_classes: int = 10,
     time_budget: Optional[EvalTimeBudget] = None,
+    freeze_backbones: bool = True,
 ) -> Dict[str, Any]:
     """
     Train for full epochs over the provided loader, optionally capped by max_steps.
     Returns training diagnostics.
     """
     model.train()
-    _freeze_dual_backbones(model)
+    _set_dual_backbones_trainable(model, freeze_backbones=freeze_backbones)
     loss_start = None
     loss_end = None
     steps_completed = 0
@@ -892,7 +1009,7 @@ def _quick_accuracy(
     data_loader: DataLoader,
     *,
     device: str = "cpu",
-    max_batches: int = 10,
+    max_batches: Optional[int] = 10,
     time_budget: Optional[EvalTimeBudget] = None,
     phase: str = "accuracy",
 ) -> float:
@@ -936,7 +1053,7 @@ def _quick_accuracy(
                     }
                 )
                 raise
-        if batches_seen >= max_batches:
+        if max_batches is not None and int(max_batches) > 0 and batches_seen >= int(max_batches):
             break
 
     return (correct / total) if total > 0 else 0.0
@@ -982,7 +1099,7 @@ def _build_cifar10_loaders(cfg: "EvalConfig") -> Tuple[DataLoader, DataLoader]:
 
     if 0 < cfg.train_subset_size < len(train_dataset):
         train_dataset = Subset(train_dataset, range(cfg.train_subset_size))
-    if 0 < cfg.val_subset_size < len(val_dataset):
+    if (not bool(getattr(cfg, "full_test_acc", False))) and 0 < cfg.val_subset_size < len(val_dataset):
         val_dataset = Subset(val_dataset, range(cfg.val_subset_size))
 
     train_batch = max(1, min(cfg.default_batch_size, len(train_dataset)))
@@ -1031,6 +1148,9 @@ class EvalConfig:
     weights: Optional[Dict[str, float]] = None
     eval_limit_seconds: int = 270
     budget_probe_batches: int = 2
+    run_unfrozen_backbone_eval: bool = False
+    full_test_acc: bool = False
+    reward_target_metric: str = "frozen_test_acc"
 
 
 def _coerce_positive_int(value: Any, default: int) -> int:
@@ -1198,6 +1318,7 @@ def evaluate_and_reward(
     # Config & weights
     cfg: EvalConfig = EvalConfig(),
     backbone_model_names: Optional[list[str]] = None,
+    freeze_backbones: bool = True,
 ) -> Dict[str, Any]:
     """
     End-to-end:
@@ -1260,7 +1381,6 @@ def evaluate_and_reward(
         if mdl is not None and isinstance(mdl, nn.Module):
             try:
                 mdl.to(device)
-                _freeze_dual_backbones(mdl)
                 params_m = _count_params_m(mdl)
                 built_ok = True
                 time_budget.mark_build_complete()
@@ -1321,7 +1441,11 @@ def evaluate_and_reward(
         expected_train_batches = max(1, len(used_train_loader) * effective_train_epochs)
         if effective_train_step_cap is not None:
             expected_train_batches = min(expected_train_batches, effective_train_step_cap)
-        effective_val_batches = max(1, min(cfg.max_val_batches, len(used_val_loader)))
+        effective_val_batches = (
+            len(used_val_loader)
+            if bool(getattr(cfg, "full_test_acc", False))
+            else max(1, min(cfg.max_val_batches, len(used_val_loader)))
+        )
         time_budget.set_expected_work(
             train_batches=expected_train_batches,
             train_accuracy_batches=max(1, len(used_train_loader)),
@@ -1336,6 +1460,7 @@ def evaluate_and_reward(
                 device=device,
                 n_classes=cfg.n_classes,
                 time_budget=time_budget,
+                freeze_backbones=freeze_backbones,
             )
             backward_ok = bool(train_result["backward_ok"])
             trained_step_ok = bool(train_result["trained_step_ok"])
@@ -1358,7 +1483,7 @@ def evaluate_and_reward(
                 mdl,
                 used_val_loader,
                 device=device,
-                max_batches=cfg.max_val_batches,
+                max_batches=None if bool(getattr(cfg, "full_test_acc", False)) else cfg.max_val_batches,
                 time_budget=time_budget,
                 phase="val_accuracy",
             )
@@ -1439,6 +1564,7 @@ def evaluate_and_reward(
                     eval_limit_seconds=cfg.eval_limit_seconds,
                     backbone_model_names=backbone_model_names,
                 ),
+                "test_acc": val_metric,
                 "val_metric": val_metric,
                 "built_ok": built_ok,
                 "forward_ok": forward_ok,
@@ -1554,6 +1680,7 @@ def _loader_cache_key(cfg: EvalConfig) -> Tuple[Any, ...]:
         cfg.val_subset_size,
         cfg.data_root,
         cfg.download,
+        bool(getattr(cfg, "full_test_acc", False)),
     )
 
 
@@ -1666,7 +1793,7 @@ def evaluate_code_and_reward(
         batch_last_item=batch_last_item,
     )
     worker_pool = _get_or_create_eval_worker_pool()
-    return worker_pool.request_entry(entry, timeout=360.0)
+    return worker_pool.request_entry(entry, timeout=float(entry["request_timeout"]))
 
 
 def _prepare_eval_request_entry(
@@ -1708,6 +1835,7 @@ def _prepare_eval_request_entry(
             "batch_last_item": batch_last_item,
         },
         "effective_cfg": effective_cfg,
+        "request_timeout": _request_timeout_seconds(effective_cfg),
         "seed_accuracy_baseline": seed_accuracy_baseline,
         "backbone_model_names": _extract_backbone_model_names_from_code(code),
     }
@@ -1735,7 +1863,8 @@ def evaluate_code_and_reward_batch(
         for spec in request_specs
     ]
     worker_pool = _get_or_create_eval_worker_pool()
-    return worker_pool.map_entries(entries, timeout=360.0)
+    timeout = max(float(entry["request_timeout"]) for entry in entries)
+    return worker_pool.map_entries(entries, timeout=timeout)
 
 
 def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Optional[int]) -> None:
@@ -1886,14 +2015,26 @@ def _evaluate_code_and_reward_direct(
         # Pass through error type so reward_fn can assign layered partial rewards
         error_type = type(e).__name__
         error_msg = f"{error_type}: {e}"
-        return _empty_eval_result(
+        failure_result = _empty_eval_result(
             error=error_msg,
             seed_accuracy_baseline=seed_accuracy_baseline,
             eval_limit_seconds=cfg.eval_limit_seconds,
             backbone_model_names=backbone_model_names,
         )
+        failure_result["frozen_eval"] = _nested_eval_payload(
+            failure_result,
+            eval_mode="frozen",
+            backbone_frozen=True,
+        )
+        if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)):
+            failure_result["unfrozen_eval"] = _nested_eval_payload(
+                failure_result,
+                eval_mode="unfrozen",
+                backbone_frozen=False,
+            )
+        return failure_result
     try:
-        res = evaluate_and_reward(
+        frozen_result = evaluate_and_reward(
             build_fn=builder,
             train_loader=train_loader,
             val_loader=val_loader,
@@ -1901,17 +2042,49 @@ def _evaluate_code_and_reward_direct(
             seed_accuracy_baseline=seed_accuracy_baseline,
             cfg=cfg,
             backbone_model_names=backbone_model_names,
+            freeze_backbones=True,
         )
-        return res
+        unfrozen_result = None
+        if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)):
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+            unfrozen_result = evaluate_and_reward(
+                build_fn=builder,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                val_metric_baseline=val_metric_baseline,
+                seed_accuracy_baseline=seed_accuracy_baseline,
+                cfg=cfg,
+                backbone_model_names=backbone_model_names,
+                freeze_backbones=False,
+            )
+        return _merge_dual_eval_results(
+            frozen_result=frozen_result,
+            unfrozen_result=unfrozen_result,
+            cfg=cfg,
+        )
     except Exception as e:
         error_type = type(e).__name__
         error_msg = f"{error_type}: {e}"
-        return _empty_eval_result(
+        failure_result = _empty_eval_result(
             error=error_msg,
             seed_accuracy_baseline=seed_accuracy_baseline,
             eval_limit_seconds=cfg.eval_limit_seconds,
             backbone_model_names=backbone_model_names,
         )
+        failure_result["frozen_eval"] = _nested_eval_payload(
+            failure_result,
+            eval_mode="frozen",
+            backbone_frozen=True,
+        )
+        if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)):
+            failure_result["unfrozen_eval"] = _nested_eval_payload(
+                failure_result,
+                eval_mode="unfrozen",
+                backbone_frozen=False,
+            )
+        return failure_result
 
 
 atexit.register(shutdown_eval_worker)

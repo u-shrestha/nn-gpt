@@ -57,9 +57,9 @@ LOAD_EXISTING_MODEL = False  # Model is already merged
 SAVED_MODEL_PATH = "rl_backbone_model" 
 B_index = 0
 GROUP_BATCH_SIZE = 20
-GROUP_IMPROVEMENT_DELTA = 0.005
-BEST_GROUP_REFRESH_DELTA = 0.002
-GOAL_REFRESH_DELTA = 0.002
+GROUP_IMPROVEMENT_DELTA = 0.003
+BEST_GROUP_REFRESH_DELTA = 0.0015
+GOAL_REFRESH_DELTA = 0.0015
 NON_IMPROVING_REWARD_CAP = 0.04
 BATCH_ELITE_PRIMARY_BONUS = 0.12
 BATCH_ELITE_SECONDARY_BONUS = 0.06
@@ -67,17 +67,36 @@ REPEAT_FAMILY_PENALTY = -0.18
 PLAIN_FUSE_PENALTY = -0.18
 NO_PROGRESS_PENALTY = -0.12
 GOAL_REFRESH_BONUS = 0.30
+GOAL_MATCH_REWARD_SCALE = 0.12
+TRAINSET_NOVEL_FAMILY_BONUS = 0.04
+TRAINSET_NOVEL_GRAPH_BONUS = 0.02
+GENERALIZATION_GAP_TOLERANCE = 0.02
+GENERALIZATION_PENALTY_SCALE = 2.0
+GENERALIZATION_PENALTY_CAP = -0.20
+REWARD_TARGET_METRIC = "frozen_test_acc"
 FEEDBACK_GRAPH_EXPR_MAX_CHARS = 160
 FEEDBACK_SUMMARY_MAX_CHARS = 240
 FEEDBACK_SUMMARY_LIMIT = 2
 reward_batch_index = 0
 current_group_id = 0
-current_group_train_acc_sum = 0.0
-current_group_train_acc_count = 0
+current_group_reward_target_sum = 0.0
+current_group_reward_target_count = 0
+current_group_frozen_train_acc_sum = 0.0
+current_group_frozen_train_acc_count = 0
+current_group_frozen_test_acc_sum = 0.0
+current_group_frozen_test_acc_count = 0
+current_group_unfrozen_train_acc_sum = 0.0
+current_group_unfrozen_train_acc_count = 0
+current_group_unfrozen_test_acc_sum = 0.0
+current_group_unfrozen_test_acc_count = 0
+prev_closed_group_mean_reward_target_acc: Optional[float] = None
+best_closed_group_mean_reward_target_acc: Optional[float] = None
 prev_closed_group_train_acc_mean: Optional[float] = None
 best_closed_group_mean_train_acc: Optional[float] = None
+prev_closed_group_mean_test_acc: Optional[float] = None
+best_closed_group_mean_test_acc: Optional[float] = None
 best_closed_group_id: Optional[int] = None
-best_train_acc_by_goal: Dict[str, float] = {}
+best_reward_target_by_goal: Dict[str, float] = {}
 dominant_family_hash: Optional[str] = None
 dominant_family_share: float = 0.0
 prev_group_feedback: List["GroupFeedbackSummary"] = []
@@ -98,7 +117,11 @@ class GroupFeedbackSummary:
     goal_key: str
     pattern_name: str
     graph_expr_short: str
-    train_acc: float
+    reward_target_value: float
+    frozen_train_acc: float
+    frozen_test_acc: float
+    unfrozen_train_acc: Optional[float]
+    unfrozen_test_acc: Optional[float]
     backbone_model_names: List[str]
     stats_short: str
     summary: str
@@ -284,6 +307,35 @@ def _clip(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, float(value)))
 
 
+def _optional_float(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _result_reward_target_value(res: Dict[str, Any]) -> Optional[float]:
+    reward_target_value = _optional_float(res.get("reward_target_value"))
+    if reward_target_value is not None:
+        return reward_target_value
+    return _optional_float(res.get("frozen_test_acc", res.get("val_metric")))
+
+
+def _increment_optional_metric(sum_name: str, count_name: str, value: Optional[float]) -> None:
+    if value is None:
+        return
+    globals()[sum_name] += float(value)
+    globals()[count_name] += 1
+
+
+def _mean_from_accumulator(sum_value: float, count_value: int) -> Optional[float]:
+    if count_value <= 0:
+        return None
+    return float(sum_value) / float(count_value)
+
+
 def _truncate_text(text: str, max_chars: int) -> str:
     text = (text or "").strip()
     if len(text) <= max_chars:
@@ -340,13 +392,19 @@ def _build_group_feedback_summary(
 ) -> GroupFeedbackSummary:
     graph_expr_short = _truncate_text(str(res.get("graph_expr") or ""), FEEDBACK_GRAPH_EXPR_MAX_CHARS)
     pattern_name = str(res.get("pattern_name") or res.get("suggested_pattern_name") or "unknown")
-    train_acc = float(res.get("train_acc") or 0.0)
+    reward_target_value = float(_result_reward_target_value(res) or 0.0)
+    frozen_train_acc = float(_optional_float(res.get("frozen_train_acc", res.get("train_acc"))) or 0.0)
+    frozen_test_acc = float(_optional_float(res.get("frozen_test_acc", res.get("test_acc", res.get("val_metric")))) or 0.0)
+    unfrozen_train_acc = _optional_float(res.get("unfrozen_train_acc"))
+    unfrozen_test_acc = _optional_float(res.get("unfrozen_test_acc"))
     backbone_names = list(res.get("backbone_model_names") or [])
     open_discovery = dict(res.get("open_discovery") or {})
     stats_short = _feedback_stats_short(open_discovery)
     summary = (
         f"pattern={pattern_name}; "
-        f"train_acc={train_acc:.4f}; "
+        f"target={reward_target_value:.4f}; "
+        f"frozen_train={frozen_train_acc:.4f}; "
+        f"frozen_test={frozen_test_acc:.4f}; "
         f"backbones=[{', '.join(backbone_names)}]; "
         f"graph={graph_expr_short}; "
         f"stats={stats_short}"
@@ -356,7 +414,11 @@ def _build_group_feedback_summary(
         goal_key=goal_key,
         pattern_name=pattern_name,
         graph_expr_short=graph_expr_short,
-        train_acc=train_acc,
+        reward_target_value=reward_target_value,
+        frozen_train_acc=frozen_train_acc,
+        frozen_test_acc=frozen_test_acc,
+        unfrozen_train_acc=unfrozen_train_acc,
+        unfrozen_test_acc=unfrozen_test_acc,
         backbone_model_names=backbone_names,
         stats_short=stats_short,
         summary=summary,
@@ -368,18 +430,17 @@ def _build_group_feedback_summary(
 
 def _update_top_feedback(summary: GroupFeedbackSummary) -> None:
     current_group_top_feedback.append(summary)
-    current_group_top_feedback.sort(key=lambda item: item.train_acc, reverse=True)
+    current_group_top_feedback.sort(key=lambda item: item.reward_target_value, reverse=True)
     del current_group_top_feedback[FEEDBACK_SUMMARY_LIMIT:]
 
 
 def _record_current_group_trainable_sample(goal_key: str, res: Dict[str, Any], graph_info) -> None:
-    train_acc = res.get("train_acc")
-    if train_acc is None:
+    reward_target_value = _result_reward_target_value(res)
+    if reward_target_value is None:
         return
     current_best = current_group_goal_best_candidates.get(goal_key)
-    train_acc_value = float(train_acc)
-    if current_best is None or train_acc_value > current_best:
-        current_group_goal_best_candidates[goal_key] = train_acc_value
+    if current_best is None or float(reward_target_value) > current_best:
+        current_group_goal_best_candidates[goal_key] = float(reward_target_value)
     summary = _build_group_feedback_summary(
         goal_key=goal_key,
         res=res,
@@ -396,8 +457,12 @@ def _reset_current_group_feedback_state() -> None:
 
 def get_prompt_feedback_state() -> Dict[str, Any]:
     return {
+        "prev_closed_group_mean_reward_target_acc": prev_closed_group_mean_reward_target_acc,
+        "best_closed_group_mean_reward_target_acc": best_closed_group_mean_reward_target_acc,
         "prev_closed_group_mean_train_acc": prev_closed_group_train_acc_mean,
         "best_closed_group_mean_train_acc": best_closed_group_mean_train_acc,
+        "prev_closed_group_mean_test_acc": prev_closed_group_mean_test_acc,
+        "best_closed_group_mean_test_acc": best_closed_group_mean_test_acc,
         "best_closed_group_id": best_closed_group_id,
         "dominant_family_hash": dominant_family_hash,
         "dominant_family_share": dominant_family_share,
@@ -421,12 +486,16 @@ def _format_target_metric(base_value: Optional[float], delta: float) -> str:
 def render_prompt_feedback_text(*, feedback_char_budget: int = 1200) -> str:
     state = get_prompt_feedback_state()
     header_lines = [
-        f"- Previous Closed Group Mean Train Acc: {_format_optional_metric(state['prev_closed_group_mean_train_acc'])}",
-        f"- Current Best Closed Group Mean Train Acc: {_format_optional_metric(state['best_closed_group_mean_train_acc'])}",
-        f"- Meaningful Reward Target: >= {_format_target_metric(state['prev_closed_group_mean_train_acc'], GROUP_IMPROVEMENT_DELTA)}",
-        f"- Stretch Target To Refresh Best: >= {_format_target_metric(state['best_closed_group_mean_train_acc'], BEST_GROUP_REFRESH_DELTA)}",
-        f"- Target Rule: beat previous closed group mean by at least {GROUP_IMPROVEMENT_DELTA:.3f}",
-        "- Rule: trainable but below the previous-group target gets only weak reward",
+        f"- Reward Target Metric: {REWARD_TARGET_METRIC}",
+        f"- Previous Closed Group Mean Target Acc: {_format_optional_metric(state['prev_closed_group_mean_reward_target_acc'])}",
+        f"- Current Best Closed Group Mean Target Acc: {_format_optional_metric(state['best_closed_group_mean_reward_target_acc'])}",
+        f"- Previous Closed Group Mean Frozen Train Acc: {_format_optional_metric(state['prev_closed_group_mean_train_acc'])}",
+        f"- Previous Closed Group Mean Frozen Test Acc: {_format_optional_metric(state['prev_closed_group_mean_test_acc'])}",
+        f"- Meaningful Reward Target: >= {_format_target_metric(state['prev_closed_group_mean_reward_target_acc'], GROUP_IMPROVEMENT_DELTA)}",
+        f"- Stretch Target To Refresh Best: >= {_format_target_metric(state['best_closed_group_mean_reward_target_acc'], BEST_GROUP_REFRESH_DELTA)}",
+        f"- Target Rule: beat previous closed group mean {REWARD_TARGET_METRIC} by at least {GROUP_IMPROVEMENT_DELTA:.4f}",
+        "- Rule: prioritize higher frozen test accuracy, not just easier train accuracy",
+        "- Rule: overfit patterns with large frozen-train minus frozen-test gaps are penalized",
         "- Rule: dominant-family reuse or plain classifier-only fuse below target is penalized",
         "- Rule: mutate strong motifs locally with stem/project/bridge/fuse improvements instead of resubmitting them",
         (
@@ -480,10 +549,22 @@ def reset_reward_runtime_state() -> None:
     global B_index
     global reward_batch_index
     global current_group_id
-    global current_group_train_acc_sum
-    global current_group_train_acc_count
+    global current_group_reward_target_sum
+    global current_group_reward_target_count
+    global current_group_frozen_train_acc_sum
+    global current_group_frozen_train_acc_count
+    global current_group_frozen_test_acc_sum
+    global current_group_frozen_test_acc_count
+    global current_group_unfrozen_train_acc_sum
+    global current_group_unfrozen_train_acc_count
+    global current_group_unfrozen_test_acc_sum
+    global current_group_unfrozen_test_acc_count
+    global prev_closed_group_mean_reward_target_acc
+    global best_closed_group_mean_reward_target_acc
     global prev_closed_group_train_acc_mean
     global best_closed_group_mean_train_acc
+    global prev_closed_group_mean_test_acc
+    global best_closed_group_mean_test_acc
     global best_closed_group_id
     global dominant_family_hash
     global dominant_family_share
@@ -502,12 +583,24 @@ def reset_reward_runtime_state() -> None:
     B_index = 0
     reward_batch_index = 0
     current_group_id = 0
-    current_group_train_acc_sum = 0.0
-    current_group_train_acc_count = 0
+    current_group_reward_target_sum = 0.0
+    current_group_reward_target_count = 0
+    current_group_frozen_train_acc_sum = 0.0
+    current_group_frozen_train_acc_count = 0
+    current_group_frozen_test_acc_sum = 0.0
+    current_group_frozen_test_acc_count = 0
+    current_group_unfrozen_train_acc_sum = 0.0
+    current_group_unfrozen_train_acc_count = 0
+    current_group_unfrozen_test_acc_sum = 0.0
+    current_group_unfrozen_test_acc_count = 0
+    prev_closed_group_mean_reward_target_acc = None
+    best_closed_group_mean_reward_target_acc = None
     prev_closed_group_train_acc_mean = None
     best_closed_group_mean_train_acc = None
+    prev_closed_group_mean_test_acc = None
+    best_closed_group_mean_test_acc = None
     best_closed_group_id = None
-    best_train_acc_by_goal.clear()
+    best_reward_target_by_goal.clear()
     dominant_family_hash = None
     dominant_family_share = 0.0
     prev_group_feedback.clear()
@@ -521,7 +614,11 @@ def current_reward_group_context() -> Dict[str, Any]:
         "reward_group_id": current_group_id,
         "group_warmup": current_group_id == 0,
         "group_baseline_train_acc": prev_closed_group_train_acc_mean,
+        "group_baseline_reward_target_acc": prev_closed_group_mean_reward_target_acc,
+        "group_baseline_test_acc": prev_closed_group_mean_test_acc,
         "best_closed_group_mean_train_acc": best_closed_group_mean_train_acc,
+        "best_closed_group_mean_reward_target_acc": best_closed_group_mean_reward_target_acc,
+        "best_closed_group_mean_test_acc": best_closed_group_mean_test_acc,
         "best_closed_group_id": best_closed_group_id,
         "dominant_family_hash": dominant_family_hash,
         "dominant_family_share": dominant_family_share,
@@ -577,22 +674,54 @@ def log_memory_snapshot(stage: str, *, group_context: Optional[Dict[str, Any]] =
     )
 
 
-def update_current_group_train_acc(train_acc_values: List[float]) -> None:
-    global current_group_train_acc_sum
-    global current_group_train_acc_count
-
-    for train_acc_value in train_acc_values:
-        current_group_train_acc_sum += float(train_acc_value)
-        current_group_train_acc_count += 1
+def update_current_group_metrics(results: List[Dict[str, Any]]) -> None:
+    for res in results:
+        _increment_optional_metric(
+            "current_group_reward_target_sum",
+            "current_group_reward_target_count",
+            _result_reward_target_value(res),
+        )
+        _increment_optional_metric(
+            "current_group_frozen_train_acc_sum",
+            "current_group_frozen_train_acc_count",
+            _optional_float(res.get("frozen_train_acc", res.get("train_acc"))),
+        )
+        _increment_optional_metric(
+            "current_group_frozen_test_acc_sum",
+            "current_group_frozen_test_acc_count",
+            _optional_float(res.get("frozen_test_acc", res.get("test_acc", res.get("val_metric")))),
+        )
+        _increment_optional_metric(
+            "current_group_unfrozen_train_acc_sum",
+            "current_group_unfrozen_train_acc_count",
+            _optional_float(res.get("unfrozen_train_acc")),
+        )
+        _increment_optional_metric(
+            "current_group_unfrozen_test_acc_sum",
+            "current_group_unfrozen_test_acc_count",
+            _optional_float(res.get("unfrozen_test_acc")),
+        )
 
 
 def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
     global reward_batch_index
     global current_group_id
-    global current_group_train_acc_sum
-    global current_group_train_acc_count
+    global current_group_reward_target_sum
+    global current_group_reward_target_count
+    global current_group_frozen_train_acc_sum
+    global current_group_frozen_train_acc_count
+    global current_group_frozen_test_acc_sum
+    global current_group_frozen_test_acc_count
+    global current_group_unfrozen_train_acc_sum
+    global current_group_unfrozen_train_acc_count
+    global current_group_unfrozen_test_acc_sum
+    global current_group_unfrozen_test_acc_count
+    global prev_closed_group_mean_reward_target_acc
+    global best_closed_group_mean_reward_target_acc
     global prev_closed_group_train_acc_mean
     global best_closed_group_mean_train_acc
+    global prev_closed_group_mean_test_acc
+    global best_closed_group_mean_test_acc
     global best_closed_group_id
     global dominant_family_hash
     global dominant_family_share
@@ -601,26 +730,59 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
     if reward_batch_index % GROUP_BATCH_SIZE != 0:
         return None
 
-    previous_closed_mean = prev_closed_group_train_acc_mean
-    previous_best_mean = best_closed_group_mean_train_acc
-    closed_mean = None
-    if current_group_train_acc_count > 0:
-        closed_mean = current_group_train_acc_sum / current_group_train_acc_count
-    prev_closed_group_train_acc_mean = closed_mean
+    previous_closed_reward_target_mean = prev_closed_group_mean_reward_target_acc
+    previous_best_reward_target_mean = best_closed_group_mean_reward_target_acc
+    previous_closed_train_mean = prev_closed_group_train_acc_mean
+    previous_closed_test_mean = prev_closed_group_mean_test_acc
+    closed_mean_reward_target = _mean_from_accumulator(
+        current_group_reward_target_sum,
+        current_group_reward_target_count,
+    )
+    closed_mean_train = _mean_from_accumulator(
+        current_group_frozen_train_acc_sum,
+        current_group_frozen_train_acc_count,
+    )
+    closed_mean_test = _mean_from_accumulator(
+        current_group_frozen_test_acc_sum,
+        current_group_frozen_test_acc_count,
+    )
+    closed_mean_unfrozen_train = _mean_from_accumulator(
+        current_group_unfrozen_train_acc_sum,
+        current_group_unfrozen_train_acc_count,
+    )
+    closed_mean_unfrozen_test = _mean_from_accumulator(
+        current_group_unfrozen_test_acc_sum,
+        current_group_unfrozen_test_acc_count,
+    )
+    prev_closed_group_mean_reward_target_acc = closed_mean_reward_target
+    prev_closed_group_train_acc_mean = closed_mean_train
+    prev_closed_group_mean_test_acc = closed_mean_test
 
-    if best_closed_group_mean_train_acc is None or (
-        closed_mean is not None and closed_mean > best_closed_group_mean_train_acc
+    if best_closed_group_mean_reward_target_acc is None or (
+        closed_mean_reward_target is not None and closed_mean_reward_target > best_closed_group_mean_reward_target_acc
     ):
-        if closed_mean is not None:
-            best_closed_group_mean_train_acc = closed_mean
+        if closed_mean_reward_target is not None:
+            best_closed_group_mean_reward_target_acc = closed_mean_reward_target
             best_closed_group_id = current_group_id
             best_group_feedback[:] = list(current_group_top_feedback[:FEEDBACK_SUMMARY_LIMIT])
 
     for goal_key, candidate_best in current_group_goal_best_candidates.items():
-        best_train_acc_by_goal[goal_key] = max(
+        best_reward_target_by_goal[goal_key] = max(
             float(candidate_best),
-            float(best_train_acc_by_goal.get(goal_key, float("-inf"))),
+            float(best_reward_target_by_goal.get(goal_key, float("-inf"))),
         )
+
+    if best_closed_group_mean_train_acc is None or (
+        closed_mean_train is not None and closed_mean_train > best_closed_group_mean_train_acc
+    ):
+        if closed_mean_train is not None:
+            best_closed_group_mean_train_acc = closed_mean_train
+
+    if best_closed_group_mean_test_acc is None or (
+        closed_mean_test is not None and closed_mean_test > best_closed_group_mean_test_acc
+    ):
+        if closed_mean_test is not None:
+            best_closed_group_mean_test_acc = closed_mean_test
 
     total_valid = sum(family_hash_archive_counts.values())
     if total_valid > 0:
@@ -638,15 +800,23 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
         "group_id": current_group_id,
         "group_warmup": current_group_id == 0,
         "reward_batch_index": reward_batch_index,
-        "closed_mean_train_acc": closed_mean,
-        "prev_closed_group_mean_train_acc": previous_closed_mean,
+        "closed_mean_reward_target_acc": closed_mean_reward_target,
+        "prev_closed_group_mean_reward_target_acc": previous_closed_reward_target_mean,
+        "best_closed_group_mean_reward_target_acc": best_closed_group_mean_reward_target_acc,
+        "closed_mean_train_acc": closed_mean_train,
+        "closed_mean_test_acc": closed_mean_test,
+        "closed_mean_unfrozen_train_acc": closed_mean_unfrozen_train,
+        "closed_mean_unfrozen_test_acc": closed_mean_unfrozen_test,
+        "prev_closed_group_mean_train_acc": previous_closed_train_mean,
         "best_closed_group_mean_train_acc": best_closed_group_mean_train_acc,
+        "prev_closed_group_mean_test_acc": previous_closed_test_mean,
+        "best_closed_group_mean_test_acc": best_closed_group_mean_test_acc,
         "best_closed_group_id": best_closed_group_id,
-        "improvement_vs_prev": None if closed_mean is None or previous_closed_mean is None else float(closed_mean - previous_closed_mean),
-        "improvement_vs_best": None if closed_mean is None or previous_best_mean is None else float(closed_mean - previous_best_mean),
+        "improvement_vs_prev": None if closed_mean_reward_target is None or previous_closed_reward_target_mean is None else float(closed_mean_reward_target - previous_closed_reward_target_mean),
+        "improvement_vs_best": None if closed_mean_reward_target is None or previous_best_reward_target_mean is None else float(closed_mean_reward_target - previous_best_reward_target_mean),
         "dominant_family_hash": dominant_family_hash,
         "dominant_family_share": dominant_family_share,
-        "trainable_samples": current_group_train_acc_count,
+        "trainable_samples": current_group_reward_target_count,
         "main_process_rss_gib": _read_process_rss_gib(),
         "worker_rss_gib": worker_info.get("total_rss_gib", worker_info.get("rss_gib")) if worker_info else None,
         "prev_group_feedback": _feedback_summary_payload(prev_group_feedback),
@@ -659,32 +829,47 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
             "group_id": current_group_id,
             "group_warmup": current_group_id == 0,
             "summary": asdict(summary),
-            "closed_mean_train_acc": closed_mean,
+            "closed_mean_reward_target_acc": closed_mean_reward_target,
+            "closed_mean_train_acc": closed_mean_train,
+            "closed_mean_test_acc": closed_mean_test,
         }
         _append_jsonl(feedback_path, sample_payload)
 
-    if best_closed_group_id == current_group_id and best_closed_group_mean_train_acc is not None:
+    if best_closed_group_id == current_group_id and best_closed_group_mean_reward_target_acc is not None:
         _write_json(
             best_feedback_path,
             {
                 "group_id": best_closed_group_id,
+                "best_closed_group_mean_reward_target_acc": best_closed_group_mean_reward_target_acc,
                 "best_closed_group_mean_train_acc": best_closed_group_mean_train_acc,
+                "best_closed_group_mean_test_acc": best_closed_group_mean_test_acc,
                 "feedback": _feedback_summary_payload(best_group_feedback),
             },
         )
 
-    mean_text = "n/a" if closed_mean is None else f"{closed_mean:.4f}"
-    prev_text = "n/a" if previous_closed_mean is None else f"{previous_closed_mean:.4f}"
-    best_text = "n/a" if best_closed_group_mean_train_acc is None else f"{best_closed_group_mean_train_acc:.4f}"
+    target_text = "n/a" if closed_mean_reward_target is None else f"{closed_mean_reward_target:.4f}"
+    prev_target_text = "n/a" if previous_closed_reward_target_mean is None else f"{previous_closed_reward_target_mean:.4f}"
+    best_target_text = "n/a" if best_closed_group_mean_reward_target_acc is None else f"{best_closed_group_mean_reward_target_acc:.4f}"
+    train_text = "n/a" if closed_mean_train is None else f"{closed_mean_train:.4f}"
+    test_text = "n/a" if closed_mean_test is None else f"{closed_mean_test:.4f}"
     print(
         f"[Reward Group] Closed group {current_group_id} after {GROUP_BATCH_SIZE} reward batches: "
-        f"mean_train_acc={mean_text}, prev_mean={prev_text}, best_mean={best_text}, "
-        f"trainable_samples={current_group_train_acc_count}, dominant_family={dominant_family_hash or 'n/a'} "
+        f"mean_target_acc={target_text}, prev_target={prev_target_text}, best_target={best_target_text}, "
+        f"mean_frozen_train_acc={train_text}, mean_frozen_test_acc={test_text}, "
+        f"trainable_samples={current_group_reward_target_count}, dominant_family={dominant_family_hash or 'n/a'} "
         f"({dominant_family_share:.2%})"
     )
     current_group_id += 1
-    current_group_train_acc_sum = 0.0
-    current_group_train_acc_count = 0
+    current_group_reward_target_sum = 0.0
+    current_group_reward_target_count = 0
+    current_group_frozen_train_acc_sum = 0.0
+    current_group_frozen_train_acc_count = 0
+    current_group_frozen_test_acc_sum = 0.0
+    current_group_frozen_test_acc_count = 0
+    current_group_unfrozen_train_acc_sum = 0.0
+    current_group_unfrozen_train_acc_count = 0
+    current_group_unfrozen_test_acc_sum = 0.0
+    current_group_unfrozen_test_acc_count = 0
     _reset_current_group_feedback_state()
     return group_progress_payload
 
@@ -1002,10 +1187,20 @@ def _compute_build_partial_reward(res: Dict[str, Any]) -> float:
     return build_partial
 
 
-def _compute_warmup_dense_reward(train_acc: Optional[float]) -> Optional[float]:
-    if train_acc is None:
+def _compute_warmup_dense_reward(test_acc: Optional[float]) -> Optional[float]:
+    if test_acc is None:
         return None
-    return max(0.05, min(0.30, 0.10 + 0.50 * float(train_acc)))
+    return max(0.05, min(0.30, 0.08 + 0.55 * float(test_acc)))
+
+
+def _goal_tag_match_stats(graph_info, prompt_goal_tags: Optional[List[str]]) -> Tuple[int, int, float]:
+    tags = list(prompt_goal_tags or [])
+    if not tags:
+        return 0, 0, 0.0
+    hit_count = sum(1 for tag in tags if prompt_goal_satisfied(graph_info, tag))
+    total_count = len(tags)
+    hit_rate = float(hit_count) / float(total_count) if total_count > 0 else 0.0
+    return hit_count, total_count, hit_rate
 
 
 def _discovery_failure_result(
@@ -1026,7 +1221,14 @@ def _discovery_failure_result(
         "loss_end": None,
         "loss_drop": None,
         "loss_drop_ok": False,
+        "test_acc": None,
         "train_acc": None,
+        "frozen_train_acc": None,
+        "frozen_test_acc": None,
+        "unfrozen_train_acc": None,
+        "unfrozen_test_acc": None,
+        "frozen_eval": None,
+        "unfrozen_eval": None,
         "seed_accuracy_baseline": seed_accuracy_baseline,
         "seed_train_acc_gap": None,
         "seed_train_acc_improved": False,
@@ -1036,6 +1238,9 @@ def _discovery_failure_result(
         "group_baseline_train_acc": None,
         "group_train_acc_gain": None,
         "group_train_acc_improved": False,
+        "group_baseline_reward_target_acc": None,
+        "group_reward_target_gain": None,
+        "group_reward_target_improved": False,
         "reward_batch_index": None,
         "reward_group_id": None,
         "group_warmup": False,
@@ -1047,15 +1252,28 @@ def _discovery_failure_result(
         "eval_limit_seconds": None,
         "warmup_dense_reward": None,
         "backbone_model_names": list(backbone_model_names or []),
+        "reward_target_metric": REWARD_TARGET_METRIC,
+        "reward_target_value": None,
+        "best_closed_group_mean_reward_target_acc": best_closed_group_mean_reward_target_acc,
         "best_closed_group_mean_train_acc": best_closed_group_mean_train_acc,
-        "best_train_acc_for_goal": None,
+        "best_closed_group_mean_test_acc": best_closed_group_mean_test_acc,
+        "best_reward_target_for_goal": None,
         "r_dense": 0.0,
         "r_prev_group": 0.0,
         "r_best_group": 0.0,
         "r_goal_best": 0.0,
+        "r_goal_match": 0.0,
+        "r_trainset_novelty": 0.0,
+        "r_generalization": 0.0,
         "r_batch_elite": 0.0,
         "r_repeat_family": 0.0,
         "r_plain_fuse_penalty": 0.0,
+        "r_no_progress_penalty": 0.0,
+        "goal_tag_hit_count": 0,
+        "goal_tag_total_count": 0,
+        "goal_tag_hit_rate": 0.0,
+        "prev_target_reward_target_acc": None,
+        "best_target_reward_target_acc": None,
         "open_discovery": {
             "r_primary": 0.0,
             "r_tiebreak": 0.0,
@@ -1064,12 +1282,21 @@ def _discovery_failure_result(
             "r_prev_group": 0.0,
             "r_best_group": 0.0,
             "r_goal_best": 0.0,
+            "r_goal_match": 0.0,
+            "r_generalization": 0.0,
             "r_batch_elite": 0.0,
             "r_repeat_family": 0.0,
+            "r_plain_fuse_penalty": 0.0,
+            "r_no_progress_penalty": 0.0,
             "novel_vs_trainset_family": False,
             "novel_vs_trainset_graph": False,
             "archive_snapshot_family_freq": 0,
             "batch_same_family_count": 0,
+            "reward_target_metric": REWARD_TARGET_METRIC,
+            "reward_target_value": None,
+            "goal_tag_hit_count": 0,
+            "goal_tag_total_count": 0,
+            "goal_tag_hit_rate": 0.0,
         },
         "error": error,
     }
@@ -1108,6 +1335,15 @@ def _attach_group_context(
     seed_accuracy_baseline: float,
     group_context: Dict[str, Any],
 ) -> Dict[str, Any]:
+    frozen_train_acc = _optional_float(res.get("frozen_train_acc", res.get("train_acc")))
+    frozen_test_acc = _optional_float(res.get("frozen_test_acc", res.get("test_acc", res.get("val_metric"))))
+    res.setdefault("test_acc", frozen_test_acc)
+    res.setdefault("frozen_train_acc", frozen_train_acc)
+    res.setdefault("frozen_test_acc", frozen_test_acc)
+    res.setdefault("unfrozen_train_acc", None)
+    res.setdefault("unfrozen_test_acc", None)
+    res.setdefault("frozen_eval", None)
+    res.setdefault("unfrozen_eval", None)
     res.setdefault("seed_accuracy_baseline", seed_accuracy_baseline)
     res.setdefault("seed_train_acc_gap", None)
     res.setdefault("seed_train_acc_improved", False)
@@ -1117,6 +1353,11 @@ def _attach_group_context(
     res.setdefault("group_baseline_train_acc", group_context["group_baseline_train_acc"])
     res.setdefault("group_train_acc_gain", None)
     res.setdefault("group_train_acc_improved", False)
+    res.setdefault("reward_target_metric", REWARD_TARGET_METRIC)
+    res.setdefault("reward_target_value", _result_reward_target_value(res))
+    res.setdefault("group_baseline_reward_target_acc", group_context["group_baseline_reward_target_acc"])
+    res.setdefault("group_reward_target_gain", None)
+    res.setdefault("group_reward_target_improved", False)
     res.setdefault("reward_batch_index", group_context["reward_batch_index"])
     res.setdefault("reward_group_id", group_context["reward_group_id"])
     res.setdefault("group_warmup", group_context["group_warmup"])
@@ -1125,27 +1366,39 @@ def _attach_group_context(
     res.setdefault("eval_limit_seconds", None)
     res.setdefault("warmup_dense_reward", None)
     res.setdefault("backbone_model_names", [])
+    res.setdefault("best_closed_group_mean_reward_target_acc", group_context["best_closed_group_mean_reward_target_acc"])
     res.setdefault("best_closed_group_mean_train_acc", group_context["best_closed_group_mean_train_acc"])
-    res.setdefault("best_train_acc_for_goal", None)
+    res.setdefault("best_closed_group_mean_test_acc", group_context["best_closed_group_mean_test_acc"])
+    res.setdefault("best_reward_target_for_goal", None)
     res.setdefault("r_dense", 0.0)
     res.setdefault("r_prev_group", 0.0)
     res.setdefault("r_best_group", 0.0)
     res.setdefault("r_goal_best", 0.0)
+    res.setdefault("r_goal_match", 0.0)
+    res.setdefault("r_trainset_novelty", 0.0)
+    res.setdefault("r_generalization", 0.0)
     res.setdefault("r_batch_elite", 0.0)
     res.setdefault("r_repeat_family", 0.0)
     res.setdefault("r_plain_fuse_penalty", 0.0)
     res.setdefault("r_no_progress_penalty", 0.0)
+    res.setdefault("goal_tag_hit_count", 0)
+    res.setdefault("goal_tag_total_count", 0)
+    res.setdefault("goal_tag_hit_rate", 0.0)
+    res.setdefault("prev_target_reward_target_acc", None)
+    res.setdefault("best_target_reward_target_acc", None)
     res.setdefault("prev_target_train_acc", None)
     res.setdefault("best_target_train_acc", None)
 
     open_discovery = res.setdefault("open_discovery", {})
     open_discovery.setdefault("r_primary", 0.0)
     open_discovery.setdefault("r_tiebreak", 0.0)
-    open_discovery.setdefault("r_trainset_novelty", 0.0)
+    open_discovery.setdefault("r_trainset_novelty", res.get("r_trainset_novelty", 0.0))
     open_discovery.setdefault("r_dense", res.get("r_dense", 0.0))
     open_discovery.setdefault("r_prev_group", res.get("r_prev_group", 0.0))
     open_discovery.setdefault("r_best_group", res.get("r_best_group", 0.0))
     open_discovery.setdefault("r_goal_best", res.get("r_goal_best", 0.0))
+    open_discovery.setdefault("r_goal_match", res.get("r_goal_match", 0.0))
+    open_discovery.setdefault("r_generalization", res.get("r_generalization", 0.0))
     open_discovery.setdefault("r_batch_elite", res.get("r_batch_elite", 0.0))
     open_discovery.setdefault("r_repeat_family", res.get("r_repeat_family", 0.0))
     open_discovery.setdefault("r_plain_fuse_penalty", res.get("r_plain_fuse_penalty", 0.0))
@@ -1155,11 +1408,23 @@ def _attach_group_context(
     open_discovery.setdefault("archive_snapshot_family_freq", 0)
     open_discovery.setdefault("batch_same_family_count", 0)
     open_discovery.setdefault("group_baseline_train_acc", group_context["group_baseline_train_acc"])
+    open_discovery.setdefault("group_baseline_reward_target_acc", group_context["group_baseline_reward_target_acc"])
     open_discovery.setdefault("best_closed_group_mean_train_acc", group_context["best_closed_group_mean_train_acc"])
+    open_discovery.setdefault("best_closed_group_mean_reward_target_acc", group_context["best_closed_group_mean_reward_target_acc"])
+    open_discovery.setdefault("best_closed_group_mean_test_acc", group_context["best_closed_group_mean_test_acc"])
     open_discovery.setdefault("prev_target_train_acc", res.get("prev_target_train_acc"))
     open_discovery.setdefault("best_target_train_acc", res.get("best_target_train_acc"))
     open_discovery.setdefault("group_train_acc_gain", res.get("group_train_acc_gain"))
     open_discovery.setdefault("group_train_acc_improved", res.get("group_train_acc_improved", False))
+    open_discovery.setdefault("reward_target_metric", res.get("reward_target_metric", REWARD_TARGET_METRIC))
+    open_discovery.setdefault("reward_target_value", res.get("reward_target_value"))
+    open_discovery.setdefault("group_reward_target_gain", res.get("group_reward_target_gain"))
+    open_discovery.setdefault("group_reward_target_improved", res.get("group_reward_target_improved", False))
+    open_discovery.setdefault("goal_tag_hit_count", res.get("goal_tag_hit_count", 0))
+    open_discovery.setdefault("goal_tag_total_count", res.get("goal_tag_total_count", 0))
+    open_discovery.setdefault("goal_tag_hit_rate", res.get("goal_tag_hit_rate", 0.0))
+    open_discovery.setdefault("prev_target_reward_target_acc", res.get("prev_target_reward_target_acc"))
+    open_discovery.setdefault("best_target_reward_target_acc", res.get("best_target_reward_target_acc"))
     open_discovery.setdefault("reward_batch_index", group_context["reward_batch_index"])
     open_discovery.setdefault("reward_group_id", group_context["reward_group_id"])
     open_discovery.setdefault("group_warmup", group_context["group_warmup"])
@@ -1177,6 +1442,7 @@ def base_discovery_reward_fn(
     prompt_goal_tags: List[str] = None,
     archive_snapshot_family_counts: Optional[Dict[str, int]] = None,
     group_baseline_train_acc: Optional[float] = None,
+    group_baseline_reward_target_acc: Optional[float] = None,
     reward_batch_index: Optional[int] = None,
     reward_group_id: Optional[int] = None,
     group_warmup: bool = False,
@@ -1246,55 +1512,91 @@ def base_discovery_reward_fn(
 
     novel_vs_trainset_family = False
     novel_vs_trainset_graph = False
-    train_acc = res.get("train_acc")
+    frozen_train_acc = _optional_float(res.get("frozen_train_acc", res.get("train_acc")))
+    frozen_test_acc = _optional_float(res.get("frozen_test_acc", res.get("test_acc", res.get("val_metric"))))
+    unfrozen_train_acc = _optional_float(res.get("unfrozen_train_acc"))
+    unfrozen_test_acc = _optional_float(res.get("unfrozen_test_acc"))
+    train_acc = frozen_train_acc
+    test_acc = frozen_test_acc
+    reward_target_value = frozen_test_acc
     goal_key = primary_goal_key(prompt_goal_tags or [])
-    best_train_acc_for_goal = best_train_acc_by_goal.get(goal_key)
+    best_reward_target_for_goal = best_reward_target_by_goal.get(goal_key)
     group_train_acc_gain = None
     group_train_acc_improved = False
+    group_reward_target_gain = None
+    group_reward_target_improved = False
     r_primary = 0.0
     r_tiebreak = 0.0
     r_dense = 0.0
     r_prev_group = 0.0
     r_best_group = 0.0
     r_goal_best = 0.0
+    r_goal_match = 0.0
+    r_trainset_novelty = 0.0
+    r_generalization = 0.0
     r_batch_elite = 0.0
     r_repeat_family = 0.0
     r_plain_fuse_penalty = 0.0
     r_no_progress_penalty = 0.0
     trainable_candidate = _is_trainable_candidate(res, graph_info)
+    goal_tag_hit_count, goal_tag_total_count, goal_tag_hit_rate = _goal_tag_match_stats(graph_info, prompt_goal_tags)
+    effective_group_baseline_reward_target_acc = (
+        group_baseline_reward_target_acc
+        if group_baseline_reward_target_acc is not None
+        else prev_closed_group_mean_reward_target_acc
+    )
     prev_target_train_acc = None
     best_target_train_acc = None
+    prev_target_reward_target_acc = None
+    best_target_reward_target_acc = None
     beat_prev_target = False
     beat_best_target = False
 
     if (train_acc is not None) and (group_baseline_train_acc is not None) and (not group_warmup):
         group_train_acc_gain = float(train_acc - group_baseline_train_acc)
         group_train_acc_improved = bool(group_train_acc_gain >= GROUP_IMPROVEMENT_DELTA)
+    if (reward_target_value is not None) and (effective_group_baseline_reward_target_acc is not None) and (not group_warmup):
+        group_reward_target_gain = float(reward_target_value - effective_group_baseline_reward_target_acc)
+        group_reward_target_improved = bool(group_reward_target_gain >= GROUP_IMPROVEMENT_DELTA)
 
-    if trainable_candidate:
+    if trainable_candidate and reward_target_value is not None:
         train_acc_value = float(train_acc or 0.0)
-        r_dense = _clip(0.04 + 0.18 * train_acc_value, 0.02, 0.16)
+        reward_target_float = float(reward_target_value)
+        r_dense = _clip(
+            0.03 + 0.20 * reward_target_float + 0.04 * max(0.0, train_acc_value - 0.50),
+            0.02,
+            0.22,
+        )
         if (not group_warmup) and (group_baseline_train_acc is not None):
             prev_target_train_acc = float(group_baseline_train_acc) + GROUP_IMPROVEMENT_DELTA
-            beat_prev_target = train_acc_value >= prev_target_train_acc
-            r_prev_group = _clip(10.0 * (train_acc_value - prev_target_train_acc), -1.8, 1.8)
         if (not group_warmup) and (best_closed_group_mean_train_acc is not None):
             best_target_train_acc = float(best_closed_group_mean_train_acc) + BEST_GROUP_REFRESH_DELTA
-            beat_best_target = train_acc_value >= best_target_train_acc
+        if (not group_warmup) and (effective_group_baseline_reward_target_acc is not None):
+            prev_target_reward_target_acc = float(effective_group_baseline_reward_target_acc) + GROUP_IMPROVEMENT_DELTA
+            beat_prev_target = reward_target_float >= prev_target_reward_target_acc
+            r_prev_group = _clip(
+                10.0 * (reward_target_float - prev_target_reward_target_acc),
+                -1.8,
+                1.8,
+            )
+        if (not group_warmup) and (best_closed_group_mean_reward_target_acc is not None):
+            best_target_reward_target_acc = float(best_closed_group_mean_reward_target_acc) + BEST_GROUP_REFRESH_DELTA
+            beat_best_target = reward_target_float >= best_target_reward_target_acc
             r_best_group = _clip(
-                12.0 * (train_acc_value - best_target_train_acc),
+                12.0 * (reward_target_float - best_target_reward_target_acc),
                 -1.2,
                 1.2,
             )
         if (
             (not group_warmup)
-            and (best_train_acc_for_goal is not None)
-            and train_acc_value >= float(best_train_acc_for_goal) + GOAL_REFRESH_DELTA
+            and (best_reward_target_for_goal is not None)
+            and reward_target_float >= float(best_reward_target_for_goal) + GOAL_REFRESH_DELTA
         ):
             r_goal_best = GOAL_REFRESH_BONUS
+        r_goal_match = GOAL_MATCH_REWARD_SCALE * goal_tag_hit_rate
         if (
             (not group_warmup)
-            and prev_target_train_acc is not None
+            and prev_target_reward_target_acc is not None
             and not beat_prev_target
         ):
             r_no_progress_penalty = NO_PROGRESS_PENALTY
@@ -1304,7 +1606,7 @@ def base_discovery_reward_fn(
             and graph_info.parse_ok
             and graph_info.family_hash == dominant_family_hash
             and (
-                best_target_train_acc is None
+                best_target_reward_target_acc is None
                 or not beat_best_target
             )
         ):
@@ -1313,7 +1615,7 @@ def base_discovery_reward_fn(
             (not group_warmup)
             and graph_info.is_plain_parallel_triple
             and (
-                prev_target_train_acc is None
+                prev_target_reward_target_acc is None
                 or not beat_prev_target
             )
         ):
@@ -1321,47 +1623,82 @@ def base_discovery_reward_fn(
 
         novel_vs_trainset_family = graph_info.family_hash not in train_family_hashes
         novel_vs_trainset_graph = graph_info.graph_hash not in train_graph_hashes
+        if novel_vs_trainset_family:
+            r_trainset_novelty = TRAINSET_NOVEL_FAMILY_BONUS
+        elif novel_vs_trainset_graph:
+            r_trainset_novelty = TRAINSET_NOVEL_GRAPH_BONUS
+        if (frozen_train_acc is not None) and (frozen_test_acc is not None):
+            overfit_gap = max(0.0, float(frozen_train_acc) - float(frozen_test_acc) - GENERALIZATION_GAP_TOLERANCE)
+            r_generalization = _clip(
+                -GENERALIZATION_PENALTY_SCALE * overfit_gap,
+                GENERALIZATION_PENALTY_CAP,
+                0.0,
+            )
 
     r_primary = (
         r_dense
         + r_prev_group
         + r_best_group
         + r_goal_best
+        + r_generalization
         + r_batch_elite
         + r_repeat_family
         + r_plain_fuse_penalty
         + r_no_progress_penalty
     )
+    r_tiebreak = r_goal_match + r_trainset_novelty
 
     warmup_dense_reward = None
     if group_warmup and trainable_candidate:
-        warmup_dense_reward = _compute_warmup_dense_reward(res.get("train_acc"))
+        warmup_dense_reward = _compute_warmup_dense_reward(reward_target_value)
         total_reward = float(warmup_dense_reward or 0.0)
     else:
         total_reward = _clip(r_primary + r_tiebreak, -2.0, 2.0)
-        if trainable_candidate and prev_target_train_acc is not None and not beat_prev_target:
+        if trainable_candidate and prev_target_reward_target_acc is not None and not beat_prev_target:
             total_reward = min(total_reward, NON_IMPROVING_REWARD_CAP)
     total_reward = _apply_trainability_clamp(res, total_reward, graph_info)
 
     res['reward'] = total_reward
+    res['test_acc'] = test_acc
+    res['train_acc'] = train_acc
+    res['frozen_train_acc'] = frozen_train_acc
+    res['frozen_test_acc'] = frozen_test_acc
+    res['unfrozen_train_acc'] = unfrozen_train_acc
+    res['unfrozen_test_acc'] = unfrozen_test_acc
+    res['val_metric'] = frozen_test_acc
     res['seed_accuracy_baseline'] = seed_accuracy_baseline
     res['group_baseline_train_acc'] = group_baseline_train_acc
     res['group_train_acc_gain'] = group_train_acc_gain
     res['group_train_acc_improved'] = group_train_acc_improved
+    res['reward_target_metric'] = REWARD_TARGET_METRIC
+    res['reward_target_value'] = reward_target_value
+    res['group_baseline_reward_target_acc'] = effective_group_baseline_reward_target_acc
+    res['group_reward_target_gain'] = group_reward_target_gain
+    res['group_reward_target_improved'] = group_reward_target_improved
     res['reward_batch_index'] = reward_batch_index
     res['reward_group_id'] = reward_group_id
     res['group_warmup'] = group_warmup
     res['warmup_dense_reward'] = warmup_dense_reward
+    res['best_closed_group_mean_reward_target_acc'] = best_closed_group_mean_reward_target_acc
     res['best_closed_group_mean_train_acc'] = best_closed_group_mean_train_acc
-    res['best_train_acc_for_goal'] = best_train_acc_for_goal
+    res['best_closed_group_mean_test_acc'] = best_closed_group_mean_test_acc
+    res['best_reward_target_for_goal'] = best_reward_target_for_goal
     res['r_dense'] = r_dense
     res['r_prev_group'] = r_prev_group
     res['r_best_group'] = r_best_group
     res['r_goal_best'] = r_goal_best
+    res['r_goal_match'] = r_goal_match
+    res['r_trainset_novelty'] = r_trainset_novelty
+    res['r_generalization'] = r_generalization
     res['r_batch_elite'] = r_batch_elite
     res['r_repeat_family'] = r_repeat_family
     res['r_plain_fuse_penalty'] = r_plain_fuse_penalty
     res['r_no_progress_penalty'] = r_no_progress_penalty
+    res['goal_tag_hit_count'] = goal_tag_hit_count
+    res['goal_tag_total_count'] = goal_tag_total_count
+    res['goal_tag_hit_rate'] = goal_tag_hit_rate
+    res['prev_target_reward_target_acc'] = prev_target_reward_target_acc
+    res['best_target_reward_target_acc'] = best_target_reward_target_acc
     res['prev_target_train_acc'] = prev_target_train_acc
     res['best_target_train_acc'] = best_target_train_acc
     res['signature'] = f"{normalize_pattern_name(effective_pattern_name)}_{graph_info.graph_hash[:6]}"
@@ -1376,22 +1713,36 @@ def base_discovery_reward_fn(
     res['open_discovery'] = {
         'r_primary': r_primary,
         'r_tiebreak': r_tiebreak,
-        'r_trainset_novelty': r_tiebreak,
+        'r_trainset_novelty': r_trainset_novelty,
         'r_dense': r_dense,
         'r_prev_group': r_prev_group,
         'r_best_group': r_best_group,
         'r_goal_best': r_goal_best,
+        'r_goal_match': r_goal_match,
+        'r_generalization': r_generalization,
         'r_batch_elite': r_batch_elite,
         'r_repeat_family': r_repeat_family,
         'r_plain_fuse_penalty': r_plain_fuse_penalty,
         'r_no_progress_penalty': r_no_progress_penalty,
         'group_baseline_train_acc': group_baseline_train_acc,
+        'group_baseline_reward_target_acc': effective_group_baseline_reward_target_acc,
+        'reward_target_metric': REWARD_TARGET_METRIC,
+        'reward_target_value': reward_target_value,
+        'best_closed_group_mean_reward_target_acc': best_closed_group_mean_reward_target_acc,
         'best_closed_group_mean_train_acc': best_closed_group_mean_train_acc,
-        'best_train_acc_for_goal': best_train_acc_for_goal,
+        'best_closed_group_mean_test_acc': best_closed_group_mean_test_acc,
+        'best_reward_target_for_goal': best_reward_target_for_goal,
+        'goal_tag_hit_count': goal_tag_hit_count,
+        'goal_tag_total_count': goal_tag_total_count,
+        'goal_tag_hit_rate': goal_tag_hit_rate,
+        'prev_target_reward_target_acc': prev_target_reward_target_acc,
+        'best_target_reward_target_acc': best_target_reward_target_acc,
         'prev_target_train_acc': prev_target_train_acc,
         'best_target_train_acc': best_target_train_acc,
         'group_train_acc_gain': group_train_acc_gain,
         'group_train_acc_improved': group_train_acc_improved,
+        'group_reward_target_gain': group_reward_target_gain,
+        'group_reward_target_improved': group_reward_target_improved,
         'reward_batch_index': reward_batch_index,
         'reward_group_id': reward_group_id,
         'group_warmup': group_warmup,
@@ -1432,6 +1783,7 @@ def reward_fn(
     prompt_goal_tags: List[str] = None,
     archive_snapshot_family_counts: Optional[Dict[str, int]] = None,
     group_baseline_train_acc: Optional[float] = None,
+    group_baseline_reward_target_acc: Optional[float] = None,
     reward_batch_index: Optional[int] = None,
     reward_group_id: Optional[int] = None,
     group_warmup: bool = False,
@@ -1449,6 +1801,7 @@ def reward_fn(
         prompt_goal_tags=prompt_goal_tags,
         archive_snapshot_family_counts=archive_snapshot_family_counts,
         group_baseline_train_acc=group_baseline_train_acc,
+        group_baseline_reward_target_acc=group_baseline_reward_target_acc,
         reward_batch_index=reward_batch_index,
         reward_group_id=reward_group_id,
         group_warmup=group_warmup,
@@ -1458,22 +1811,22 @@ def reward_fn(
 
 
 def _apply_batch_elite_bonuses(scored_results: List[Dict[str, Any]], group_context: Dict[str, Any]) -> None:
-    if group_context["group_warmup"] or group_context["group_baseline_train_acc"] is None:
+    if group_context["group_warmup"] or group_context["group_baseline_reward_target_acc"] is None:
         return
 
     eligible: List[Tuple[float, Dict[str, Any]]] = []
-    threshold = float(group_context["group_baseline_train_acc"]) + GROUP_IMPROVEMENT_DELTA
+    threshold = float(group_context["group_baseline_reward_target_acc"]) + GROUP_IMPROVEMENT_DELTA
     for item in scored_results:
         res = item["result"]
         graph_info = item["graph_info"]
-        train_acc = res.get("train_acc")
+        reward_target_value = _result_reward_target_value(res)
         if not _is_trainable_candidate(res, graph_info):
             continue
-        if train_acc is None:
+        if reward_target_value is None:
             continue
-        train_acc_value = float(train_acc)
-        if train_acc_value >= threshold:
-            eligible.append((train_acc_value, item))
+        reward_target_float = float(reward_target_value)
+        if reward_target_float >= threshold:
+            eligible.append((reward_target_float, item))
 
     eligible.sort(key=lambda pair: pair[0], reverse=True)
     for rank, (_, item) in enumerate(eligible[:2]):
@@ -1585,6 +1938,7 @@ def compute_reward(prompts, completions, **kwargs):
                     prompt_goal_tags=batch_prompt_goal_tags[i],
                     archive_snapshot_family_counts=archive_snapshot_family_counts,
                     group_baseline_train_acc=group_context["group_baseline_train_acc"],
+                    group_baseline_reward_target_acc=group_context["group_baseline_reward_target_acc"],
                     reward_batch_index=group_context["reward_batch_index"],
                     reward_group_id=group_context["reward_group_id"],
                     group_warmup=group_context["group_warmup"],
@@ -1655,7 +2009,7 @@ def compute_reward(prompts, completions, **kwargs):
 
         _apply_batch_elite_bonuses(scored_results, group_context)
 
-        current_batch_train_accs: List[float] = []
+        current_batch_results: List[Dict[str, Any]] = []
         for item in scored_results:
             i = item["index"]
             prompt = item["prompt"]
@@ -1669,9 +2023,7 @@ def compute_reward(prompts, completions, **kwargs):
 
             is_trainable = _is_trainable_candidate(res, graph_info)
             if is_trainable:
-                train_acc_value = res.get("train_acc")
-                if train_acc_value is not None:
-                    current_batch_train_accs.append(float(train_acc_value))
+                current_batch_results.append(res)
                 _record_current_group_trainable_sample(goal_key, res, graph_info)
                 graph_archive_counts[graph_info.graph_hash] += 1
                 family_archive_counts[graph_info.family_id] += 1
@@ -1680,7 +2032,7 @@ def compute_reward(prompts, completions, **kwargs):
                 get_goal_counter(goal_graph_archive_counts, goal_key)[graph_info.graph_hash] += 1
                 get_goal_counter(goal_family_hash_archive_counts, goal_key)[graph_info.family_hash] += 1
                 current_best = family_metric_best.get(graph_info.family_hash, float("-inf"))
-                gain_value = res.get("group_train_acc_gain")
+                gain_value = res.get("group_reward_target_gain")
                 family_metric_best[graph_info.family_hash] = max(
                     current_best,
                     float(gain_value if gain_value is not None else float("-inf")),
@@ -1698,7 +2050,7 @@ def compute_reward(prompts, completions, **kwargs):
                 and res.get('backward_ok')
                 and res.get('loss_drop_ok')
                 and not res.get("group_warmup")
-                and float(res.get("group_train_acc_gain") or 0.0) >= GROUP_IMPROVEMENT_DELTA
+                and float(res.get("group_reward_target_gain") or 0.0) >= GROUP_IMPROVEMENT_DELTA
                 and saved_graph_counts[graph_info.graph_hash] == 0
                 and saved_family_hash_counts[graph_info.family_hash] < family_save_cap(graph_info)
                 and get_goal_counter(saved_goal_family_hash_counts, goal_key)[graph_info.family_hash] < goal_family_save_cap(graph_info)
@@ -1728,7 +2080,7 @@ def compute_reward(prompts, completions, **kwargs):
 
             code_logger.log_generation(prompt, completion, score, res)
 
-        update_current_group_train_acc(current_batch_train_accs)
+        update_current_group_metrics(current_batch_results)
         group_close_result = close_reward_group_if_needed()
         if group_close_result is not None:
             code_logger.log_to_file(f"[Reward Group] {group_close_result}")

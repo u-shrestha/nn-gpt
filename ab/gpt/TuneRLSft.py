@@ -35,6 +35,9 @@ SFT_EVAL_TRAIN_SUBSET = 256
 SFT_EVAL_VAL_SUBSET = 128
 SFT_EVAL_TRAIN_EPOCHS = 1
 SFT_EVAL_VAL_BATCHES = 2
+SFT_EVAL_FULL_TEST_ACC = True
+SFT_EVAL_RUN_UNFROZEN = True
+SFT_EVAL_LIMIT_SECONDS = 900
 SFT_EVAL_DATA_ROOT = "data_v2"
 SFT_EVAL_DOWNLOAD = True
 SFT_VAL_METRIC_BASELINE = 0.10
@@ -133,6 +136,7 @@ def _cifar_eval_error(error: Exception, *, seed_accuracy_baseline: float | None 
             "r_critic": 0.0,
             "r_kl": 0.0,
         },
+        "test_acc": None,
         "val_metric": None,
         "built_ok": False,
         "forward_ok": False,
@@ -163,6 +167,14 @@ def _cifar_eval_error(error: Exception, *, seed_accuracy_baseline: float | None 
         "eval_limit_seconds": None,
         "warmup_dense_reward": None,
         "backbone_model_names": [],
+        "frozen_train_acc": None,
+        "frozen_test_acc": None,
+        "unfrozen_train_acc": None,
+        "unfrozen_test_acc": None,
+        "frozen_eval": None,
+        "unfrozen_eval": None,
+        "reward_target_metric": "frozen_test_acc",
+        "reward_target_value": None,
         "error": error_msg,
     }
 
@@ -299,6 +311,10 @@ def evaluate_code_and_reward_cifar(
                 kl_div=None,
                 critic_fn=None,
                 weights=None,
+                eval_limit_seconds=SFT_EVAL_LIMIT_SECONDS,
+                run_unfrozen_backbone_eval=SFT_EVAL_RUN_UNFROZEN,
+                full_test_acc=SFT_EVAL_FULL_TEST_ACC,
+                reward_target_metric="frozen_test_acc",
             )
         else:
             cfg = RewardUtil.EvalConfig(
@@ -319,6 +335,9 @@ def evaluate_code_and_reward_cifar(
                 weights=cfg.weights,
                 eval_limit_seconds=cfg.eval_limit_seconds,
                 budget_probe_batches=cfg.budget_probe_batches,
+                run_unfrozen_backbone_eval=cfg.run_unfrozen_backbone_eval,
+                full_test_acc=cfg.full_test_acc,
+                reward_target_metric=cfg.reward_target_metric,
             )
 
         return RewardUtil.evaluate_code_and_reward(
@@ -379,6 +398,7 @@ def sft_reward_fn(
     prompt_goal_tags: List[str] = None,
     archive_snapshot_family_counts: Dict[str, int] = None,
     group_baseline_train_acc: float | None = None,
+    group_baseline_reward_target_acc: float | None = None,
     reward_batch_index: int | None = None,
     reward_group_id: int | None = None,
     group_warmup: bool = False,
@@ -395,6 +415,7 @@ def sft_reward_fn(
         prompt_goal_tags=prompt_goal_tags,
         archive_snapshot_family_counts=archive_snapshot_family_counts,
         group_baseline_train_acc=group_baseline_train_acc,
+        group_baseline_reward_target_acc=group_baseline_reward_target_acc,
         reward_batch_index=reward_batch_index,
         reward_group_id=reward_group_id,
         group_warmup=group_warmup,
@@ -725,8 +746,11 @@ def main() -> None:
     print(f"[SFT RL] Temperature: {SFT_TEMPERATURE}")
     print(
         f"[SFT RL] CIFAR-10 eval: resize={SFT_EVAL_IMAGE_SIZE}, batch<={SFT_EVAL_BATCH_SIZE}, "
-        f"train_subset={SFT_EVAL_TRAIN_SUBSET}, val_subset={SFT_EVAL_VAL_SUBSET}, "
+        f"train_subset={SFT_EVAL_TRAIN_SUBSET}, "
+        f"{'test_subset=full' if SFT_EVAL_FULL_TEST_ACC else f'val_subset={SFT_EVAL_VAL_SUBSET}'}, "
         f"train_epochs={SFT_EVAL_TRAIN_EPOCHS}, val_batches={SFT_EVAL_VAL_BATCHES}, "
+        f"full_test_acc={SFT_EVAL_FULL_TEST_ACC}, run_unfrozen={SFT_EVAL_RUN_UNFROZEN}, "
+        f"eval_limit_seconds={SFT_EVAL_LIMIT_SECONDS}, "
         f"baseline={SFT_VAL_METRIC_BASELINE:.2f}"
     )
     print(f"[SFT RL] Save RL adapter: {SFT_SAVE_RL_MODEL}")
