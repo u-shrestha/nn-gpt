@@ -37,6 +37,73 @@ class EvalTimeException(RuntimeError):
         )
 
 
+def _safe_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return int(default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _visible_cuda_device_tokens() -> Optional[list[str]]:
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if raw in {"", "-1"}:
+        return []
+    return [token.strip() for token in raw.split(",") if token.strip()]
+
+
+def get_distributed_runtime_info() -> Dict[str, Any]:
+    visible_gpu_count = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
+    world_size = max(1, _safe_int_env("WORLD_SIZE", 1))
+    rank = _safe_int_env("RANK", 0)
+    raw_local_rank = _safe_int_env("LOCAL_RANK", 0)
+
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        try:
+            world_size = max(world_size, int(torch.distributed.get_world_size()))
+        except Exception:
+            pass
+        try:
+            rank = int(torch.distributed.get_rank())
+        except Exception:
+            pass
+
+    if visible_gpu_count <= 0:
+        local_rank = 0
+    elif visible_gpu_count == 1:
+        local_rank = 0
+    elif 0 <= raw_local_rank < visible_gpu_count:
+        local_rank = raw_local_rank
+    else:
+        local_rank = 0
+
+    visible_gpu_tokens = _visible_cuda_device_tokens()
+    train_gpu = local_rank if visible_gpu_count > 0 else None
+    train_gpu_token = None
+    if train_gpu is not None:
+        if visible_gpu_tokens and train_gpu < len(visible_gpu_tokens):
+            train_gpu_token = visible_gpu_tokens[train_gpu]
+        else:
+            train_gpu_token = str(int(train_gpu))
+
+    return {
+        "distributed": world_size > 1,
+        "world_size": world_size,
+        "rank": rank,
+        "raw_local_rank": raw_local_rank,
+        "local_rank": local_rank,
+        "visible_gpu_count": visible_gpu_count,
+        "visible_gpu_tokens": list(visible_gpu_tokens or []),
+        "train_gpu": train_gpu,
+        "train_gpu_token": train_gpu_token,
+    }
+
+
 class EvalTimeBudget:
     def __init__(self, cfg: "EvalConfig") -> None:
         self.eval_limit_seconds = float(cfg.eval_limit_seconds)
@@ -120,15 +187,42 @@ class EvalTimeBudget:
 
 
 def get_reward_worker_plan() -> Dict[str, Any]:
-    visible_gpu_count = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
+    runtime = get_distributed_runtime_info()
+    visible_gpu_count = int(runtime["visible_gpu_count"])
     if visible_gpu_count <= 0:
         return {
             "mode": "cpu_fallback",
             "visible_gpu_count": 0,
             "train_gpu": None,
             "reward_gpu_indices": [],
+            "reward_gpu_tokens": [],
             "shared_train_gpu": False,
             "pool_size": 1,
+            "distributed": bool(runtime["distributed"]),
+            "rank": int(runtime["rank"]),
+            "local_rank": int(runtime["local_rank"]),
+            "world_size": int(runtime["world_size"]),
+        }
+    if runtime["distributed"]:
+        train_gpu = runtime["train_gpu"]
+        reward_gpu_indices = [int(train_gpu)] if train_gpu is not None else []
+        reward_gpu_tokens = (
+            [str(runtime["train_gpu_token"])]
+            if runtime["train_gpu_token"] is not None
+            else []
+        )
+        return {
+            "mode": "distributed_local_gpu",
+            "visible_gpu_count": visible_gpu_count,
+            "train_gpu": train_gpu,
+            "reward_gpu_indices": reward_gpu_indices,
+            "reward_gpu_tokens": reward_gpu_tokens,
+            "shared_train_gpu": True,
+            "pool_size": max(1, len(reward_gpu_indices)),
+            "distributed": True,
+            "rank": int(runtime["rank"]),
+            "local_rank": int(runtime["local_rank"]),
+            "world_size": int(runtime["world_size"]),
         }
     if visible_gpu_count == 1:
         return {
@@ -136,31 +230,51 @@ def get_reward_worker_plan() -> Dict[str, Any]:
             "visible_gpu_count": 1,
             "train_gpu": 0,
             "reward_gpu_indices": [0],
+            "reward_gpu_tokens": [str(runtime["train_gpu_token"] or "0")],
             "shared_train_gpu": True,
             "pool_size": 1,
+            "distributed": False,
+            "rank": int(runtime["rank"]),
+            "local_rank": int(runtime["local_rank"]),
+            "world_size": int(runtime["world_size"]),
         }
     reward_gpu_indices = list(range(visible_gpu_count))
+    reward_gpu_tokens = list(runtime["visible_gpu_tokens"] or [str(index) for index in reward_gpu_indices])
     return {
         "mode": "multi_gpu_pool",
         "visible_gpu_count": visible_gpu_count,
         "train_gpu": 0,
         "reward_gpu_indices": reward_gpu_indices,
+        "reward_gpu_tokens": reward_gpu_tokens,
         "shared_train_gpu": True,
         "pool_size": len(reward_gpu_indices),
+        "distributed": False,
+        "rank": int(runtime["rank"]),
+        "local_rank": int(runtime["local_rank"]),
+        "world_size": int(runtime["world_size"]),
     }
 
 
 class _PersistentEvalWorkerSession:
-    def __init__(self, *, assigned_gpu: Optional[int], worker_slot: int) -> None:
+    def __init__(
+        self,
+        *,
+        assigned_gpu: Optional[int],
+        assigned_cuda_visible_device: Optional[str],
+        worker_slot: int,
+    ) -> None:
         from ab.gpt.util.reward_worker_bootstrap import reward_worker_main
 
         self._assigned_gpu = assigned_gpu
+        self._assigned_cuda_visible_device = (
+            None if assigned_cuda_visible_device is None else str(assigned_cuda_visible_device)
+        )
         self._worker_slot = int(worker_slot)
         self.ctx = mp.get_context("spawn")
         self._parent_conn, child_conn = self.ctx.Pipe()
         self._process = self.ctx.Process(
             target=reward_worker_main,
-            args=(child_conn, assigned_gpu),
+            args=(child_conn, assigned_gpu, self._assigned_cuda_visible_device),
         )
         self._process.start()
         child_conn.close()
@@ -170,6 +284,7 @@ class _PersistentEvalWorkerSession:
             f"slot={self._worker_slot} "
             f"pid={self._worker_info['pid']}, "
             f"assigned_gpu={self._worker_info['assigned_gpu']}, "
+            f"assigned_cuda_visible_device={self._worker_info['assigned_cuda_visible_device']!r}, "
             f"worker_device={self._worker_info['worker_device']}, "
             f"cuda_visible_devices={self._worker_info['cuda_visible_devices']!r}, "
             f"cuda_available={self._worker_info['cuda_available']}, "
@@ -238,6 +353,7 @@ class _PersistentEvalWorkerSession:
         required_keys = {
             "pid",
             "assigned_gpu",
+            "assigned_cuda_visible_device",
             "worker_device",
             "cuda_visible_devices",
             "cuda_available",
@@ -254,6 +370,7 @@ class _PersistentEvalWorkerSession:
         cuda_visible_devices = str(response["cuda_visible_devices"]).strip()
         cuda_device_count = int(response["cuda_device_count"])
         assigned_gpu = response["assigned_gpu"]
+        assigned_cuda_visible_device = response["assigned_cuda_visible_device"]
         worker_device = str(response["worker_device"])
         if self._assigned_gpu is None:
             if worker_device != "cpu":
@@ -273,6 +390,16 @@ class _PersistentEvalWorkerSession:
                 raise PersistentEvalWorkerError(
                     f"Reward worker slot {self._worker_slot} bound unexpected GPU {assigned_gpu!r}, expected {self._assigned_gpu!r}"
                 )
+            if (
+                self._assigned_cuda_visible_device is not None
+                and cuda_visible_devices != self._assigned_cuda_visible_device
+            ):
+                self.close(force=True)
+                raise PersistentEvalWorkerError(
+                    "Reward worker slot "
+                    f"{self._worker_slot} bound unexpected CUDA_VISIBLE_DEVICES={cuda_visible_devices!r}, "
+                    f"expected {self._assigned_cuda_visible_device!r}"
+                )
             if worker_device != "cuda:0":
                 self.close(force=True)
                 raise PersistentEvalWorkerError(
@@ -287,6 +414,9 @@ class _PersistentEvalWorkerSession:
         return {
             "pid": int(response["pid"]),
             "assigned_gpu": assigned_gpu,
+            "assigned_cuda_visible_device": (
+                None if assigned_cuda_visible_device is None else str(assigned_cuda_visible_device)
+            ),
             "worker_device": worker_device,
             "cuda_visible_devices": str(response["cuda_visible_devices"]),
             "cuda_available": bool(response["cuda_available"]),
@@ -326,23 +456,43 @@ class _EvalWorkerPool:
         self._sessions: list[_PersistentEvalWorkerSession] = []
         try:
             if self._plan["reward_gpu_indices"]:
+                reward_gpu_tokens = list(self._plan.get("reward_gpu_tokens") or [])
                 for slot, assigned_gpu in enumerate(self._plan["reward_gpu_indices"]):
+                    assigned_cuda_visible_device = (
+                        reward_gpu_tokens[slot]
+                        if slot < len(reward_gpu_tokens)
+                        else str(int(assigned_gpu))
+                    )
                     self._sessions.append(
                         _PersistentEvalWorkerSession(
                             assigned_gpu=int(assigned_gpu),
+                            assigned_cuda_visible_device=assigned_cuda_visible_device,
                             worker_slot=slot,
                         )
                     )
             else:
-                self._sessions.append(_PersistentEvalWorkerSession(assigned_gpu=None, worker_slot=0))
+                self._sessions.append(
+                    _PersistentEvalWorkerSession(
+                        assigned_gpu=None,
+                        assigned_cuda_visible_device=None,
+                        worker_slot=0,
+                    )
+                )
         except Exception:
             for session in self._sessions:
                 session.close(force=True)
-            self._sessions = [_PersistentEvalWorkerSession(assigned_gpu=None, worker_slot=0)]
+            self._sessions = [
+                _PersistentEvalWorkerSession(
+                    assigned_gpu=None,
+                    assigned_cuda_visible_device=None,
+                    worker_slot=0,
+                )
+            ]
             self._plan = {
                 **self._plan,
                 "mode": "cpu_fallback",
                 "reward_gpu_indices": [],
+                "reward_gpu_tokens": [],
                 "shared_train_gpu": False,
                 "pool_size": 1,
             }
@@ -350,8 +500,12 @@ class _EvalWorkerPool:
             "[Reward Worker Pool] "
             f"mode={self._plan['mode']} "
             f"visible_gpu_count={self._plan['visible_gpu_count']} "
+            f"rank={self._plan['rank']} "
+            f"local_rank={self._plan['local_rank']} "
+            f"world_size={self._plan['world_size']} "
             f"train_gpu={self._plan['train_gpu']} "
-            f"reward_gpu_indices={self._plan['reward_gpu_indices']}"
+            f"reward_gpu_indices={self._plan['reward_gpu_indices']} "
+            f"reward_gpu_tokens={self._plan.get('reward_gpu_tokens', [])}"
         )
 
     def worker_count(self) -> int:
@@ -370,8 +524,13 @@ class _EvalWorkerPool:
             **primary,
             "mode": self._plan["mode"],
             "visible_gpu_count": self._plan["visible_gpu_count"],
+            "distributed": bool(self._plan["distributed"]),
+            "rank": self._plan["rank"],
+            "local_rank": self._plan["local_rank"],
+            "world_size": self._plan["world_size"],
             "train_gpu": self._plan["train_gpu"],
             "reward_gpu_indices": list(self._plan["reward_gpu_indices"]),
+            "reward_gpu_tokens": list(self._plan.get("reward_gpu_tokens") or []),
             "shared_train_gpu": bool(self._plan["shared_train_gpu"]),
             "pool_size": len(workers),
             "total_rss_gib": total_rss_gib,
@@ -403,14 +562,20 @@ class _EvalWorkerPool:
         old_session = self._sessions[slot]
         old_info = old_session.diagnostics()
         assigned_gpu = old_info.get("assigned_gpu")
+        assigned_cuda_visible_device = old_info.get("assigned_cuda_visible_device")
         old_session.close(force=True)
         try:
             new_session = _PersistentEvalWorkerSession(
                 assigned_gpu=assigned_gpu if assigned_gpu is not None else None,
+                assigned_cuda_visible_device=assigned_cuda_visible_device,
                 worker_slot=slot,
             )
         except Exception:
-            new_session = _PersistentEvalWorkerSession(assigned_gpu=None, worker_slot=slot)
+            new_session = _PersistentEvalWorkerSession(
+                assigned_gpu=None,
+                assigned_cuda_visible_device=None,
+                worker_slot=slot,
+            )
         self._sessions[slot] = new_session
         return new_session
 
@@ -1730,7 +1895,11 @@ def _worker_cuda_memory_gib() -> Tuple[Optional[float], Optional[float]]:
         return None, None
 
 
-def _persistent_eval_worker_entry(conn, assigned_gpu: Optional[int]) -> None:
+def _persistent_eval_worker_entry(
+    conn,
+    assigned_gpu: Optional[int],
+    assigned_cuda_visible_device: Optional[str],
+) -> None:
     worker_device = "cuda:0" if assigned_gpu is not None else "cpu"
     try:
         conn.send(
@@ -1738,6 +1907,7 @@ def _persistent_eval_worker_entry(conn, assigned_gpu: Optional[int]) -> None:
                 "cmd": "worker_ready",
                 "pid": os.getpid(),
                 "assigned_gpu": assigned_gpu,
+                "assigned_cuda_visible_device": assigned_cuda_visible_device,
                 "worker_device": worker_device,
                 "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
                 "cuda_available": bool(torch.cuda.is_available()),

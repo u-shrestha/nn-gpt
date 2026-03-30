@@ -564,19 +564,39 @@ def run_sft_training():
 
     if not torch.cuda.is_available():
         raise RuntimeError("SFT RL requires CUDA for GRPO training, but no CUDA device is available")
-    visible_cuda_devices = torch.cuda.device_count()
+    runtime = RewardUtil.get_distributed_runtime_info()
+    visible_cuda_devices = int(runtime["visible_gpu_count"])
     if visible_cuda_devices < 1:
         raise RuntimeError(
             f"SFT RL requires at least one visible CUDA device, got {visible_cuda_devices}"
         )
-    torch.cuda.set_device(0)
-    train_device = "cuda:0"
+    local_rank = int(runtime["local_rank"])
+    raw_local_rank = int(runtime["raw_local_rank"])
+    rank = int(runtime["rank"])
+    world_size = int(runtime["world_size"])
+    if world_size > 1 and visible_cuda_devices > 1 and raw_local_rank != local_rank:
+        raise RuntimeError(
+            "SFT RL detected an inconsistent distributed CUDA mapping: "
+            f"rank={rank}, raw_local_rank={raw_local_rank}, resolved_local_rank={local_rank}, "
+            f"visible_cuda_devices={visible_cuda_devices}"
+        )
+    if not (0 <= local_rank < visible_cuda_devices):
+        raise RuntimeError(
+            "SFT RL resolved an invalid local CUDA rank: "
+            f"local_rank={local_rank}, raw_local_rank={raw_local_rank}, visible_cuda_devices={visible_cuda_devices}"
+        )
+    torch.cuda.set_device(local_rank)
+    train_device = f"cuda:{local_rank}"
 
     torch.cuda.empty_cache()
     TuneRL.reset_reward_runtime_state()
     precision = TuneRL.best_mixed_precision()
 
     print(f"Using RL base model: {TuneRL.base_model}")
+    print(
+        "[SFT RL] Distributed Runtime: "
+        f"rank={rank} local_rank={local_rank} raw_local_rank={raw_local_rank} world_size={world_size}"
+    )
     print(f"[SFT RL] Fixed training device: {train_device}")
     print(f"[SFT RL] Visible CUDA devices: {visible_cuda_devices}")
     print(f"[SFT RL] Mixed precision: {precision['label']} (torch_dtype={precision['torch_dtype']})")
@@ -584,8 +604,12 @@ def run_sft_training():
     print(
         "[SFT RL] Reward Worker Plan: "
         f"mode={reward_worker_plan['mode']} "
+        f"rank={reward_worker_plan['rank']} "
+        f"local_rank={reward_worker_plan['local_rank']} "
+        f"world_size={reward_worker_plan['world_size']} "
         f"train_gpu={reward_worker_plan['train_gpu']} "
-        f"reward_gpu_indices={reward_worker_plan['reward_gpu_indices']}"
+        f"reward_gpu_indices={reward_worker_plan['reward_gpu_indices']} "
+        f"reward_gpu_tokens={reward_worker_plan.get('reward_gpu_tokens', [])}"
     )
     _print_runtime_cache_roots()
     tokenizer_source = getattr(TuneRL, "tokenizer_source", TuneRL.base_model)
