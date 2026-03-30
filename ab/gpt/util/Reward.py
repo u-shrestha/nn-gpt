@@ -59,6 +59,21 @@ def _safe_bool_env(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _safe_float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return float(default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _env_is_set(name: str) -> bool:
+    raw = os.environ.get(name)
+    return raw is not None and raw != ""
+
+
 def _visible_cuda_device_tokens() -> Optional[list[str]]:
     raw = os.environ.get("CUDA_VISIBLE_DEVICES")
     if raw is None:
@@ -202,79 +217,279 @@ def get_reward_worker_plan() -> Dict[str, Any]:
     runtime = get_distributed_runtime_info()
     visible_gpu_count = int(runtime["visible_gpu_count"])
     deepspeed_enabled = _safe_bool_env("NNGPT_SFT_USE_DEEPSPEED", False)
-    if visible_gpu_count <= 0:
+    reward_force_cpu = _safe_bool_env("NNGPT_REWARD_FORCE_CPU", False)
+    train_gpu = runtime["train_gpu"]
+
+    def _device_token(device_index: int) -> str:
+        visible_gpu_tokens = list(runtime.get("visible_gpu_tokens") or [])
+        if 0 <= device_index < len(visible_gpu_tokens):
+            return str(visible_gpu_tokens[device_index])
+        return str(int(device_index))
+
+    def _cuda_device_memory_snapshot_gib(device_index: int) -> Dict[str, Any]:
+        total_gib = None
+        free_gib = None
+        used_gib = None
+        allocated_gib = None
+        reserved_gib = None
+        if torch.cuda.is_available():
+            try:
+                total_gib = float(torch.cuda.get_device_properties(device_index).total_memory) / float(1024 ** 3)
+            except Exception:
+                total_gib = None
+            try:
+                free_bytes, total_bytes = torch.cuda.mem_get_info(device_index)
+                free_gib = float(free_bytes) / float(1024 ** 3)
+                used_gib = float(total_bytes - free_bytes) / float(1024 ** 3)
+                if total_gib is None:
+                    total_gib = float(total_bytes) / float(1024 ** 3)
+            except Exception:
+                pass
+            try:
+                allocated_gib = float(torch.cuda.memory_allocated(device_index)) / float(1024 ** 3)
+            except Exception:
+                allocated_gib = None
+            try:
+                reserved_gib = float(torch.cuda.memory_reserved(device_index)) / float(1024 ** 3)
+            except Exception:
+                reserved_gib = None
         return {
-            "mode": "cpu_fallback",
-            "visible_gpu_count": 0,
-            "train_gpu": None,
+            "device_index": int(device_index),
+            "device_token": _device_token(device_index),
+            "total_gib": total_gib,
+            "free_gib": free_gib,
+            "used_gib": used_gib,
+            "allocated_gib": allocated_gib,
+            "reserved_gib": reserved_gib,
+            "is_train_gpu": bool(train_gpu is not None and int(train_gpu) == int(device_index)),
+        }
+
+    def _expand_reward_gpu_assignments(per_gpu_worker_counts: list[int]) -> tuple[list[int], list[str]]:
+        reward_gpu_indices: list[int] = []
+        reward_gpu_tokens: list[str] = []
+        max_workers = max(per_gpu_worker_counts, default=0)
+        for round_index in range(max_workers):
+            for device_index, worker_count in enumerate(per_gpu_worker_counts):
+                if round_index >= int(worker_count):
+                    continue
+                reward_gpu_indices.append(int(device_index))
+                reward_gpu_tokens.append(_device_token(device_index))
+        return reward_gpu_indices, reward_gpu_tokens
+
+    def _cpu_reward_worker_plan(
+        *,
+        mode: str,
+        reason: str,
+        gpu_memory_snapshots: Optional[list[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "mode": mode,
+            "reason": reason,
+            "visible_gpu_count": visible_gpu_count,
+            "train_gpu": train_gpu,
             "reward_gpu_indices": [],
             "reward_gpu_tokens": [],
+            "per_gpu_worker_counts": [0] * max(0, visible_gpu_count),
             "shared_train_gpu": False,
             "pool_size": 1,
-            "workers_per_gpu": 1,
+            "workers_per_gpu": 0,
             "deepspeed_enabled": deepspeed_enabled,
             "distributed": bool(runtime["distributed"]),
             "rank": int(runtime["rank"]),
             "local_rank": int(runtime["local_rank"]),
             "world_size": int(runtime["world_size"]),
+            "dynamic_scaling": False,
+            "gpu_memory_snapshots": list(gpu_memory_snapshots or []),
+            "worker_budget_gib": None,
+            "reserved_headroom_gib": None,
         }
-    if runtime["distributed"]:
-        train_gpu = runtime["train_gpu"]
-        workers_per_gpu = 2 if deepspeed_enabled else 1
-        reward_gpu_indices = [int(train_gpu)] * workers_per_gpu if train_gpu is not None else []
-        reward_gpu_tokens = (
-            [str(runtime["train_gpu_token"])] * workers_per_gpu
-            if runtime["train_gpu_token"] is not None
-            else []
-        )
+
+    def _build_reward_worker_plan(
+        *,
+        mode: str,
+        per_gpu_worker_counts: list[int],
+        dynamic_scaling: bool,
+        gpu_memory_snapshots: Optional[list[Dict[str, Any]]] = None,
+        worker_budget_gib: Optional[float] = None,
+        reserved_headroom_gib: Optional[float] = None,
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        reward_gpu_indices, reward_gpu_tokens = _expand_reward_gpu_assignments(per_gpu_worker_counts)
+        if not reward_gpu_indices:
+            return _cpu_reward_worker_plan(
+                mode=f"{mode}_cpu_fallback",
+                reason=reason or "no_gpu_workers_selected",
+                gpu_memory_snapshots=gpu_memory_snapshots,
+            )
         return {
-            "mode": "distributed_local_gpu_dual" if workers_per_gpu > 1 else "distributed_local_gpu",
+            "mode": mode,
+            "reason": reason,
             "visible_gpu_count": visible_gpu_count,
             "train_gpu": train_gpu,
             "reward_gpu_indices": reward_gpu_indices,
             "reward_gpu_tokens": reward_gpu_tokens,
-            "shared_train_gpu": True,
+            "per_gpu_worker_counts": [int(count) for count in per_gpu_worker_counts],
+            "shared_train_gpu": bool(
+                train_gpu is not None and int(train_gpu) in set(int(index) for index in reward_gpu_indices)
+            ),
             "pool_size": max(1, len(reward_gpu_indices)),
-            "workers_per_gpu": workers_per_gpu,
+            "workers_per_gpu": max(per_gpu_worker_counts, default=0),
             "deepspeed_enabled": deepspeed_enabled,
-            "distributed": True,
+            "distributed": bool(runtime["distributed"]),
             "rank": int(runtime["rank"]),
             "local_rank": int(runtime["local_rank"]),
             "world_size": int(runtime["world_size"]),
+            "dynamic_scaling": bool(dynamic_scaling),
+            "gpu_memory_snapshots": list(gpu_memory_snapshots or []),
+            "worker_budget_gib": worker_budget_gib,
+            "reserved_headroom_gib": reserved_headroom_gib,
         }
-    if visible_gpu_count == 1:
-        return {
-            "mode": "single_gpu_shared",
-            "visible_gpu_count": 1,
-            "train_gpu": 0,
-            "reward_gpu_indices": [0],
-            "reward_gpu_tokens": [str(runtime["train_gpu_token"] or "0")],
-            "shared_train_gpu": True,
-            "pool_size": 1,
-            "workers_per_gpu": 1,
-            "deepspeed_enabled": deepspeed_enabled,
-            "distributed": False,
-            "rank": int(runtime["rank"]),
-            "local_rank": int(runtime["local_rank"]),
-            "world_size": int(runtime["world_size"]),
-        }
-    reward_gpu_indices = list(range(visible_gpu_count))
-    reward_gpu_tokens = list(runtime["visible_gpu_tokens"] or [str(index) for index in reward_gpu_indices])
-    return {
-        "mode": "multi_gpu_pool",
-        "visible_gpu_count": visible_gpu_count,
-        "train_gpu": 0,
-        "reward_gpu_indices": reward_gpu_indices,
-        "reward_gpu_tokens": reward_gpu_tokens,
-        "shared_train_gpu": True,
-        "pool_size": len(reward_gpu_indices),
-        "workers_per_gpu": 1,
-        "deepspeed_enabled": deepspeed_enabled,
-        "distributed": False,
-        "rank": int(runtime["rank"]),
-        "local_rank": int(runtime["local_rank"]),
-        "world_size": int(runtime["world_size"]),
-    }
+
+    def _dynamic_reward_workers_for_gpu(
+        snapshot: Dict[str, Any],
+        *,
+        reserved_headroom_gib: float,
+        worker_budget_gib: float,
+        min_workers_per_gpu: int,
+        max_workers_per_gpu: int,
+    ) -> int:
+        if max_workers_per_gpu <= 0:
+            return 0
+        free_gib = snapshot.get("free_gib")
+        if free_gib is None:
+            return max(0, min(1, max_workers_per_gpu))
+        available_gib = max(0.0, float(free_gib) - float(reserved_headroom_gib))
+        worker_budget_gib = max(0.5, float(worker_budget_gib))
+        worker_count = int(available_gib // worker_budget_gib)
+        if worker_count <= 0 and float(free_gib) >= float(reserved_headroom_gib) + (worker_budget_gib * 0.75):
+            worker_count = 1
+        if worker_count > 0:
+            worker_count = max(worker_count, int(min_workers_per_gpu))
+        return max(0, min(int(max_workers_per_gpu), int(worker_count)))
+
+    if reward_force_cpu:
+        return _cpu_reward_worker_plan(mode="cpu_fallback", reason="reward_force_cpu")
+    if visible_gpu_count <= 0:
+        return _cpu_reward_worker_plan(mode="cpu_fallback", reason="no_visible_cuda_devices")
+    if runtime["distributed"] and int(runtime["rank"]) != 0:
+        gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
+        return _cpu_reward_worker_plan(
+            mode="distributed_non_main_cpu",
+            reason="non_main_rank_reward_workers_disabled",
+            gpu_memory_snapshots=gpu_memory_snapshots,
+        )
+
+    fixed_workers_override = _env_is_set("NNGPT_REWARD_WORKERS_PER_GPU")
+    if fixed_workers_override:
+        workers_per_gpu = max(1, _safe_int_env("NNGPT_REWARD_WORKERS_PER_GPU", 1))
+        per_gpu_worker_counts = [workers_per_gpu] * visible_gpu_count
+        gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
+        mode = (
+            "distributed_fixed_pool"
+            if runtime["distributed"]
+            else "single_gpu_fixed_pool"
+            if visible_gpu_count == 1
+            else "multi_gpu_fixed_pool"
+        )
+        return _build_reward_worker_plan(
+            mode=mode,
+            per_gpu_worker_counts=per_gpu_worker_counts,
+            dynamic_scaling=False,
+            gpu_memory_snapshots=gpu_memory_snapshots,
+            reason="fixed_workers_override",
+        )
+
+    dynamic_scaling = _safe_bool_env("NNGPT_REWARD_ENABLE_DYNAMIC_SCALING", True)
+    if not dynamic_scaling:
+        per_gpu_worker_counts = [1] * visible_gpu_count
+        gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
+        mode = (
+            "distributed_static_pool"
+            if runtime["distributed"]
+            else "single_gpu_static_pool"
+            if visible_gpu_count == 1
+            else "multi_gpu_static_pool"
+        )
+        return _build_reward_worker_plan(
+            mode=mode,
+            per_gpu_worker_counts=per_gpu_worker_counts,
+            dynamic_scaling=False,
+            gpu_memory_snapshots=gpu_memory_snapshots,
+            reason="dynamic_scaling_disabled",
+        )
+
+    reserved_headroom_gib = max(0.0, _safe_float_env("NNGPT_REWARD_RESERVED_HEADROOM_GIB", 4.0))
+    worker_budget_gib = max(1.0, _safe_float_env("NNGPT_REWARD_WORKER_BUDGET_GIB", 8.0))
+    default_min_workers = 1 if visible_gpu_count == 1 and not runtime["distributed"] else 0
+    min_workers_per_gpu = max(0, _safe_int_env("NNGPT_REWARD_MIN_WORKERS_PER_GPU", default_min_workers))
+    max_workers_per_gpu = max(
+        min_workers_per_gpu,
+        _safe_int_env("NNGPT_REWARD_MAX_WORKERS_PER_GPU", 2),
+    )
+
+    gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
+    per_gpu_worker_counts = [
+        _dynamic_reward_workers_for_gpu(
+            snapshot,
+            reserved_headroom_gib=reserved_headroom_gib,
+            worker_budget_gib=worker_budget_gib,
+            min_workers_per_gpu=min_workers_per_gpu,
+            max_workers_per_gpu=max_workers_per_gpu,
+        )
+        for snapshot in gpu_memory_snapshots
+    ]
+    if sum(per_gpu_worker_counts) <= 0 and gpu_memory_snapshots:
+        best_snapshot = max(
+            gpu_memory_snapshots,
+            key=lambda snapshot: float(snapshot.get("free_gib") or -1.0),
+        )
+        best_device_index = int(best_snapshot["device_index"])
+        best_free_gib = best_snapshot.get("free_gib")
+        if best_free_gib is None or float(best_free_gib) >= reserved_headroom_gib + (worker_budget_gib * 0.75):
+            per_gpu_worker_counts[best_device_index] = 1
+
+    mode = (
+        "distributed_dynamic_pool"
+        if runtime["distributed"]
+        else "single_gpu_dynamic_pool"
+        if visible_gpu_count == 1
+        else "multi_gpu_dynamic_pool"
+    )
+    return _build_reward_worker_plan(
+        mode=mode,
+        per_gpu_worker_counts=per_gpu_worker_counts,
+        dynamic_scaling=True,
+        gpu_memory_snapshots=gpu_memory_snapshots,
+        worker_budget_gib=worker_budget_gib,
+        reserved_headroom_gib=reserved_headroom_gib,
+        reason="dynamic_memory_scaling",
+    )
+
+
+def _reward_worker_plan_signature(plan: Dict[str, Any]) -> Tuple[Any, ...]:
+    return (
+        str(plan.get("mode", "")),
+        bool(plan.get("distributed", False)),
+        int(plan.get("rank", 0)),
+        int(plan.get("local_rank", 0)),
+        int(plan.get("world_size", 1)),
+        tuple(int(index) for index in plan.get("reward_gpu_indices", [])),
+        tuple(str(token) for token in plan.get("reward_gpu_tokens", [])),
+    )
+
+
+def _clear_reward_cuda_state() -> None:
+    gc.collect()
+    if not torch.cuda.is_available():
+        return
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+    try:
+        torch.cuda.ipc_collect()
+    except Exception:
+        pass
 
 
 class _PersistentEvalWorkerSession:
@@ -473,8 +688,8 @@ class _PersistentEvalWorkerSession:
 
 
 class _EvalWorkerPool:
-    def __init__(self) -> None:
-        self._plan = get_reward_worker_plan()
+    def __init__(self, *, plan: Optional[Dict[str, Any]] = None) -> None:
+        self._plan = dict(plan or get_reward_worker_plan())
         self._sessions: list[_PersistentEvalWorkerSession] = []
         try:
             if self._plan["reward_gpu_indices"]:
@@ -515,9 +730,10 @@ class _EvalWorkerPool:
                 "mode": "cpu_fallback",
                 "reward_gpu_indices": [],
                 "reward_gpu_tokens": [],
+                "per_gpu_worker_counts": [0] * max(0, int(self._plan.get("visible_gpu_count", 0))),
                 "shared_train_gpu": False,
                 "pool_size": 1,
-                "workers_per_gpu": 1,
+                "workers_per_gpu": 0,
             }
         print(
             "[Reward Worker Pool] "
@@ -529,12 +745,17 @@ class _EvalWorkerPool:
             f"world_size={self._plan['world_size']} "
             f"train_gpu={self._plan['train_gpu']} "
             f"workers_per_gpu={self._plan.get('workers_per_gpu', 1)} "
+            f"per_gpu_worker_counts={self._plan.get('per_gpu_worker_counts', [])} "
             f"reward_gpu_indices={self._plan['reward_gpu_indices']} "
-            f"reward_gpu_tokens={self._plan.get('reward_gpu_tokens', [])}"
+            f"reward_gpu_tokens={self._plan.get('reward_gpu_tokens', [])} "
+            f"reason={self._plan.get('reason', '')!r}"
         )
 
     def worker_count(self) -> int:
         return len(self._sessions)
+
+    def plan_signature(self) -> Tuple[Any, ...]:
+        return _reward_worker_plan_signature(self._plan)
 
     def primary_device(self) -> str:
         if not self._sessions:
@@ -559,7 +780,13 @@ class _EvalWorkerPool:
             "shared_train_gpu": bool(self._plan["shared_train_gpu"]),
             "pool_size": len(workers),
             "workers_per_gpu": int(self._plan.get("workers_per_gpu", 1)),
+            "per_gpu_worker_counts": list(self._plan.get("per_gpu_worker_counts") or []),
             "deepspeed_enabled": bool(self._plan.get("deepspeed_enabled", False)),
+            "dynamic_scaling": bool(self._plan.get("dynamic_scaling", False)),
+            "reason": str(self._plan.get("reason", "")),
+            "gpu_memory_snapshots": list(self._plan.get("gpu_memory_snapshots") or []),
+            "worker_budget_gib": self._plan.get("worker_budget_gib"),
+            "reserved_headroom_gib": self._plan.get("reserved_headroom_gib"),
             "total_rss_gib": total_rss_gib,
             "workers": workers,
             "worker_pids": [worker["pid"] for worker in workers],
@@ -1597,12 +1824,28 @@ def _formal_eval_with_nn_dataset(
         except Exception:
             pass
         sys.modules.pop(tmp_module_name, None)
-        gc.collect()
         if trainer is not None:
             try:
-                del trainer.model
+                model = getattr(trainer, "model", None)
+                if model is not None:
+                    try:
+                        model.to("cpu")
+                    except Exception:
+                        pass
+                for attr_name in (
+                    "model",
+                    "optimizer",
+                    "criterion",
+                    "scheduler",
+                    "train_loader",
+                    "test_loader",
+                    "val_loader",
+                ):
+                    if hasattr(trainer, attr_name):
+                        setattr(trainer, attr_name, None)
             except Exception:
                 pass
+        trainer = None
         try:
             del train_set
         except Exception:
@@ -1611,11 +1854,13 @@ def _formal_eval_with_nn_dataset(
             del test_set
         except Exception:
             pass
+        train_set = None
+        test_set = None
         try:
             release_memory()
         except Exception:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            pass
+        _clear_reward_cuda_state()
 
 
 def _empty_eval_result(
@@ -2039,9 +2284,7 @@ def evaluate_and_reward(
             del local_train_loader
         if local_val_loader is not None:
             del local_val_loader
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
+        _clear_reward_cuda_state()
 
 
 def _safe_exec_code(code: str) -> Dict[str, Any]:
@@ -2100,14 +2343,27 @@ def _loader_cache_key(cfg: EvalConfig) -> Tuple[Any, ...]:
 
 def _get_or_create_eval_worker_pool() -> _EvalWorkerPool:
     global _EVAL_WORKER_POOL
+    desired_plan = get_reward_worker_plan()
+    desired_signature = _reward_worker_plan_signature(desired_plan)
     if _EVAL_WORKER_POOL is not None:
         diagnostics = _EVAL_WORKER_POOL.diagnostics()
         workers = diagnostics.get("workers", [])
-        if not workers or not all(bool(worker.get("alive", False)) for worker in workers):
+        current_signature = _EVAL_WORKER_POOL.plan_signature()
+        if current_signature != desired_signature:
+            print(
+                "[Reward Worker Pool] Reconfigure "
+                f"old_mode={diagnostics.get('mode')} "
+                f"new_mode={desired_plan.get('mode')} "
+                f"old_reward_gpu_indices={diagnostics.get('reward_gpu_indices')} "
+                f"new_reward_gpu_indices={desired_plan.get('reward_gpu_indices')}"
+            )
+            _EVAL_WORKER_POOL.close()
+            _EVAL_WORKER_POOL = None
+        elif not workers or not all(bool(worker.get("alive", False)) for worker in workers):
             _EVAL_WORKER_POOL.close()
             _EVAL_WORKER_POOL = None
     if _EVAL_WORKER_POOL is None:
-        _EVAL_WORKER_POOL = _EvalWorkerPool()
+        _EVAL_WORKER_POOL = _EvalWorkerPool(plan=desired_plan)
     return _EVAL_WORKER_POOL
 
 
@@ -2121,6 +2377,7 @@ def shutdown_eval_worker() -> None:
         f"mode={info['mode']} "
         f"pool_size={info['pool_size']} "
         f"workers_per_gpu={info.get('workers_per_gpu', 1)} "
+        f"per_gpu_worker_counts={info.get('per_gpu_worker_counts', [])} "
         f"worker_pids={info['worker_pids']} "
         f"total_rss_gib={info['total_rss_gib']:.2f}"
     )
@@ -2199,6 +2456,7 @@ def evaluate_code_and_reward(
     completion_index: Optional[int] = None,
     batch_last_item: bool = False,
 ) -> Dict[str, Any]:
+    worker_pool = _get_or_create_eval_worker_pool()
     entry = _prepare_eval_request_entry(
         code=code,
         in_shape=in_shape,
@@ -2211,8 +2469,8 @@ def evaluate_code_and_reward(
         reward_batch_index=reward_batch_index,
         completion_index=completion_index,
         batch_last_item=batch_last_item,
+        worker_pool=worker_pool,
     )
-    worker_pool = _get_or_create_eval_worker_pool()
     return worker_pool.request_entry(entry, timeout=float(entry["request_timeout"]))
 
 
@@ -2229,8 +2487,9 @@ def _prepare_eval_request_entry(
     reward_batch_index: Optional[int],
     completion_index: Optional[int],
     batch_last_item: bool,
+    worker_pool: Optional["_EvalWorkerPool"] = None,
 ) -> Dict[str, Any]:
-    worker_pool = _get_or_create_eval_worker_pool()
+    worker_pool = worker_pool or _get_or_create_eval_worker_pool()
     worker_device = worker_pool.primary_device()
     effective_cfg = _build_effective_eval_cfg(
         cfg=cfg,
@@ -2266,6 +2525,7 @@ def evaluate_code_and_reward_batch(
 ) -> list[Dict[str, Any]]:
     if not request_specs:
         return []
+    worker_pool = _get_or_create_eval_worker_pool()
     entries = [
         _prepare_eval_request_entry(
             code=str(spec["code"]),
@@ -2279,10 +2539,10 @@ def evaluate_code_and_reward_batch(
             reward_batch_index=spec.get("reward_batch_index"),
             completion_index=spec.get("completion_index"),
             batch_last_item=bool(spec.get("batch_last_item", False)),
+            worker_pool=worker_pool,
         )
         for spec in request_specs
     ]
-    worker_pool = _get_or_create_eval_worker_pool()
     timeout = max(float(entry["request_timeout"]) for entry in entries)
     return worker_pool.map_entries(entries, timeout=timeout)
 
@@ -2339,7 +2599,7 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
 
             try:
                 if worker_device.startswith("cuda") and torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                    _clear_reward_cuda_state()
                 result = _evaluate_code_and_reward_direct(
                     request["code"],
                     in_shape=tuple(request["in_shape"]),
@@ -2366,7 +2626,7 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
             result["worker_slot"] = request.get("worker_slot", None)
             if bool(request.get("worker_batch_last_item")):
                 if worker_device.startswith("cuda") and torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                    _clear_reward_cuda_state()
                 cuda_allocated_gib, cuda_reserved_gib = _worker_cuda_memory_gib()
                 print(
                     "[Reward Worker Memory] "
@@ -2401,7 +2661,7 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
             f"torch_home={os.environ.get('TORCH_HOME', '')!r}"
         )
         loader_cache.clear()
-        gc.collect()
+        _clear_reward_cuda_state()
         try:
             conn.close()
         except Exception:
@@ -2448,9 +2708,7 @@ def _evaluate_code_and_reward_direct(
             )
             unfrozen_result = None
             if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)):
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                gc.collect()
+                _clear_reward_cuda_state()
                 unfrozen_result = _formal_eval_with_nn_dataset(
                     code,
                     prm=prm,

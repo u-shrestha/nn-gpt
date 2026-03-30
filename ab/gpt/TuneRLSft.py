@@ -129,8 +129,33 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return int(default)
+    return int(raw)
+
+
 def _runtime_is_main_process(runtime: Dict[str, Any]) -> bool:
     return int(runtime.get("rank", 0)) == 0
+
+
+def resolve_sft_runtime_settings(runtime: Dict[str, Any]) -> Dict[str, int]:
+    return {
+        "dataset_limit": _env_int(
+            "NNGPT_SFT_DATASET_LIMIT",
+            SFT_DATASET_LIMIT,
+        ),
+        "grad_accum": _env_int("NNGPT_SFT_GRAD_ACCUM", SFT_GRAD_ACCUM),
+        "max_completion_length": _env_int(
+            "NNGPT_SFT_MAX_COMPLETION_LENGTH",
+            SFT_MAX_COMPLETION_LENGTH,
+        ),
+        "num_generations": _env_int(
+            "NNGPT_SFT_NUM_GENERATIONS",
+            SFT_NUM_GENERATIONS,
+        ),
+    }
 
 
 def _resolve_sft_deepspeed_enabled(runtime: Dict[str, Any]) -> bool:
@@ -668,6 +693,7 @@ def load_rl_dataset_sft(tokenizer) -> TuneRL.Dataset:
     """Load SFT-aligned RL prompts while rendering feedback lazily at access time."""
     from ab.gpt.TuneRLRaw import BLOCK_SIGNATURE, FORWARD_SIGNATURE, INIT_SIGNATURE
 
+    runtime_settings = resolve_sft_runtime_settings(RewardUtil.get_distributed_runtime_info())
     data = TuneRL.api.data(task="img-classification", nn_prefixes=("rl-bb-test1",))
     if data.empty:
         print("No 'rl-bb-test1' data found, falling back to all img-classification")
@@ -691,8 +717,8 @@ def load_rl_dataset_sft(tokenizer) -> TuneRL.Dataset:
             )
 
     random.Random(42).shuffle(rows)
-    if len(rows) > SFT_DATASET_LIMIT:
-        rows = rows[:SFT_DATASET_LIMIT]
+    if len(rows) > runtime_settings["dataset_limit"]:
+        rows = rows[:runtime_settings["dataset_limit"]]
     return DynamicSFTPromptDataset(
         rows,
         tokenizer,
@@ -714,14 +740,15 @@ def _build_sft_grpo_config(
     precision: Dict[str, Any],
     use_deepspeed: bool,
     deepspeed_config_path: str | None,
+    runtime_settings: Dict[str, int],
 ) -> Any:
     config_signature = inspect.signature(TuneRL.GRPOConfig.__init__)
     config_kwargs: Dict[str, Any] = {
         "temperature": SFT_TEMPERATURE,
         "learning_rate": SFT_LR,
-        "max_completion_length": SFT_MAX_COMPLETION_LENGTH,
+        "max_completion_length": runtime_settings["max_completion_length"],
         "per_device_train_batch_size": 1,
-        "gradient_accumulation_steps": SFT_GRAD_ACCUM,
+        "gradient_accumulation_steps": runtime_settings["grad_accum"],
         "lr_scheduler_type": "cosine",
         "num_train_epochs": SFT_NUM_EPOCHS,
         "remove_unused_columns": False,
@@ -731,7 +758,7 @@ def _build_sft_grpo_config(
         "bf16": precision["bf16"],
         "fp16": precision["fp16"],
         "gradient_checkpointing": True,
-        "num_generations": SFT_NUM_GENERATIONS,
+        "num_generations": runtime_settings["num_generations"],
     }
     if use_deepspeed:
         if "deepspeed" not in config_signature.parameters:
@@ -754,6 +781,7 @@ def run_sft_training():
         raise RuntimeError(
             f"SFT RL requires at least one visible CUDA device, got {visible_cuda_devices}"
         )
+    runtime_settings = resolve_sft_runtime_settings(runtime)
     local_rank = int(runtime["local_rank"])
     raw_local_rank = int(runtime["raw_local_rank"])
     rank = int(runtime["rank"])
@@ -784,6 +812,7 @@ def run_sft_training():
         precision=precision,
         use_deepspeed=use_deepspeed,
         deepspeed_config_path=deepspeed_config_path,
+        runtime_settings=runtime_settings,
     )
     hf_deepspeed_config = _maybe_init_hf_deepspeed_config(deepspeed_config_path) if use_deepspeed else None
 
@@ -798,17 +827,26 @@ def run_sft_training():
     print(f"[SFT RL] Fixed training device: {train_device}")
     print(f"[SFT RL] Visible CUDA devices: {visible_cuda_devices}")
     print(f"[SFT RL] Mixed precision: {precision['label']} (torch_dtype={precision['torch_dtype']})")
+    print(
+        "[SFT RL] Runtime limits: "
+        f"dataset_limit={runtime_settings['dataset_limit']} "
+        f"max_completion_length={runtime_settings['max_completion_length']} "
+        f"grad_accum={runtime_settings['grad_accum']} "
+        f"num_generations={runtime_settings['num_generations']}"
+    )
     reward_worker_plan = RewardUtil.get_reward_worker_plan()
     print(
         "[SFT RL] Reward Worker Plan: "
         f"mode={reward_worker_plan['mode']} "
         f"reward_workers_per_gpu={reward_worker_plan.get('workers_per_gpu', 1)} "
+        f"per_gpu_worker_counts={reward_worker_plan.get('per_gpu_worker_counts', [])} "
         f"rank={reward_worker_plan['rank']} "
         f"local_rank={reward_worker_plan['local_rank']} "
         f"world_size={reward_worker_plan['world_size']} "
         f"train_gpu={reward_worker_plan['train_gpu']} "
         f"reward_gpu_indices={reward_worker_plan['reward_gpu_indices']} "
-        f"reward_gpu_tokens={reward_worker_plan.get('reward_gpu_tokens', [])}"
+        f"reward_gpu_tokens={reward_worker_plan.get('reward_gpu_tokens', [])} "
+        f"reason={reward_worker_plan.get('reason', '')!r}"
     )
     _print_runtime_cache_roots()
     tokenizer_source = getattr(TuneRL, "tokenizer_source", TuneRL.base_model)
@@ -820,8 +858,8 @@ def run_sft_training():
     TuneRL.log_memory_snapshot("sft/tokenizer_loaded")
 
     rl_dataset = TuneRL.load_rl_dataset(tokenizer)
-    if len(rl_dataset) > SFT_DATASET_LIMIT:
-        rl_dataset = rl_dataset.select(range(SFT_DATASET_LIMIT))
+    if len(rl_dataset) > runtime_settings["dataset_limit"]:
+        rl_dataset = rl_dataset.select(range(runtime_settings["dataset_limit"]))
     _run_torchvision_prewarm(list(SFTUtil.available_backbones))
 
     bnb_config = BitsAndBytesConfig(

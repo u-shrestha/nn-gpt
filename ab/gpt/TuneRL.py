@@ -2072,14 +2072,11 @@ def _prepare_local_reward_entries(
     *,
     seed_accuracy_baselines: List[float],
     group_context: Dict[str, Any],
+    precompute_eval: bool = True,
 ) -> List[Dict[str, Any]]:
     runtime_rank = _distributed_rank()
     batch_graph_infos: List[Any] = []
     batch_prompt_goal_tags = [extract_prompt_goal_tags(prompt) for prompt in prompts]
-    batched_eval_indices: List[int] = []
-    batched_eval_specs: List[Dict[str, Any]] = []
-    precomputed_eval_results: Dict[int, Dict[str, Any]] = {}
-    eval_cfg_builder = getattr(evaluate_code_and_reward, "_nngpt_eval_cfg_builder", None)
 
     for i, completion in enumerate(completions):
         _, init_code, forward_code = extract_completion_blocks(completion)
@@ -2092,53 +2089,6 @@ def _prepare_local_reward_entries(
         else:
             graph_info = None
         batch_graph_infos.append(graph_info)
-
-        block_code, init_code, forward_code = extract_completion_blocks(completion)
-        if not block_code or not init_code or not forward_code:
-            continue
-        if "self.pattern" in forward_code or graph_info is None:
-            continue
-        pattern_override = graph_info.suggested_pattern_name if not graph_info.has_custom_pattern_name else ""
-        final_code = reconstruct_code(completion, pattern_name_override=pattern_override)
-        if not final_code:
-            continue
-        batched_eval_indices.append(i)
-        batched_eval_specs.append(
-            {
-                "code": final_code,
-                "in_shape": (1, 3, 224, 224),
-                "out_shape": (10,),
-                "prm": {
-                    "lr": 0.01,
-                    "batch": 16,
-                    "dropout": 0.3,
-                    "momentum": 0.9,
-                    "transform": "norm_256_flip",
-                    "epoch": 1,
-                },
-                "device": "cuda" if torch.cuda.is_available() else "cpu",
-                "seed_accuracy_baseline": seed_accuracy_baselines[i],
-                "reward_batch_index": group_context["reward_batch_index"],
-                "completion_index": i,
-                "batch_last_item": i == (len(completions) - 1),
-            }
-        )
-        if callable(eval_cfg_builder):
-            batched_eval_specs[-1]["cfg"] = eval_cfg_builder(
-                in_shape=(1, 3, 224, 224),
-                out_shape=(10,),
-                prm=batched_eval_specs[-1]["prm"],
-                cfg=None,
-            )
-
-    if batched_eval_specs:
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        batched_eval_results = evaluate_code_and_reward_batch(batched_eval_specs)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        for index, eval_result in zip(batched_eval_indices, batched_eval_results):
-            precomputed_eval_results[index] = eval_result
 
     local_entries: List[Dict[str, Any]] = []
     for i, (prompt, completion) in enumerate(zip(prompts, completions)):
@@ -2153,10 +2103,93 @@ def _prepare_local_reward_entries(
                 "prompt_goal_tags": batch_prompt_goal_tags[i],
                 "goal_key": primary_goal_key(batch_prompt_goal_tags[i]),
                 "seed_accuracy_baseline": seed_accuracy_baselines[i],
-                "precomputed_eval_result": precomputed_eval_results.get(i),
+                "precomputed_eval_result": None,
             }
         )
+    if precompute_eval:
+        _precompute_eval_results(local_entries, group_context=group_context)
     return local_entries
+
+
+def _build_batched_eval_specs(
+    entries: List[Dict[str, Any]],
+    *,
+    group_context: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    eval_cfg_builder = getattr(evaluate_code_and_reward, "_nngpt_eval_cfg_builder", None)
+    batched_eval_entries: List[Dict[str, Any]] = []
+    batched_eval_specs: List[Dict[str, Any]] = []
+
+    for entry in entries:
+        if entry.get("precomputed_eval_result") is not None:
+            continue
+
+        completion = str(entry.get("completion", ""))
+        graph_info = entry.get("graph_info")
+        block_code, init_code, forward_code = extract_completion_blocks(completion)
+        if not block_code or not init_code or not forward_code:
+            continue
+        if "self.pattern" in forward_code or graph_info is None:
+            continue
+
+        pattern_override = graph_info.suggested_pattern_name if not graph_info.has_custom_pattern_name else ""
+        final_code = reconstruct_code(completion, pattern_name_override=pattern_override)
+        if not final_code:
+            continue
+
+        spec = {
+            "code": final_code,
+            "in_shape": (1, 3, 224, 224),
+            "out_shape": (10,),
+            "prm": {
+                "lr": 0.01,
+                "batch": 16,
+                "dropout": 0.3,
+                "momentum": 0.9,
+                "transform": "norm_256_flip",
+                "epoch": 1,
+            },
+            "device": "cuda" if torch.cuda.is_available() else "cpu",
+            "seed_accuracy_baseline": entry["seed_accuracy_baseline"],
+            "reward_batch_index": group_context["reward_batch_index"],
+            "completion_index": int(entry["local_index"]),
+            "batch_last_item": False,
+        }
+        if callable(eval_cfg_builder):
+            spec["cfg"] = eval_cfg_builder(
+                in_shape=(1, 3, 224, 224),
+                out_shape=(10,),
+                prm=spec["prm"],
+                cfg=None,
+            )
+
+        batched_eval_entries.append(entry)
+        batched_eval_specs.append(spec)
+
+    if batched_eval_specs:
+        batched_eval_specs[-1]["batch_last_item"] = True
+
+    return batched_eval_entries, batched_eval_specs
+
+
+def _precompute_eval_results(
+    entries: List[Dict[str, Any]],
+    *,
+    group_context: Dict[str, Any],
+) -> None:
+    batched_eval_entries, batched_eval_specs = _build_batched_eval_specs(
+        entries,
+        group_context=group_context,
+    )
+    if not batched_eval_specs:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    batched_eval_results = evaluate_code_and_reward_batch(batched_eval_specs)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    for entry, eval_result in zip(batched_eval_entries, batched_eval_results):
+        entry["precomputed_eval_result"] = eval_result
 
 
 def _score_reward_entries(
@@ -2360,13 +2393,6 @@ def compute_reward(prompts, completions, **kwargs):
     log_memory_snapshot("compute_reward:start", group_context=group_context)
 
     try:
-        local_entries = _prepare_local_reward_entries(
-            prompts,
-            completions,
-            seed_accuracy_baselines=seed_accuracy_baselines,
-            group_context=group_context,
-        )
-        archive_snapshot_family_counts = dict(family_hash_archive_counts)
         expected_world_size = max(1, env_int("WORLD_SIZE", 1))
         distributed_mode = _distributed_initialized() and _distributed_world_size() > 1
         if expected_world_size > 1 and not distributed_mode:
@@ -2374,6 +2400,15 @@ def compute_reward(prompts, completions, **kwargs):
                 "compute_reward expected an initialized torch.distributed process group "
                 f"for WORLD_SIZE={expected_world_size}, but it is not initialized"
             )
+
+        local_entries = _prepare_local_reward_entries(
+            prompts,
+            completions,
+            seed_accuracy_baselines=seed_accuracy_baselines,
+            group_context=group_context,
+            precompute_eval=not distributed_mode,
+        )
+        archive_snapshot_family_counts = dict(family_hash_archive_counts)
 
         if not distributed_mode:
             scored_results = _score_reward_entries(
@@ -2395,6 +2430,7 @@ def compute_reward(prompts, completions, **kwargs):
             global_entries: List[Dict[str, Any]] = []
             for rank_entries in gathered_entries:
                 global_entries.extend(list(rank_entries or []))
+            _precompute_eval_results(global_entries, group_context=group_context)
             scored_results = _score_reward_entries(
                 global_entries,
                 group_context=group_context,
@@ -2421,7 +2457,6 @@ def compute_reward(prompts, completions, **kwargs):
         restore_reward_runtime_state(synced_payload.get("reward_state"))
         return list(synced_payload["rewards_by_rank"].get(rank, [-1.0] * len(completions)))
     finally:
-        shutdown_eval_worker()
         TuneRLRaw.clear_extraction_meta_cache()
         log_memory_snapshot(
             "compute_reward:end",
