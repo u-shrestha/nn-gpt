@@ -2,11 +2,10 @@ import argparse
 from typing import Literal
 
 import torch
-from ab.gpt.util.Const import nngpt_dir, new_out_file, NN_TRAIN_EPOCHS
+from ab.gpt.util.Const import nngpt_dir, NN_TRAIN_EPOCHS
 
 from ab.nn.util.Const import out_dir
 
-from pathlib import Path
 import json
 from ab.gpt.util.Const import conf_llm_dir
 
@@ -342,7 +341,8 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
             prompt_batch=prompt_batch,
             use_agents=use_agents,
             use_predictor=use_predictor,
-            enable_merge=enable_merge
+            enable_merge=enable_merge,
+            use_unsloth = unsloth_opt
         )
 
         # Normal completion - auto merge best

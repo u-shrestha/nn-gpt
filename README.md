@@ -36,19 +36,13 @@ Agent mode uses LangGraph `MemorySaver` checkpointing. If the pipeline crashes m
 
 ### Usage
 
-Enable agent mode by adding `--use_agents` to the standard run command:
+The agent mode is enabled by default.
+
+To use the accuracy predictor agent:
 
 ```bash
-python -m ab.gpt.TuneNNGen_7B_code_olympic_channel_alter --use_agents
+python -m ab.gpt.TuneNNGen --use_predictor
 ```
-
-To also enable the accuracy predictor agent:
-
-```bash
-python -m ab.gpt.TuneNNGen_7B_code_olympic_channel_alter --use_agents --use_predictor
-```
-
-Without `--use_agents`, the pipeline runs in the original classic mode — behaviour is identical to the unmodified pipeline.
 
 ### Agent Files
 
