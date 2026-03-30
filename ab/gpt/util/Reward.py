@@ -9,7 +9,6 @@ import importlib
 import os
 import re
 import sys
-from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -1416,68 +1415,13 @@ def _is_formal_nn_eval_enabled(cfg: Optional["EvalConfig"]) -> bool:
     return bool(cfg is not None and getattr(cfg, "formal_nn_eval", False))
 
 
-def _candidate_nn_dataset_roots() -> list[Path]:
-    repo_root = Path(__file__).resolve().parents[3]
-    roots: list[Path] = []
-    raw_env = os.environ.get("NNGPT_NN_DATASET_ROOT")
-    if raw_env:
-        roots.append(Path(raw_env).expanduser())
-    roots.extend(
-        [
-            repo_root.parent / "nn-dataset",
-            repo_root / "nn-dataset",
-            Path.cwd().resolve().parent / "nn-dataset",
-        ]
-    )
-    deduped: list[Path] = []
-    seen: set[str] = set()
-    for root in roots:
-        key = str(root.resolve()) if root.exists() else str(root)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(root)
-    return deduped
-
-
-def _ensure_nn_dataset_importable() -> Optional[Path]:
+def _ensure_nn_dataset_importable() -> None:
     global _NN_DATASET_IMPORT_READY
-    importlib.invalidate_caches()
-    try:
-        installed_api = importlib.import_module("ab.nn.api")
-        _NN_DATASET_IMPORT_READY = True
-        module_file = getattr(installed_api, "__file__", None)
-        if module_file:
-            return Path(module_file).resolve().parent
-        return Path.cwd().resolve()
-    except Exception:
-        pass
-
     if _NN_DATASET_IMPORT_READY:
-        for root in _candidate_nn_dataset_roots():
-            if (root / "ab" / "nn" / "api.py").exists():
-                return root
-        return None
-
-    for root in _candidate_nn_dataset_roots():
-        api_file = root / "ab" / "nn" / "api.py"
-        if not api_file.exists():
-            continue
-        root_str = str(root)
-        if root_str not in sys.path:
-            sys.path.insert(0, root_str)
-        importlib.invalidate_caches()
-        try:
-            import ab  # type: ignore
-            ab_path = str(root / "ab")
-            if ab_path not in list(getattr(ab, "__path__", [])):
-                ab.__path__.append(ab_path)
-            import ab.nn.api  # type: ignore
-            _NN_DATASET_IMPORT_READY = True
-            return root
-        except Exception:
-            continue
-    return None
+        return
+    importlib.invalidate_caches()
+    importlib.import_module("ab.nn.api")
+    _NN_DATASET_IMPORT_READY = True
 
 
 def _formal_first_batch_loss(trainer: Any, prm: Dict[str, Any]) -> Optional[float]:
@@ -1509,12 +1453,13 @@ def _formal_eval_with_nn_dataset(
     seed_accuracy_baseline: Optional[float],
     backbone_model_names: list[str],
 ) -> Dict[str, Any]:
-    nn_dataset_root = _ensure_nn_dataset_importable()
-    if nn_dataset_root is None:
+    try:
+        _ensure_nn_dataset_importable()
+    except Exception as exc:
         raise RuntimeError(
-            "Formal nn-dataset evaluation requested, but nn-dataset could not be located. "
-            "Set NNGPT_NN_DATASET_ROOT or place nn-dataset next to nn-gpt."
-        )
+            "Formal nn-dataset evaluation requested, but `ab.nn.api` is not importable "
+            "from the current Python environment."
+        ) from exc
 
     from ab.nn.util.Const import ab_root_path, out  # type: ignore
     from ab.nn.util.Loader import load_dataset  # type: ignore
