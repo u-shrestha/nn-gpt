@@ -311,6 +311,20 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
     except Exception as e:
         print(f"[WARN] peft_config validation warning: {e}")
 
+    print(f"\n[DEBUG] === TUNENNGEN MAIN START ===")
+    print(f"[DEBUG] llm_conf: {llm_conf}")
+    print(f"[DEBUG] enable_merge: {enable_merge}")
+    print(f"[DEBUG] nngpt_dir: {nngpt_dir}")
+
+    # Show what was written to config
+    run_config_path = out_dir / 'nngpt' / 'run_config.json'
+    if run_config_path.exists():
+        with open(run_config_path) as f:
+            cfg = json.load(f)
+        print(f"[CONFIG] run_config.json current state:")
+        print(f"[CONFIG]   base_model_name: {cfg.get('base_model_name')}")
+        print(f"[CONFIG]   enable_merge: {cfg.get('enable_merge')}")
+    print(f"[DEBUG] === ===\n")
     try:
         tune(
             test_nn, nn_train_epochs, skip_epoches, peft,
@@ -331,20 +345,44 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
             enable_merge=enable_merge
         )
 
+        # Normal completion - auto merge best
+        if enable_merge:
+            print("\n[DEBUG] === NORMAL COMPLETION MERGE ===")
+            print(f"[DEBUG] enable_merge is True")
+            print(f"[DEBUG] About to import Merge module")
+            print("\n[MERGE] Training complete - running auto merge...\n")
+            try:
+                print(f"[DEBUG] Importing from ab.gpt.util.Merge")
+                from ab.gpt.util.Merge import rebuild_from_lineage
+                print(f"[DEBUG] ✓ Import successful")
+                print(f"[DEBUG] Calling rebuild_from_lineage()")
+                rebuild_from_lineage()
+                print(f"[DEBUG] ✓ rebuild_from_lineage() completed")
+            except Exception as e:
+                print(f"[MERGE] Auto merge failed: {e}")
+                import traceback
+                traceback.print_exc()
+
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Training stopped by user")
 
     finally:
-        # Safety merge: run merge decision even if training crashes or is interrupted
+        # Interrupted case - still try to merge best from available epochs
         if enable_merge:
-            print("\n[MERGE] Running final merge decision...\n")
-
+            print("\n[DEBUG] === FINALLY BLOCK MERGE ===")
+            print(f"[DEBUG] enable_merge is True in finally block")
+            print("\n[MERGE] Running emergency merge (interrupted)...\n")
             try:
+                print(f"[DEBUG] Importing from ab.gpt.util.Merge in finally")
                 from ab.gpt.util.Merge import rebuild_from_lineage
+                print(f"[DEBUG] ✓ Import successful in finally")
+                print(f"[DEBUG] Calling rebuild_from_lineage() from finally")
                 rebuild_from_lineage()
-
+                print(f"[DEBUG] ✓ rebuild_from_lineage() completed in finally")
             except Exception as e:
-                print(f"[MERGE] Merge decision failed: {e}")
+                print(f"[MERGE] Emergency merge failed: {e}")
+                import traceback
+                traceback.print_exc()
 
     print("FINE-TUNING CONFIGURATION SUMMARY")
     print("=" * 70)
