@@ -1442,6 +1442,17 @@ def _candidate_nn_dataset_roots() -> list[Path]:
 
 def _ensure_nn_dataset_importable() -> Optional[Path]:
     global _NN_DATASET_IMPORT_READY
+    importlib.invalidate_caches()
+    try:
+        installed_api = importlib.import_module("ab.nn.api")
+        _NN_DATASET_IMPORT_READY = True
+        module_file = getattr(installed_api, "__file__", None)
+        if module_file:
+            return Path(module_file).resolve().parent
+        return Path.cwd().resolve()
+    except Exception:
+        pass
+
     if _NN_DATASET_IMPORT_READY:
         for root in _candidate_nn_dataset_roots():
             if (root / "ab" / "nn" / "api.py").exists():
