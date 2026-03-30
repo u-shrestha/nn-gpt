@@ -353,7 +353,7 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
             print("\n[MERGE] Training complete - running auto merge...\n")
             try:
                 print(f"[DEBUG] Importing from ab.gpt.util.Merge")
-                from ab.gpt.util.Merge import rebuild_from_lineage
+                from ab.gpt.util.MergeLLM import rebuild_from_lineage
                 print(f"[DEBUG] ✓ Import successful")
                 print(f"[DEBUG] Calling rebuild_from_lineage()")
                 rebuild_from_lineage()
@@ -374,7 +374,7 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
             print("\n[MERGE] Running emergency merge (interrupted)...\n")
             try:
                 print(f"[DEBUG] Importing from ab.gpt.util.Merge in finally")
-                from ab.gpt.util.Merge import rebuild_from_lineage
+                from ab.gpt.util.MergeLLM import rebuild_from_lineage
                 print(f"[DEBUG] ✓ Import successful in finally")
                 print(f"[DEBUG] Calling rebuild_from_lineage() from finally")
                 rebuild_from_lineage()
