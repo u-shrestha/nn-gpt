@@ -2079,6 +2079,7 @@ def _prepare_local_reward_entries(
     batched_eval_indices: List[int] = []
     batched_eval_specs: List[Dict[str, Any]] = []
     precomputed_eval_results: Dict[int, Dict[str, Any]] = {}
+    eval_cfg_builder = getattr(evaluate_code_and_reward, "_nngpt_eval_cfg_builder", None)
 
     for i, completion in enumerate(completions):
         _, init_code, forward_code = extract_completion_blocks(completion)
@@ -2122,6 +2123,13 @@ def _prepare_local_reward_entries(
                 "batch_last_item": i == (len(completions) - 1),
             }
         )
+        if callable(eval_cfg_builder):
+            batched_eval_specs[-1]["cfg"] = eval_cfg_builder(
+                in_shape=(1, 3, 224, 224),
+                out_shape=(10,),
+                prm=batched_eval_specs[-1]["prm"],
+                cfg=None,
+            )
 
     if batched_eval_specs:
         if torch.cuda.is_available():

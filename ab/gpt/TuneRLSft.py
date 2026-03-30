@@ -431,6 +431,67 @@ def evaluate_code_and_reward_cifar(
         return _cifar_eval_error(exc, seed_accuracy_baseline=seed_accuracy_baseline)
 
 
+def build_sft_reward_eval_cfg(
+    *,
+    in_shape=(1, 3, 256, 256),
+    out_shape=(10,),
+    prm=None,
+    cfg=None,
+):
+    import torch
+
+    eval_device = "cuda" if torch.cuda.is_available() else "cpu"
+    if prm is None:
+        prm = {"lr": 1e-2, "momentum": 0.9, "dropout": 0.3}
+    defaults = {"lr": 1e-2, "momentum": 0.9, "batch": SFT_EVAL_BATCH_SIZE, "epoch": 1}
+    prm = {**defaults, **prm}
+
+    if cfg is None:
+        return RewardUtil.EvalConfig(
+            device=eval_device,
+            input_shape=in_shape,
+            n_classes=int(out_shape[0]),
+            train_epochs=int(prm.get("epoch", SFT_EVAL_TRAIN_EPOCHS) or SFT_EVAL_TRAIN_EPOCHS),
+            max_val_batches=SFT_EVAL_VAL_BATCHES,
+            default_batch_size=SFT_EVAL_BATCH_SIZE,
+            train_subset_size=SFT_EVAL_TRAIN_SUBSET,
+            val_subset_size=SFT_EVAL_VAL_SUBSET,
+            data_root=SFT_EVAL_DATA_ROOT,
+            download=SFT_EVAL_DOWNLOAD,
+            measure_latency=True,
+            kl_div=None,
+            critic_fn=None,
+            weights=None,
+            eval_limit_seconds=SFT_EVAL_LIMIT_SECONDS,
+            run_unfrozen_backbone_eval=SFT_EVAL_RUN_UNFROZEN,
+            full_test_acc=SFT_EVAL_FULL_TEST_ACC,
+            reward_target_metric="frozen_test_acc",
+        )
+
+    return RewardUtil.EvalConfig(
+        device=eval_device,
+        input_shape=cfg.input_shape,
+        n_classes=cfg.n_classes,
+        train_epochs=int(prm.get("epoch", getattr(cfg, "train_epochs", SFT_EVAL_TRAIN_EPOCHS)) or SFT_EVAL_TRAIN_EPOCHS),
+        train_steps=cfg.train_steps,
+        max_val_batches=cfg.max_val_batches,
+        default_batch_size=cfg.default_batch_size,
+        train_subset_size=cfg.train_subset_size,
+        val_subset_size=cfg.val_subset_size,
+        data_root=cfg.data_root,
+        download=cfg.download,
+        measure_latency=cfg.measure_latency,
+        kl_div=cfg.kl_div,
+        critic_fn=cfg.critic_fn,
+        weights=cfg.weights,
+        eval_limit_seconds=cfg.eval_limit_seconds,
+        budget_probe_batches=cfg.budget_probe_batches,
+        run_unfrozen_backbone_eval=cfg.run_unfrozen_backbone_eval,
+        full_test_acc=cfg.full_test_acc,
+        reward_target_metric=cfg.reward_target_metric,
+    )
+
+
 def _is_trainable_architecture(res: Dict[str, Any], graph_info) -> bool:
     discovery_meta = res.get("open_discovery", {})
     parse_ok = bool(getattr(graph_info, "parse_ok", False) or discovery_meta.get("parse_ok", False))
@@ -831,6 +892,7 @@ def patch_sft_runtime() -> tuple[str, str, str]:
     TuneRL.PROMPT_TEMPLATE = SFT_DISCOVERY_PROMPT_TEMPLATE
     TuneRL.extract_completion_blocks = TuneRLRaw.extract_completion_blocks_tolerant
     TuneRL.evaluate_code_and_reward = evaluate_code_and_reward_cifar
+    setattr(TuneRL.evaluate_code_and_reward, "_nngpt_eval_cfg_builder", build_sft_reward_eval_cfg)
     TuneRL.reward_fn = sft_reward_fn
     TuneRL.load_rl_dataset = load_rl_dataset_sft
     TuneRL.run_log_dir = lambda: SFT_LOG_DIR
