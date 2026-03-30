@@ -556,26 +556,6 @@ def _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode
         else:
             NNEval.main(nn_name_prefix, nn_train_epochs, epoch)
 
-            # === MERGE SYSTEM ===
-            enable_merge = False
-            try:
-                run_cfg_path = nngpt_dir / "run_config.json"
-                if run_cfg_path.exists():
-                    with open(run_cfg_path) as f:
-                        run_cfg = json.load(f)
-                    enable_merge = run_cfg.get("enable_merge", False)
-            except:
-                pass
-
-            if enable_merge:
-                try:
-                    from ab.gpt.util.Merge import rebuild_from_lineage
-                    print(f"[MERGE] Running merge for epoch {epoch}")
-                    rebuild_from_lineage()
-                except Exception as e:
-                    print(f"[MERGE] failed: {e}")
-                    import traceback
-                    traceback.print_exc()
 
             print('[DEBUG] Release_memory.')
             release_memory()
