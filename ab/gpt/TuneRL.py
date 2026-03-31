@@ -115,11 +115,19 @@ GROUP_IMPROVEMENT_DELTA = 0.003
 BEST_GROUP_REFRESH_DELTA = 0.0015
 GOAL_REFRESH_DELTA = 0.0015
 NON_IMPROVING_REWARD_CAP = 0.04
-BATCH_ELITE_PRIMARY_BONUS = 0.12
-BATCH_ELITE_SECONDARY_BONUS = 0.06
-REPEAT_FAMILY_PENALTY = -0.18
-PLAIN_FUSE_PENALTY = -0.18
-NO_PROGRESS_PENALTY = -0.12
+BATCH_ELITE_SOFT_BONUSES = (0.10, 0.07, 0.05, 0.03, 0.02)
+BATCH_ELITE_IMPROVING_BONUSES = (0.18, 0.13, 0.09, 0.06, 0.04)
+STRUCTURE_MACRO_BONUS = 0.04
+STRUCTURE_MULTI_STAGE_BONUS = 0.03
+STRUCTURE_MOTIF_BONUS = 0.02
+STRUCTURE_BATCH_DIVERSITY_BONUS = 0.03
+STRUCTURE_NON_DOMINANT_FAMILY_BONUS = 0.02
+STRUCTURE_ARCHIVE_RARITY_STRONG_BONUS = 0.03
+STRUCTURE_ARCHIVE_RARITY_MEDIUM_BONUS = 0.02
+STRUCTURE_ARCHIVE_RARITY_LIGHT_BONUS = 0.01
+REPEAT_FAMILY_PENALTY = -0.10
+PLAIN_FUSE_PENALTY = -0.10
+NO_PROGRESS_PENALTY = -0.06
 GOAL_REFRESH_BONUS = 0.30
 GOAL_MATCH_REWARD_SCALE = 0.12
 TRAINSET_NOVEL_FAMILY_BONUS = 0.04
@@ -597,12 +605,16 @@ def _truncate_text(text: str, max_chars: int) -> str:
 
 
 def _feedback_stats_short(open_discovery: Dict[str, Any]) -> str:
+    structure_progress = float(open_discovery.get("r_structure_group", 0.0) or 0.0) + float(
+        open_discovery.get("r_structure_archive", 0.0) or 0.0
+    )
     return (
         f"depth:{int(open_discovery.get('depth', 0))} "
         f"merges:{int(open_discovery.get('merges', 0))} "
         f"stem:{int(open_discovery.get('stem_calls', 0))} "
         f"project:{int(open_discovery.get('project_calls', 0))} "
-        f"fuse:{int(open_discovery.get('fuse_calls', 0))}"
+        f"fuse:{int(open_discovery.get('fuse_calls', 0))} "
+        f"struct:{structure_progress:.2f}"
     )
 
 
@@ -1516,10 +1528,15 @@ def _discovery_failure_result(
         "r_goal_match": 0.0,
         "r_trainset_novelty": 0.0,
         "r_generalization": 0.0,
+        "r_structure_group": 0.0,
+        "r_structure_archive": 0.0,
         "r_batch_elite": 0.0,
         "r_repeat_family": 0.0,
         "r_plain_fuse_penalty": 0.0,
         "r_no_progress_penalty": 0.0,
+        "batch_elite_rank": None,
+        "batch_elite_tier": "none",
+        "batch_elite_threshold_passed": False,
         "goal_tag_hit_count": 0,
         "goal_tag_total_count": 0,
         "goal_tag_hit_rate": 0.0,
@@ -1535,10 +1552,15 @@ def _discovery_failure_result(
             "r_goal_best": 0.0,
             "r_goal_match": 0.0,
             "r_generalization": 0.0,
+            "r_structure_group": 0.0,
+            "r_structure_archive": 0.0,
             "r_batch_elite": 0.0,
             "r_repeat_family": 0.0,
             "r_plain_fuse_penalty": 0.0,
             "r_no_progress_penalty": 0.0,
+            "batch_elite_rank": None,
+            "batch_elite_tier": "none",
+            "batch_elite_threshold_passed": False,
             "novel_vs_trainset_family": False,
             "novel_vs_trainset_graph": False,
             "archive_snapshot_family_freq": 0,
@@ -1578,6 +1600,81 @@ def _apply_trainability_clamp(res: Dict[str, Any], reward_value: float, graph_in
     if not res.get("loss_drop_ok"):
         return min(reward_value, 0.0)
     return reward_value
+
+
+def _archive_rarity_bonus(archive_snapshot_family_freq: int) -> float:
+    if archive_snapshot_family_freq <= 0:
+        return STRUCTURE_ARCHIVE_RARITY_STRONG_BONUS
+    if archive_snapshot_family_freq == 1:
+        return STRUCTURE_ARCHIVE_RARITY_MEDIUM_BONUS
+    if archive_snapshot_family_freq <= 3:
+        return STRUCTURE_ARCHIVE_RARITY_LIGHT_BONUS
+    return 0.0
+
+
+def _structure_progress_components(
+    graph_info,
+    *,
+    batch_same_family_count: int,
+    archive_snapshot_family_freq: int,
+    novel_vs_trainset_family: bool,
+    novel_vs_trainset_graph: bool,
+    shallow_one_shot: bool,
+) -> Tuple[float, float]:
+    if not graph_info or not graph_info.parse_ok:
+        return 0.0, 0.0
+
+    r_structure_group = 0.0
+    if passes_macro_structure_gate(graph_info):
+        r_structure_group += STRUCTURE_MACRO_BONUS
+    if is_multi_stage_architecture(graph_info):
+        r_structure_group += STRUCTURE_MULTI_STAGE_BONUS
+    if has_structural_motif(graph_info):
+        r_structure_group += STRUCTURE_MOTIF_BONUS
+    if batch_same_family_count <= 1:
+        r_structure_group += STRUCTURE_BATCH_DIVERSITY_BONUS
+    elif batch_same_family_count == 2:
+        r_structure_group += STRUCTURE_BATCH_DIVERSITY_BONUS * 0.5
+    if (
+        dominant_family_hash
+        and graph_info.family_hash != dominant_family_hash
+        and float(dominant_family_share or 0.0) >= 0.20
+    ):
+        r_structure_group += STRUCTURE_NON_DOMINANT_FAMILY_BONUS
+    if shallow_one_shot:
+        r_structure_group = max(0.0, r_structure_group - 0.02)
+
+    r_structure_archive = 0.0
+    if novel_vs_trainset_family:
+        r_structure_archive += TRAINSET_NOVEL_FAMILY_BONUS
+    elif novel_vs_trainset_graph:
+        r_structure_archive += TRAINSET_NOVEL_GRAPH_BONUS
+    r_structure_archive += _archive_rarity_bonus(archive_snapshot_family_freq)
+
+    return _clip(r_structure_group, 0.0, 0.14), _clip(r_structure_archive, 0.0, 0.08)
+
+
+def _recompute_discovery_reward(
+    res: Dict[str, Any],
+    graph_info,
+) -> Tuple[float, float, float]:
+    r_primary = (
+        float(res.get("r_dense", 0.0) or 0.0)
+        + float(res.get("r_prev_group", 0.0) or 0.0)
+        + float(res.get("r_best_group", 0.0) or 0.0)
+        + float(res.get("r_goal_best", 0.0) or 0.0)
+        + float(res.get("r_generalization", 0.0) or 0.0)
+        + float(res.get("r_structure_group", 0.0) or 0.0)
+        + float(res.get("r_structure_archive", 0.0) or 0.0)
+        + float(res.get("r_batch_elite", 0.0) or 0.0)
+        + float(res.get("r_repeat_family", 0.0) or 0.0)
+        + float(res.get("r_plain_fuse_penalty", 0.0) or 0.0)
+        + float(res.get("r_no_progress_penalty", 0.0) or 0.0)
+    )
+    r_tiebreak = float(res.get("r_goal_match", 0.0) or 0.0)
+    total_reward = _clip(r_primary + r_tiebreak, -2.0, 2.0)
+    total_reward = _apply_trainability_clamp(res, total_reward, graph_info)
+    return total_reward, r_primary, r_tiebreak
 
 
 def _attach_group_context(
@@ -1628,10 +1725,15 @@ def _attach_group_context(
     res.setdefault("r_goal_match", 0.0)
     res.setdefault("r_trainset_novelty", 0.0)
     res.setdefault("r_generalization", 0.0)
+    res.setdefault("r_structure_group", 0.0)
+    res.setdefault("r_structure_archive", 0.0)
     res.setdefault("r_batch_elite", 0.0)
     res.setdefault("r_repeat_family", 0.0)
     res.setdefault("r_plain_fuse_penalty", 0.0)
     res.setdefault("r_no_progress_penalty", 0.0)
+    res.setdefault("batch_elite_rank", None)
+    res.setdefault("batch_elite_tier", "none")
+    res.setdefault("batch_elite_threshold_passed", False)
     res.setdefault("goal_tag_hit_count", 0)
     res.setdefault("goal_tag_total_count", 0)
     res.setdefault("goal_tag_hit_rate", 0.0)
@@ -1650,10 +1752,15 @@ def _attach_group_context(
     open_discovery.setdefault("r_goal_best", res.get("r_goal_best", 0.0))
     open_discovery.setdefault("r_goal_match", res.get("r_goal_match", 0.0))
     open_discovery.setdefault("r_generalization", res.get("r_generalization", 0.0))
+    open_discovery.setdefault("r_structure_group", res.get("r_structure_group", 0.0))
+    open_discovery.setdefault("r_structure_archive", res.get("r_structure_archive", 0.0))
     open_discovery.setdefault("r_batch_elite", res.get("r_batch_elite", 0.0))
     open_discovery.setdefault("r_repeat_family", res.get("r_repeat_family", 0.0))
     open_discovery.setdefault("r_plain_fuse_penalty", res.get("r_plain_fuse_penalty", 0.0))
     open_discovery.setdefault("r_no_progress_penalty", res.get("r_no_progress_penalty", 0.0))
+    open_discovery.setdefault("batch_elite_rank", res.get("batch_elite_rank"))
+    open_discovery.setdefault("batch_elite_tier", res.get("batch_elite_tier", "none"))
+    open_discovery.setdefault("batch_elite_threshold_passed", res.get("batch_elite_threshold_passed", False))
     open_discovery.setdefault("novel_vs_trainset_family", False)
     open_discovery.setdefault("novel_vs_trainset_graph", False)
     open_discovery.setdefault("archive_snapshot_family_freq", 0)
@@ -1785,6 +1892,8 @@ def base_discovery_reward_fn(
     r_goal_match = 0.0
     r_trainset_novelty = 0.0
     r_generalization = 0.0
+    r_structure_group = 0.0
+    r_structure_archive = 0.0
     r_batch_elite = 0.0
     r_repeat_family = 0.0
     r_plain_fuse_penalty = 0.0
@@ -1878,6 +1987,14 @@ def base_discovery_reward_fn(
             r_trainset_novelty = TRAINSET_NOVEL_FAMILY_BONUS
         elif novel_vs_trainset_graph:
             r_trainset_novelty = TRAINSET_NOVEL_GRAPH_BONUS
+        r_structure_group, r_structure_archive = _structure_progress_components(
+            graph_info,
+            batch_same_family_count=batch_same_family_count,
+            archive_snapshot_family_freq=archive_snapshot_family_freq,
+            novel_vs_trainset_family=novel_vs_trainset_family,
+            novel_vs_trainset_graph=novel_vs_trainset_graph,
+            shallow_one_shot=shallow_one_shot,
+        )
         if (frozen_train_acc is not None) and (frozen_test_acc is not None):
             overfit_gap = max(0.0, float(frozen_train_acc) - float(frozen_test_acc) - GENERALIZATION_GAP_TOLERANCE)
             r_generalization = _clip(
@@ -1892,12 +2009,14 @@ def base_discovery_reward_fn(
         + r_best_group
         + r_goal_best
         + r_generalization
+        + r_structure_group
+        + r_structure_archive
         + r_batch_elite
         + r_repeat_family
         + r_plain_fuse_penalty
         + r_no_progress_penalty
     )
-    r_tiebreak = r_goal_match + r_trainset_novelty
+    r_tiebreak = r_goal_match
 
     warmup_dense_reward = None
     if group_warmup and trainable_candidate:
@@ -1941,10 +2060,15 @@ def base_discovery_reward_fn(
     res['r_goal_match'] = r_goal_match
     res['r_trainset_novelty'] = r_trainset_novelty
     res['r_generalization'] = r_generalization
+    res['r_structure_group'] = r_structure_group
+    res['r_structure_archive'] = r_structure_archive
     res['r_batch_elite'] = r_batch_elite
     res['r_repeat_family'] = r_repeat_family
     res['r_plain_fuse_penalty'] = r_plain_fuse_penalty
     res['r_no_progress_penalty'] = r_no_progress_penalty
+    res['batch_elite_rank'] = None
+    res['batch_elite_tier'] = "none"
+    res['batch_elite_threshold_passed'] = False
     res['goal_tag_hit_count'] = goal_tag_hit_count
     res['goal_tag_total_count'] = goal_tag_total_count
     res['goal_tag_hit_rate'] = goal_tag_hit_rate
@@ -1971,10 +2095,15 @@ def base_discovery_reward_fn(
         'r_goal_best': r_goal_best,
         'r_goal_match': r_goal_match,
         'r_generalization': r_generalization,
+        'r_structure_group': r_structure_group,
+        'r_structure_archive': r_structure_archive,
         'r_batch_elite': r_batch_elite,
         'r_repeat_family': r_repeat_family,
         'r_plain_fuse_penalty': r_plain_fuse_penalty,
         'r_no_progress_penalty': r_no_progress_penalty,
+        'batch_elite_rank': None,
+        'batch_elite_tier': "none",
+        'batch_elite_threshold_passed': False,
         'group_baseline_train_acc': group_baseline_train_acc,
         'group_baseline_reward_target_acc': effective_group_baseline_reward_target_acc,
         'reward_target_metric': REWARD_TARGET_METRIC,
@@ -2062,11 +2191,14 @@ def reward_fn(
 
 
 def _apply_batch_elite_bonuses(scored_results: List[Dict[str, Any]], group_context: Dict[str, Any]) -> None:
-    if group_context["group_warmup"] or group_context["group_baseline_reward_target_acc"] is None:
+    if group_context["group_warmup"]:
         return
 
     eligible: List[Tuple[float, Dict[str, Any]]] = []
-    threshold = float(group_context["group_baseline_reward_target_acc"]) + GROUP_IMPROVEMENT_DELTA
+    threshold = None
+    if group_context["group_baseline_reward_target_acc"] is not None:
+        threshold = float(group_context["group_baseline_reward_target_acc"]) + GROUP_IMPROVEMENT_DELTA
+
     for item in scored_results:
         res = item["result"]
         graph_info = item["graph_info"]
@@ -2075,21 +2207,46 @@ def _apply_batch_elite_bonuses(scored_results: List[Dict[str, Any]], group_conte
             continue
         if reward_target_value is None:
             continue
-        reward_target_float = float(reward_target_value)
-        if reward_target_float >= threshold:
-            eligible.append((reward_target_float, item))
+        eligible.append((float(reward_target_value), item))
 
     eligible.sort(key=lambda pair: pair[0], reverse=True)
-    for rank, (_, item) in enumerate(eligible[:2]):
-        bonus = BATCH_ELITE_PRIMARY_BONUS if rank == 0 else BATCH_ELITE_SECONDARY_BONUS
+    elite_summaries: List[str] = []
+    max_elites = min(len(BATCH_ELITE_SOFT_BONUSES), len(BATCH_ELITE_IMPROVING_BONUSES))
+    for rank, (reward_target_float, item) in enumerate(eligible[:max_elites]):
+        threshold_passed = threshold is not None and reward_target_float >= threshold
+        tier = "improving" if threshold_passed else "soft"
+        bonus = (
+            BATCH_ELITE_IMPROVING_BONUSES[rank]
+            if threshold_passed
+            else BATCH_ELITE_SOFT_BONUSES[rank]
+        )
         res = item["result"]
         graph_info = item["graph_info"]
+        if float(res.get("r_no_progress_penalty", 0.0) or 0.0) < 0.0:
+            res["r_no_progress_penalty"] = 0.0
         res["r_batch_elite"] = bonus
-        res["reward"] = _apply_trainability_clamp(res, float(res.get("reward", 0.0)) + bonus, graph_info)
+        res["batch_elite_rank"] = rank + 1
+        res["batch_elite_tier"] = tier
+        res["batch_elite_threshold_passed"] = threshold_passed
+        total_reward, r_primary, r_tiebreak = _recompute_discovery_reward(res, graph_info)
+        res["reward"] = total_reward
         open_discovery = res.setdefault("open_discovery", {})
         open_discovery["r_batch_elite"] = bonus
-        open_discovery["r_primary"] = float(open_discovery.get("r_primary", 0.0)) + bonus
-        item["score"] = float(res["reward"])
+        open_discovery["r_primary"] = r_primary
+        open_discovery["r_tiebreak"] = r_tiebreak
+        open_discovery["batch_elite_rank"] = rank + 1
+        open_discovery["batch_elite_tier"] = tier
+        open_discovery["batch_elite_threshold_passed"] = threshold_passed
+        item["score"] = float(total_reward)
+        elite_summaries.append(
+            f"#{rank + 1} target={reward_target_float:.4f} tier={tier} bonus={bonus:.3f} "
+            f"struct={float(res.get('r_structure_group', 0.0) or 0.0) + float(res.get('r_structure_archive', 0.0) or 0.0):.3f}"
+        )
+    if elite_summaries:
+        code_logger.log_to_file(
+            f"[Reward Batch Elite] reward_batch_index={group_context['reward_batch_index']} "
+            + "; ".join(elite_summaries)
+        )
 
 def _reward_failure_result(
     *,
