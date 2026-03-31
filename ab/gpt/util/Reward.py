@@ -1797,6 +1797,97 @@ def _ensure_nn_dataset_importable() -> None:
     _NN_DATASET_IMPORT_READY = True
 
 
+def _patch_nn_dataset_dataroll_for_reward() -> Optional[Tuple[type, Any, Any]]:
+    try:
+        import ab.nn.util.Train as nn_train  # type: ignore
+        from ab.nn.util.Exception import LearnTimeException  # type: ignore
+    except Exception:
+        return None
+
+    data_roll_cls = getattr(nn_train, "DataRoll", None)
+    if data_roll_cls is None:
+        return None
+
+    original_init = getattr(data_roll_cls, "__init__", None)
+    original_next = getattr(data_roll_cls, "__next__", None)
+    if original_init is None or original_next is None:
+        return None
+
+    warmup_batches_default = 8
+    measured_batches_default = 8
+    warmup_batches = max(0, _safe_int_env("NNGPT_REWARD_FORMAL_WARMUP_BATCHES", warmup_batches_default))
+    min_measured_batches = max(
+        1,
+        _safe_int_env("NNGPT_REWARD_FORMAL_MIN_MEASURED_BATCHES", measured_batches_default),
+    )
+
+    def _patched_init(self, dataset, epoch_limit_minutes):
+        original_init(self, dataset, epoch_limit_minutes)
+        try:
+            total_batches = int(getattr(self, "total", 0) or 0)
+        except (TypeError, ValueError):
+            total_batches = 0
+        effective_warmup = int(warmup_batches)
+        if total_batches > 0:
+            effective_warmup = min(effective_warmup, max(0, total_batches - 1))
+        self._nngpt_reward_warmup_batches = effective_warmup
+        self._nngpt_reward_min_measured_batches = int(min_measured_batches)
+        self._nngpt_reward_warmup_elapsed = None
+        self._nngpt_reward_steady_start_time = float(getattr(self, "init_time", time.time()))
+
+    def _patched_next(self):
+        now = time.time()
+        try:
+            current_n = int(getattr(self, "n", 0) or 0)
+        except (TypeError, ValueError):
+            current_n = 0
+        try:
+            total_batches = int(getattr(self, "total", 0) or 0)
+        except (TypeError, ValueError):
+            total_batches = 0
+
+        warmup_count = int(getattr(self, "_nngpt_reward_warmup_batches", 0) or 0)
+        if getattr(self, "_nngpt_reward_warmup_elapsed", None) is None and current_n >= warmup_count:
+            if warmup_count > 0:
+                self._nngpt_reward_warmup_elapsed = max(
+                    0.0,
+                    now - float(getattr(self, "init_time", now)),
+                )
+                self._nngpt_reward_steady_start_time = now
+            else:
+                self._nngpt_reward_warmup_elapsed = 0.0
+                self._nngpt_reward_steady_start_time = float(getattr(self, "init_time", now))
+
+        warmup_elapsed = getattr(self, "_nngpt_reward_warmup_elapsed", None)
+        if warmup_elapsed is not None and total_batches > 0:
+            measured_batches = max(0, current_n - warmup_count)
+            min_batches = int(getattr(self, "_nngpt_reward_min_measured_batches", 1) or 1)
+            if measured_batches >= min_batches:
+                steady_start_time = float(getattr(self, "_nngpt_reward_steady_start_time", now))
+                steady_elapsed = max(1e-1, now - steady_start_time)
+                remaining_profiled_batches = max(0, total_batches - warmup_count)
+                estimated_time = (
+                    float(warmup_elapsed)
+                    + (remaining_profiled_batches * steady_elapsed / max(1, measured_batches))
+                ) / 60.0
+                if estimated_time > float(getattr(self, "epoch_limit_minutes", 0.0) or 0.0):
+                    total_elapsed = max(1e-1, now - float(getattr(self, "init_time", now)))
+                    raise LearnTimeException(estimated_time, self.epoch_limit_minutes, total_elapsed)
+        return self.it.__next__()
+
+    data_roll_cls.__init__ = _patched_init
+    data_roll_cls.__next__ = _patched_next
+    return data_roll_cls, original_init, original_next
+
+
+def _restore_nn_dataset_dataroll_patch(patch_token: Optional[Tuple[type, Any, Any]]) -> None:
+    if patch_token is None:
+        return
+    data_roll_cls, original_init, original_next = patch_token
+    data_roll_cls.__init__ = original_init
+    data_roll_cls.__next__ = original_next
+
+
 def _formal_first_batch_loss(trainer: Any, prm: Dict[str, Any]) -> Optional[float]:
     try:
         trainer.model.train_setup(prm)
@@ -1992,10 +2083,20 @@ def _formal_eval_with_nn_dataset(
         _clear_reward_cuda_state()
 
     started_at = time.time()
+    data_roll_patch = None
     try:
         unique_code = (
             f"# reward formal eval nonce pid={os.getpid()} ns={time.time_ns()} "
             f"freeze={int(bool(freeze_backbones))}\n{code}"
+        )
+        data_roll_patch = _patch_nn_dataset_dataroll_for_reward()
+        formal_trace_context["reward_dataroll_warmup_batches"] = _safe_int_env(
+            "NNGPT_REWARD_FORMAL_WARMUP_BATCHES",
+            8,
+        )
+        formal_trace_context["reward_dataroll_min_measured_batches"] = _safe_int_env(
+            "NNGPT_REWARD_FORMAL_MIN_MEASURED_BATCHES",
+            8,
         )
         _model_name, test_acc, _accuracy_to_time, _code_score = nn_api.check_nn(
             unique_code,
@@ -2083,6 +2184,7 @@ def _formal_eval_with_nn_dataset(
             timed_out=type(exc).__name__ == "LearnTimeException",
         )
     finally:
+        _restore_nn_dataset_dataroll_patch(data_roll_patch)
         _clear_reward_cuda_state()
 
 

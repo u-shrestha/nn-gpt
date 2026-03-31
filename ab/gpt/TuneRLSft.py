@@ -33,7 +33,7 @@ SFT_DEEPSPEED_DEFAULT_CONFIG = str(conf_dir / "DeepSpeedSftGrpo.json")
 
 # CIFAR-10 reward evaluation via nn-dataset / NNEval-aligned formal acc.
 SFT_EVAL_IMAGE_SIZE = 256
-SFT_EVAL_BATCH_SIZE = 32
+SFT_EVAL_BATCH_SIZE = 64
 SFT_EVAL_TRAIN_SUBSET = 256
 SFT_EVAL_VAL_SUBSET = 128
 SFT_EVAL_TRAIN_EPOCHS = 1
