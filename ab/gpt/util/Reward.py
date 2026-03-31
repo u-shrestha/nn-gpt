@@ -2727,6 +2727,54 @@ def _worker_cuda_memory_gib() -> Tuple[Optional[float], Optional[float]]:
         return None, None
 
 
+def _worker_visible_cuda_memory_gib() -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    if not torch.cuda.is_available():
+        return 0.0, 0.0, 0.0
+    try:
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+        free_gib = float(free_bytes) / float(1024 ** 3)
+        total_gib = float(total_bytes) / float(1024 ** 3)
+        used_gib = float(total_bytes - free_bytes) / float(1024 ** 3)
+        return free_gib, used_gib, total_gib
+    except RuntimeError:
+        return None, None, None
+
+
+def _log_reward_worker_memory(
+    stage: str,
+    *,
+    request: Optional[Dict[str, Any]],
+    assigned_gpu: Optional[int],
+    worker_device: str,
+    reward_batch_index: Optional[int],
+    completion_index: Optional[int],
+    error: Optional[str] = None,
+) -> None:
+    cuda_allocated_gib, cuda_reserved_gib = _worker_cuda_memory_gib()
+    cuda_free_gib, cuda_used_gib, cuda_total_gib = _worker_visible_cuda_memory_gib()
+    normalized_error = None if not error else " ".join(str(error).split())
+    message = (
+        "[Reward Worker Memory] "
+        f"stage={stage} "
+        f"pid={os.getpid()} "
+        f"worker_slot={request.get('worker_slot') if isinstance(request, dict) else None} "
+        f"assigned_gpu={assigned_gpu} "
+        f"worker_device={worker_device} "
+        f"reward_batch_index={reward_batch_index} "
+        f"completion_index={completion_index} "
+        f"rss_gib={_format_mem_value(_read_process_rss_gib())} "
+        f"cuda_allocated_gib={_format_mem_value(cuda_allocated_gib)} "
+        f"cuda_reserved_gib={_format_mem_value(cuda_reserved_gib)} "
+        f"cuda_free_gib={_format_mem_value(cuda_free_gib)} "
+        f"cuda_used_gib={_format_mem_value(cuda_used_gib)} "
+        f"cuda_total_gib={_format_mem_value(cuda_total_gib)} "
+        f"torch_home={os.environ.get('TORCH_HOME', '')!r}"
+    )
+    if normalized_error is not None:
+        message += f" error={normalized_error!r}"
+    print(message)
+
+
 def _persistent_eval_worker_entry(
     conn,
     assigned_gpu: Optional[int],
@@ -2906,20 +2954,13 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
             last_reward_batch_index = reward_batch_index
             last_completion_index = completion_index
             if bool(request.get("worker_batch_first_item")):
-                cuda_allocated_gib, cuda_reserved_gib = _worker_cuda_memory_gib()
-                print(
-                    "[Reward Worker Memory] "
-                    f"stage=batch_start "
-                    f"pid={os.getpid()} "
-                    f"worker_slot={request.get('worker_slot')} "
-                    f"assigned_gpu={assigned_gpu} "
-                    f"worker_device={worker_device} "
-                    f"reward_batch_index={reward_batch_index} "
-                    f"completion_index={completion_index} "
-                    f"rss_gib={_format_mem_value(_read_process_rss_gib())} "
-                    f"cuda_allocated_gib={_format_mem_value(cuda_allocated_gib)} "
-                    f"cuda_reserved_gib={_format_mem_value(cuda_reserved_gib)} "
-                    f"torch_home={os.environ.get('TORCH_HOME', '')!r}"
+                _log_reward_worker_memory(
+                    "batch_start",
+                    request=request,
+                    assigned_gpu=assigned_gpu,
+                    worker_device=worker_device,
+                    reward_batch_index=reward_batch_index,
+                    completion_index=completion_index,
                 )
 
             try:
@@ -2938,6 +2979,15 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
                     val_loader=val_loader,
                 )
             except Exception as exc:
+                _log_reward_worker_memory(
+                    "error",
+                    request=request,
+                    assigned_gpu=assigned_gpu,
+                    worker_device=worker_device,
+                    reward_batch_index=reward_batch_index,
+                    completion_index=completion_index,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
                 result = _empty_eval_result(
                     reward=-1.0,
                     error=f"{type(exc).__name__}: {exc}",
@@ -2954,40 +3004,26 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
             if bool(request.get("worker_batch_last_item")):
                 if worker_device.startswith("cuda") and torch.cuda.is_available():
                     _clear_reward_cuda_state()
-                cuda_allocated_gib, cuda_reserved_gib = _worker_cuda_memory_gib()
-                print(
-                    "[Reward Worker Memory] "
-                    f"stage=batch_end "
-                    f"pid={os.getpid()} "
-                    f"worker_slot={request.get('worker_slot')} "
-                    f"assigned_gpu={assigned_gpu} "
-                    f"worker_device={worker_device} "
-                    f"reward_batch_index={reward_batch_index} "
-                    f"completion_index={completion_index} "
-                    f"rss_gib={_format_mem_value(_read_process_rss_gib())} "
-                    f"cuda_allocated_gib={_format_mem_value(cuda_allocated_gib)} "
-                    f"cuda_reserved_gib={_format_mem_value(cuda_reserved_gib)} "
-                    f"torch_home={os.environ.get('TORCH_HOME', '')!r}"
+                _log_reward_worker_memory(
+                    "batch_end",
+                    request=request,
+                    assigned_gpu=assigned_gpu,
+                    worker_device=worker_device,
+                    reward_batch_index=reward_batch_index,
+                    completion_index=completion_index,
                 )
 
             conn.send(result)
             if worker_restart_requested:
                 break
     finally:
-        cuda_allocated_gib, cuda_reserved_gib = _worker_cuda_memory_gib()
-        print(
-            "[Reward Worker Memory] "
-            f"stage=shutdown "
-            f"pid={os.getpid()} "
-            f"worker_slot={request.get('worker_slot') if 'request' in locals() and isinstance(request, dict) else None} "
-            f"assigned_gpu={assigned_gpu} "
-            f"worker_device={worker_device} "
-            f"reward_batch_index={last_reward_batch_index} "
-            f"completion_index={last_completion_index} "
-            f"rss_gib={_format_mem_value(_read_process_rss_gib())} "
-            f"cuda_allocated_gib={_format_mem_value(cuda_allocated_gib)} "
-            f"cuda_reserved_gib={_format_mem_value(cuda_reserved_gib)} "
-            f"torch_home={os.environ.get('TORCH_HOME', '')!r}"
+        _log_reward_worker_memory(
+            "shutdown",
+            request=request if 'request' in locals() and isinstance(request, dict) else None,
+            assigned_gpu=assigned_gpu,
+            worker_device=worker_device,
+            reward_batch_index=last_reward_batch_index,
+            completion_index=last_completion_index,
         )
         loader_cache.clear()
         _clear_reward_cuda_state()

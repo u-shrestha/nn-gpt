@@ -849,10 +849,17 @@ def run_sft_training():
     TuneRL.log_memory_snapshot("sft/grpo_trainer_initialized")
 
     print("Starting GRPO training for Backbone Search...")
+    memory_monitor = TuneRL.start_cuda_memory_monitor("sft/trainer")
     try:
         TuneRL.log_memory_snapshot("sft/before_trainer_train")
         trainer.train()
+    except Exception as exc:
+        if TuneRL.is_cuda_oom_error(exc):
+            TuneRL.log_cuda_oom_diagnostics("sft/trainer.train", exc)
+        raise
     finally:
+        if memory_monitor is not None:
+            memory_monitor.close()
         RewardUtil.shutdown_eval_worker()
 
     if SFT_SAVE_RL_MODEL:

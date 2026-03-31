@@ -1,5 +1,8 @@
 import ast
+import csv
+import subprocess
 import sys
+import threading
 import warnings
 
 
@@ -919,15 +922,333 @@ def _format_mem_value(value: Optional[float]) -> str:
     return f"{value:.2f}"
 
 
-def log_memory_snapshot(stage: str, *, group_context: Optional[Dict[str, Any]] = None) -> None:
+def _visible_cuda_device_tokens() -> List[str]:
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return []
+    raw = raw.strip()
+    if raw in {"", "-1"}:
+        return []
+    return [token.strip() for token in raw.split(",") if token.strip()]
+
+
+def _resolved_train_gpu_index() -> Optional[int]:
+    if not torch.cuda.is_available():
+        return None
+    visible_gpu_count = int(torch.cuda.device_count())
+    if visible_gpu_count <= 0:
+        return None
+    try:
+        current_device = int(torch.cuda.current_device())
+        if 0 <= current_device < visible_gpu_count:
+            return current_device
+    except Exception:
+        pass
+    raw_local_rank = env_int("LOCAL_RANK", 0)
+    if visible_gpu_count == 1:
+        return 0
+    if 0 <= raw_local_rank < visible_gpu_count:
+        return raw_local_rank
+    return 0
+
+
+def _visible_cuda_memory_snapshots(*, include_all_visible_gpus: bool) -> List[Dict[str, Any]]:
+    if not torch.cuda.is_available():
+        return []
+    visible_gpu_count = int(torch.cuda.device_count())
+    if visible_gpu_count <= 0:
+        return []
+    device_tokens = _visible_cuda_device_tokens()
+    train_gpu_index = _resolved_train_gpu_index()
+    if include_all_visible_gpus:
+        device_indices = list(range(visible_gpu_count))
+    elif train_gpu_index is not None:
+        device_indices = [int(train_gpu_index)]
+    else:
+        device_indices = [0]
+
+    snapshots: List[Dict[str, Any]] = []
+    for device_index in device_indices:
+        total_gib = None
+        free_gib = None
+        used_gib = None
+        allocated_gib = None
+        reserved_gib = None
+        device_name = ""
+        try:
+            props = torch.cuda.get_device_properties(device_index)
+            total_gib = float(props.total_memory) / float(1024 ** 3)
+            device_name = str(getattr(props, "name", "") or "")
+        except Exception:
+            pass
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info(device_index)
+            free_gib = float(free_bytes) / float(1024 ** 3)
+            used_gib = float(total_bytes - free_bytes) / float(1024 ** 3)
+            if total_gib is None:
+                total_gib = float(total_bytes) / float(1024 ** 3)
+        except Exception:
+            pass
+        try:
+            allocated_gib = float(torch.cuda.memory_allocated(device_index)) / float(1024 ** 3)
+        except Exception:
+            allocated_gib = None
+        try:
+            reserved_gib = float(torch.cuda.memory_reserved(device_index)) / float(1024 ** 3)
+        except Exception:
+            reserved_gib = None
+
+        other_used_gib = None
+        if used_gib is not None and allocated_gib is not None:
+            other_used_gib = max(0.0, float(used_gib) - float(allocated_gib))
+
+        device_token = (
+            device_tokens[device_index]
+            if 0 <= device_index < len(device_tokens)
+            else str(int(device_index))
+        )
+        snapshots.append(
+            {
+                "device_index": int(device_index),
+                "device_token": str(device_token),
+                "device_name": device_name,
+                "total_gib": total_gib,
+                "free_gib": free_gib,
+                "used_gib": used_gib,
+                "allocated_gib": allocated_gib,
+                "reserved_gib": reserved_gib,
+                "other_used_gib": other_used_gib,
+                "is_train_gpu": bool(train_gpu_index is not None and int(train_gpu_index) == int(device_index)),
+            }
+        )
+    return snapshots
+
+
+def _current_cuda_allocator_snapshot() -> Dict[str, Any]:
+    if not torch.cuda.is_available():
+        return {}
+    try:
+        current_device = int(torch.cuda.current_device())
+    except Exception:
+        current_device = _resolved_train_gpu_index()
+    if current_device is None:
+        return {}
+    try:
+        stats = torch.cuda.memory_stats(current_device)
+    except Exception:
+        return {}
+    return {
+        "current_device": int(current_device),
+        "active_gib": float(stats.get("active_bytes.all.current", 0.0)) / float(1024 ** 3),
+        "reserved_gib": float(stats.get("reserved_bytes.all.current", 0.0)) / float(1024 ** 3),
+        "inactive_split_gib": float(stats.get("inactive_split_bytes.all.current", 0.0)) / float(1024 ** 3),
+        "num_ooms": int(stats.get("num_ooms", 0)),
+        "num_alloc_retries": int(stats.get("num_alloc_retries", 0)),
+    }
+
+
+def _query_nvidia_smi_csv(query_kind: str, columns: List[str]) -> List[List[str]]:
+    executable = shutil.which("nvidia-smi")
+    if executable is None:
+        return []
+    command = [
+        executable,
+        f"--query-{query_kind}={','.join(columns)}",
+        "--format=csv,noheader,nounits",
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return []
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return []
+    reader = csv.reader(completed.stdout.splitlines())
+    return [[cell.strip() for cell in row] for row in reader if row]
+
+
+def _log_nvidia_smi_snapshot(stage: str) -> None:
+    gpu_rows = _query_nvidia_smi_csv(
+        "gpu",
+        ["index", "uuid", "name", "memory.total", "memory.used", "memory.free"],
+    )
+    if not gpu_rows:
+        print(f"[OOM nvidia-smi] stage={stage} unavailable=True")
+        return
+
+    visible_tokens = set(_visible_cuda_device_tokens())
+    filter_visible = bool(visible_tokens)
+    gpu_rows_by_uuid: Dict[str, Dict[str, str]] = {}
+    for row in gpu_rows:
+        if len(row) < 6:
+            continue
+        gpu_index, gpu_uuid, gpu_name, total_mib, used_mib, free_mib = row[:6]
+        if filter_visible and gpu_index not in visible_tokens and gpu_uuid not in visible_tokens:
+            continue
+        gpu_rows_by_uuid[gpu_uuid] = {
+            "index": gpu_index,
+            "uuid": gpu_uuid,
+            "name": gpu_name,
+            "total_mib": total_mib,
+            "used_mib": used_mib,
+            "free_mib": free_mib,
+        }
+        print(
+            "[OOM nvidia-smi GPU] "
+            f"stage={stage} "
+            f"gpu={gpu_index} "
+            f"name={gpu_name!r} "
+            f"used_mib={used_mib} "
+            f"free_mib={free_mib} "
+            f"total_mib={total_mib}"
+        )
+
+    process_rows = _query_nvidia_smi_csv(
+        "compute-apps",
+        ["gpu_uuid", "pid", "process_name", "used_memory"],
+    )
+    process_snapshots: List[Dict[str, Any]] = []
+    for row in process_rows:
+        if len(row) < 4:
+            continue
+        gpu_uuid, pid, process_name, used_mib = row[:4]
+        gpu_info = gpu_rows_by_uuid.get(gpu_uuid)
+        if gpu_info is None:
+            continue
+        try:
+            used_mib_value = int(float(used_mib))
+        except (TypeError, ValueError):
+            used_mib_value = 0
+        process_snapshots.append(
+            {
+                "gpu": gpu_info["index"],
+                "pid": pid,
+                "process_name": process_name,
+                "used_mib": used_mib_value,
+            }
+        )
+    process_snapshots.sort(key=lambda item: int(item["used_mib"]), reverse=True)
+    for snapshot in process_snapshots[:24]:
+        print(
+            "[OOM nvidia-smi Proc] "
+            f"stage={stage} "
+            f"gpu={snapshot['gpu']} "
+            f"pid={snapshot['pid']} "
+            f"used_mib={snapshot['used_mib']} "
+            f"process={snapshot['process_name']!r}"
+        )
+
+
+def is_cuda_oom_error(exc: BaseException) -> bool:
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    normalized = " ".join(str(exc).split()).lower()
+    return "out of memory" in normalized and "cuda" in normalized
+
+
+def log_cuda_oom_diagnostics(
+    stage: str,
+    exc: BaseException,
+    *,
+    group_context: Optional[Dict[str, Any]] = None,
+) -> None:
+    print(f"[OOM] stage={stage} error={type(exc).__name__}: {exc}")
+    log_memory_snapshot(stage, group_context=group_context, include_all_visible_gpus=True)
+    allocator_snapshot = _current_cuda_allocator_snapshot()
+    if allocator_snapshot:
+        print(
+            "[OOM Allocator] "
+            f"stage={stage} "
+            f"current_device={allocator_snapshot['current_device']} "
+            f"active_gib={_format_mem_value(allocator_snapshot['active_gib'])} "
+            f"reserved_gib={_format_mem_value(allocator_snapshot['reserved_gib'])} "
+            f"inactive_split_gib={_format_mem_value(allocator_snapshot['inactive_split_gib'])} "
+            f"num_ooms={allocator_snapshot['num_ooms']} "
+            f"num_alloc_retries={allocator_snapshot['num_alloc_retries']}"
+        )
+    _log_nvidia_smi_snapshot(stage)
+
+
+class _CudaMemoryMonitor:
+    def __init__(self, stage_prefix: str) -> None:
+        self._stage_prefix = str(stage_prefix)
+        self._enabled = bool(torch.cuda.is_available()) and env_int("NNGPT_CUDA_MEMORY_MONITOR", 1) > 0
+        self._interval_seconds = max(1.0, env_float("NNGPT_CUDA_MEMORY_MONITOR_INTERVAL_SECONDS", 30.0))
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> Optional["_CudaMemoryMonitor"]:
+        if not self._enabled:
+            return None
+        print(
+            "[Memory Monitor] "
+            f"stage_prefix={self._stage_prefix} "
+            f"interval_seconds={self._interval_seconds:.1f}"
+        )
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"nngpt-cuda-memory-monitor-{self._stage_prefix}",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self._interval_seconds):
+            try:
+                log_memory_snapshot(f"{self._stage_prefix}:tick")
+            except Exception as exc:
+                print(
+                    "[Memory Monitor] "
+                    f"stage_prefix={self._stage_prefix} "
+                    f"error={type(exc).__name__}: {exc}"
+                )
+
+    def close(self) -> None:
+        if self._thread is None:
+            return
+        self._stop_event.set()
+        self._thread.join(timeout=max(2.0, self._interval_seconds + 1.0))
+        self._thread = None
+
+
+def start_cuda_memory_monitor(stage_prefix: str) -> Optional[_CudaMemoryMonitor]:
+    monitor = _CudaMemoryMonitor(stage_prefix)
+    return monitor.start()
+
+
+def log_memory_snapshot(
+    stage: str,
+    *,
+    group_context: Optional[Dict[str, Any]] = None,
+    include_all_visible_gpus: Optional[bool] = None,
+) -> None:
     effective_group_context = group_context or current_reward_group_context()
     cuda_allocated_gib, cuda_reserved_gib = _cuda_memory_gib()
     worker_info = get_eval_worker_diagnostics()
     worker_pid = worker_info.get("worker_pids", [worker_info.get("pid")]) if worker_info else None
+    rank = _distributed_rank()
+    local_rank = env_int("LOCAL_RANK", 0)
+    world_size = _distributed_world_size()
+    train_gpu = _resolved_train_gpu_index()
+    if include_all_visible_gpus is None:
+        include_all_visible_gpus = bool(world_size <= 1 or is_main_process())
+    visible_cuda_snapshots = _visible_cuda_memory_snapshots(
+        include_all_visible_gpus=bool(include_all_visible_gpus)
+    )
     print(
         "[Memory] "
         f"stage={stage} "
         f"pid={os.getpid()} "
+        f"rank={rank} "
+        f"local_rank={local_rank} "
+        f"world_size={world_size} "
+        f"train_gpu={train_gpu} "
         f"reward_batch_index={effective_group_context.get('reward_batch_index')} "
         f"reward_group_id={effective_group_context.get('reward_group_id')} "
         f"rss_gib={_format_mem_value(_read_process_rss_gib())} "
@@ -935,6 +1256,33 @@ def log_memory_snapshot(stage: str, *, group_context: Optional[Dict[str, Any]] =
         f"cuda_reserved_gib={_format_mem_value(cuda_reserved_gib)} "
         f"worker_pid={worker_pid}"
     )
+    for snapshot in visible_cuda_snapshots:
+        train_gpu_marker = "*" if snapshot.get("is_train_gpu") else ""
+        print(
+            "[Memory GPU] "
+            f"stage={stage} "
+            f"gpu={snapshot['device_index']}{train_gpu_marker} "
+            f"token={snapshot['device_token']} "
+            f"name={snapshot['device_name']!r} "
+            f"free_gib={_format_mem_value(snapshot['free_gib'])} "
+            f"used_gib={_format_mem_value(snapshot['used_gib'])} "
+            f"total_gib={_format_mem_value(snapshot['total_gib'])} "
+            f"proc_allocated_gib={_format_mem_value(snapshot['allocated_gib'])} "
+            f"proc_reserved_gib={_format_mem_value(snapshot['reserved_gib'])} "
+            f"other_used_gib={_format_mem_value(snapshot['other_used_gib'])}"
+        )
+    if worker_info:
+        print(
+            "[Memory Workers] "
+            f"stage={stage} "
+            f"mode={worker_info.get('mode')} "
+            f"pool_size={worker_info.get('pool_size')} "
+            f"shared_train_gpu={worker_info.get('shared_train_gpu')} "
+            f"reward_gpu_indices={worker_info.get('reward_gpu_indices')} "
+            f"per_gpu_worker_counts={worker_info.get('per_gpu_worker_counts')} "
+            f"worker_pids={worker_info.get('worker_pids')} "
+            f"total_worker_rss_gib={_format_mem_value(worker_info.get('total_rss_gib'))}"
+        )
 
 
 def update_current_group_metrics(results: List[Dict[str, Any]]) -> None:
@@ -2394,11 +2742,21 @@ def _precompute_eval_results(
     )
     if not batched_eval_specs:
         return
+    log_memory_snapshot(
+        "reward/precompute_eval:start",
+        group_context=group_context,
+        include_all_visible_gpus=True,
+    )
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     batched_eval_results = evaluate_code_and_reward_batch(batched_eval_specs)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+    log_memory_snapshot(
+        "reward/precompute_eval:end",
+        group_context=group_context,
+        include_all_visible_gpus=True,
+    )
     for entry, eval_result in zip(batched_eval_entries, batched_eval_results):
         entry["precomputed_eval_result"] = eval_result
 
@@ -2881,9 +3239,17 @@ def main():
     )
 
     print("Starting GRPO training for Backbone Search...")
+    memory_monitor = start_cuda_memory_monitor("rl/trainer")
     try:
+        log_memory_snapshot("rl/before_trainer_train")
         trainer.train()
+    except Exception as exc:
+        if is_cuda_oom_error(exc):
+            log_cuda_oom_diagnostics("rl/trainer.train", exc)
+        raise
     finally:
+        if memory_monitor is not None:
+            memory_monitor.close()
         shutdown_eval_worker()
 
     model_out = run_model_out()
