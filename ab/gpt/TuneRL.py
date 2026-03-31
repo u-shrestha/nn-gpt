@@ -1,8 +1,10 @@
 import ast
 import csv
+from datetime import timedelta
 import subprocess
 import sys
 import threading
+import time
 import warnings
 
 
@@ -360,6 +362,11 @@ def _distributed_initialized() -> bool:
     return bool(torch.distributed.is_available() and torch.distributed.is_initialized())
 
 
+_OBJECT_SYNC_GROUP = None
+_OBJECT_SYNC_GROUP_WORLD_SIZE = None
+_OBJECT_SYNC_GROUP_DISABLED = False
+
+
 def _distributed_world_size() -> int:
     if _distributed_initialized():
         return int(torch.distributed.get_world_size())
@@ -376,11 +383,70 @@ def is_main_process() -> bool:
     return _distributed_rank() == 0
 
 
+def _object_sync_timeout_seconds() -> int:
+    return max(600, env_int("NNGPT_RL_OBJECT_SYNC_TIMEOUT_SECONDS", 7200))
+
+
+def _default_process_group_backend() -> str:
+    if not _distributed_initialized():
+        return ""
+    try:
+        backend = torch.distributed.get_backend()
+    except Exception:
+        return ""
+    backend_text = str(backend).lower()
+    if backend_text.startswith("backend."):
+        backend_text = backend_text.split(".", 1)[1]
+    return backend_text
+
+
+def _get_object_sync_group():
+    global _OBJECT_SYNC_GROUP
+    global _OBJECT_SYNC_GROUP_WORLD_SIZE
+    global _OBJECT_SYNC_GROUP_DISABLED
+
+    if not _distributed_initialized() or _distributed_world_size() <= 1:
+        return None
+    if _default_process_group_backend() == "gloo":
+        return None
+    current_world_size = _distributed_world_size()
+    if _OBJECT_SYNC_GROUP is not None and _OBJECT_SYNC_GROUP_WORLD_SIZE == current_world_size:
+        return _OBJECT_SYNC_GROUP
+    if _OBJECT_SYNC_GROUP_DISABLED:
+        return None
+
+    timeout_seconds = _object_sync_timeout_seconds()
+    try:
+        _OBJECT_SYNC_GROUP = torch.distributed.new_group(
+            backend="gloo",
+            timeout=timedelta(seconds=timeout_seconds),
+        )
+        _OBJECT_SYNC_GROUP_WORLD_SIZE = current_world_size
+        print(
+            "[Reward Sync Group] initialized "
+            f"rank={_distributed_rank()} "
+            f"world_size={current_world_size} "
+            f"backend=gloo "
+            f"timeout_seconds={timeout_seconds}"
+        )
+    except Exception as exc:
+        _OBJECT_SYNC_GROUP = None
+        _OBJECT_SYNC_GROUP_WORLD_SIZE = None
+        _OBJECT_SYNC_GROUP_DISABLED = True
+        print(
+            "[Reward Sync Group] fallback "
+            f"rank={_distributed_rank()} "
+            f"backend={_default_process_group_backend() or 'unknown'} "
+            f"error={type(exc).__name__}: {exc}"
+        )
+    return _OBJECT_SYNC_GROUP
+
+
 def _all_gather_object(payload: Any) -> List[Any]:
     if not _distributed_initialized() or _distributed_world_size() <= 1:
         return [payload]
     gathered: List[Any] = [None] * _distributed_world_size()
-    torch.distributed.all_gather_object(gathered, payload)
+    torch.distributed.all_gather_object(gathered, payload, group=_get_object_sync_group())
     return gathered
 
 
@@ -388,7 +454,7 @@ def _broadcast_object(payload: Any, *, src: int = 0) -> Any:
     if not _distributed_initialized() or _distributed_world_size() <= 1:
         return payload
     objects = [payload if _distributed_rank() == src else None]
-    torch.distributed.broadcast_object_list(objects, src=src)
+    torch.distributed.broadcast_object_list(objects, src=src, group=_get_object_sync_group())
     return objects[0]
 
 
@@ -938,6 +1004,12 @@ def _resolved_train_gpu_index() -> Optional[int]:
     visible_gpu_count = int(torch.cuda.device_count())
     if visible_gpu_count <= 0:
         return None
+    if _distributed_world_size() > 1:
+        raw_local_rank = env_int("LOCAL_RANK", 0)
+        if visible_gpu_count == 1:
+            return 0
+        if 0 <= raw_local_rank < visible_gpu_count:
+            return raw_local_rank
     try:
         current_device = int(torch.cuda.current_device())
         if 0 <= current_device < visible_gpu_count:
@@ -2742,20 +2814,37 @@ def _precompute_eval_results(
     )
     if not batched_eval_specs:
         return
+    rank = _distributed_rank()
+    local_rank = env_int("LOCAL_RANK", 0)
+    started_at = time.time()
+    print(
+        "[Reward Precompute Local] start "
+        f"rank={rank} "
+        f"local_rank={local_rank} "
+        f"reward_batch_index={group_context.get('reward_batch_index')} "
+        f"entries={len(batched_eval_specs)}"
+    )
     log_memory_snapshot(
         "reward/precompute_eval:start",
         group_context=group_context,
-        include_all_visible_gpus=True,
     )
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     batched_eval_results = evaluate_code_and_reward_batch(batched_eval_specs)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+    elapsed_seconds = max(0.0, time.time() - started_at)
     log_memory_snapshot(
         "reward/precompute_eval:end",
         group_context=group_context,
-        include_all_visible_gpus=True,
+    )
+    print(
+        "[Reward Precompute Local] end "
+        f"rank={rank} "
+        f"local_rank={local_rank} "
+        f"reward_batch_index={group_context.get('reward_batch_index')} "
+        f"entries={len(batched_eval_specs)} "
+        f"elapsed_seconds={elapsed_seconds:.2f}"
     )
     for entry, eval_result in zip(batched_eval_entries, batched_eval_results):
         entry["precomputed_eval_result"] = eval_result
@@ -3044,12 +3133,13 @@ def compute_reward(prompts, completions, **kwargs):
                 f"for WORLD_SIZE={expected_world_size}, but it is not initialized"
             )
 
+        rank = _distributed_rank()
         local_entries = _prepare_local_reward_entries(
             prompts,
             completions,
             seed_accuracy_baselines=seed_accuracy_baselines,
             group_context=group_context,
-            precompute_eval=not distributed_mode,
+            precompute_eval=True,
         )
         archive_snapshot_family_counts = dict(family_hash_archive_counts)
 
@@ -3066,14 +3156,32 @@ def compute_reward(prompts, completions, **kwargs):
             _print_discovery_metrics()
             return rewards
 
+        print(
+            "[Reward Gather] start "
+            f"rank={rank} "
+            f"reward_batch_index={group_context.get('reward_batch_index')} "
+            f"local_entries={len(local_entries)}"
+        )
         gathered_entries = _all_gather_object(local_entries)
-        rank = _distributed_rank()
+        total_entries = sum(len(rank_entries or []) for rank_entries in gathered_entries)
+        print(
+            "[Reward Gather] end "
+            f"rank={rank} "
+            f"reward_batch_index={group_context.get('reward_batch_index')} "
+            f"gathered_ranks={len(gathered_entries)} "
+            f"total_entries={total_entries}"
+        )
 
         if is_main_process():
             global_entries: List[Dict[str, Any]] = []
             for rank_entries in gathered_entries:
                 global_entries.extend(list(rank_entries or []))
-            _precompute_eval_results(global_entries, group_context=group_context)
+            print(
+                "[Reward Score] start "
+                f"rank={rank} "
+                f"reward_batch_index={group_context.get('reward_batch_index')} "
+                f"entries={len(global_entries)}"
+            )
             scored_results = _score_reward_entries(
                 global_entries,
                 group_context=group_context,
@@ -3081,6 +3189,12 @@ def compute_reward(prompts, completions, **kwargs):
             )
             _finalize_scored_results(scored_results)
             _print_discovery_metrics()
+            print(
+                "[Reward Score] end "
+                f"rank={rank} "
+                f"reward_batch_index={group_context.get('reward_batch_index')} "
+                f"entries={len(scored_results)}"
+            )
 
             rewards_by_rank: Dict[int, List[float]] = {
                 world_rank: [-1.0] * len(gathered_entries[world_rank])
@@ -3096,7 +3210,17 @@ def compute_reward(prompts, completions, **kwargs):
         else:
             broadcast_payload = None
 
+        print(
+            "[Reward Broadcast] start "
+            f"rank={rank} "
+            f"reward_batch_index={group_context.get('reward_batch_index')}"
+        )
         synced_payload = _broadcast_object(broadcast_payload, src=0)
+        print(
+            "[Reward Broadcast] end "
+            f"rank={rank} "
+            f"reward_batch_index={group_context.get('reward_batch_index')}"
+        )
         restore_reward_runtime_state(synced_payload.get("reward_state"))
         return list(synced_payload["rewards_by_rank"].get(rank, [-1.0] * len(completions)))
     finally:

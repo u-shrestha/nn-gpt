@@ -238,6 +238,14 @@ def get_reward_worker_plan() -> Dict[str, Any]:
     reward_force_cpu = _safe_bool_env("NNGPT_REWARD_FORCE_CPU", False)
     train_gpu = runtime["train_gpu"]
 
+    def _distributed_local_reward_gpu_indices() -> list[int]:
+        if train_gpu is None:
+            return []
+        train_gpu_index = int(train_gpu)
+        if 0 <= train_gpu_index < visible_gpu_count:
+            return [train_gpu_index]
+        return []
+
     def _device_token(device_index: int) -> str:
         visible_gpu_tokens = list(runtime.get("visible_gpu_tokens") or [])
         if 0 <= device_index < len(visible_gpu_tokens):
@@ -398,13 +406,6 @@ def get_reward_worker_plan() -> Dict[str, Any]:
             gpu_memory_snapshots=gpu_memory_snapshots,
             reason="single_gpu_multiprocess_disabled",
         )
-    if runtime["distributed"] and int(runtime["rank"]) != 0:
-        gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
-        return _cpu_reward_worker_plan(
-            mode="distributed_non_main_cpu",
-            reason="non_main_rank_reward_workers_disabled",
-            gpu_memory_snapshots=gpu_memory_snapshots,
-        )
 
     distributed_single_process_per_gpu = bool(runtime["distributed"])
 
@@ -413,15 +414,30 @@ def get_reward_worker_plan() -> Dict[str, Any]:
         workers_per_gpu = max(1, _safe_int_env("NNGPT_REWARD_WORKERS_PER_GPU", 1))
         if distributed_single_process_per_gpu:
             workers_per_gpu = 1
-        per_gpu_worker_counts = [workers_per_gpu] * visible_gpu_count
-        gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
-        mode = (
-            "distributed_fixed_pool"
-            if runtime["distributed"]
-            else "single_gpu_fixed_pool"
-            if visible_gpu_count == 1
-            else "multi_gpu_fixed_pool"
-        )
+        if runtime["distributed"]:
+            reward_gpu_indices = _distributed_local_reward_gpu_indices()
+            gpu_memory_snapshots = [
+                _cuda_device_memory_snapshot_gib(index)
+                for index in reward_gpu_indices
+            ]
+            if not reward_gpu_indices:
+                return _cpu_reward_worker_plan(
+                    mode="distributed_cpu_fallback",
+                    reason="distributed_local_reward_gpu_unavailable",
+                    gpu_memory_snapshots=gpu_memory_snapshots,
+                )
+            per_gpu_worker_counts = [0] * visible_gpu_count
+            for reward_gpu_index in reward_gpu_indices:
+                per_gpu_worker_counts[int(reward_gpu_index)] = workers_per_gpu
+            mode = "distributed_local_fixed_pool"
+        else:
+            per_gpu_worker_counts = [workers_per_gpu] * visible_gpu_count
+            gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
+            mode = (
+                "single_gpu_fixed_pool"
+                if visible_gpu_count == 1
+                else "multi_gpu_fixed_pool"
+            )
         return _build_reward_worker_plan(
             mode=mode,
             per_gpu_worker_counts=per_gpu_worker_counts,
@@ -432,15 +448,30 @@ def get_reward_worker_plan() -> Dict[str, Any]:
 
     dynamic_scaling = _safe_bool_env("NNGPT_REWARD_ENABLE_DYNAMIC_SCALING", True)
     if not dynamic_scaling:
-        per_gpu_worker_counts = [1] * visible_gpu_count
-        gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
-        mode = (
-            "distributed_static_pool"
-            if runtime["distributed"]
-            else "single_gpu_static_pool"
-            if visible_gpu_count == 1
-            else "multi_gpu_static_pool"
-        )
+        if runtime["distributed"]:
+            reward_gpu_indices = _distributed_local_reward_gpu_indices()
+            gpu_memory_snapshots = [
+                _cuda_device_memory_snapshot_gib(index)
+                for index in reward_gpu_indices
+            ]
+            if not reward_gpu_indices:
+                return _cpu_reward_worker_plan(
+                    mode="distributed_cpu_fallback",
+                    reason="distributed_local_reward_gpu_unavailable",
+                    gpu_memory_snapshots=gpu_memory_snapshots,
+                )
+            per_gpu_worker_counts = [0] * visible_gpu_count
+            for reward_gpu_index in reward_gpu_indices:
+                per_gpu_worker_counts[int(reward_gpu_index)] = 1
+            mode = "distributed_local_static_pool"
+        else:
+            per_gpu_worker_counts = [1] * visible_gpu_count
+            gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
+            mode = (
+                "single_gpu_static_pool"
+                if visible_gpu_count == 1
+                else "multi_gpu_static_pool"
+            )
         return _build_reward_worker_plan(
             mode=mode,
             per_gpu_worker_counts=per_gpu_worker_counts,
@@ -461,34 +492,64 @@ def get_reward_worker_plan() -> Dict[str, Any]:
         max_workers_per_gpu = 1
         min_workers_per_gpu = min(min_workers_per_gpu, max_workers_per_gpu)
 
-    gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
-    per_gpu_worker_counts = [
-        _dynamic_reward_workers_for_gpu(
-            snapshot,
-            reserved_headroom_gib=reserved_headroom_gib,
-            worker_budget_gib=worker_budget_gib,
-            min_workers_per_gpu=min_workers_per_gpu,
-            max_workers_per_gpu=max_workers_per_gpu,
+    if runtime["distributed"]:
+        reward_gpu_indices = _distributed_local_reward_gpu_indices()
+        gpu_memory_snapshots = [
+            _cuda_device_memory_snapshot_gib(index)
+            for index in reward_gpu_indices
+        ]
+        if not reward_gpu_indices:
+            return _cpu_reward_worker_plan(
+                mode="distributed_cpu_fallback",
+                reason="distributed_local_reward_gpu_unavailable",
+                gpu_memory_snapshots=gpu_memory_snapshots,
+            )
+        per_gpu_worker_counts = [0] * visible_gpu_count
+        for snapshot in gpu_memory_snapshots:
+            per_gpu_worker_counts[int(snapshot["device_index"])] = _dynamic_reward_workers_for_gpu(
+                snapshot,
+                reserved_headroom_gib=reserved_headroom_gib,
+                worker_budget_gib=worker_budget_gib,
+                min_workers_per_gpu=min_workers_per_gpu,
+                max_workers_per_gpu=max_workers_per_gpu,
+            )
+        if sum(per_gpu_worker_counts) <= 0 and gpu_memory_snapshots:
+            best_snapshot = max(
+                gpu_memory_snapshots,
+                key=lambda snapshot: float(snapshot.get("free_gib") or -1.0),
+            )
+            best_device_index = int(best_snapshot["device_index"])
+            best_free_gib = best_snapshot.get("free_gib")
+            if best_free_gib is None or float(best_free_gib) >= reserved_headroom_gib + (worker_budget_gib * 0.75):
+                per_gpu_worker_counts[best_device_index] = 1
+        mode = "distributed_local_dynamic_pool"
+    else:
+        gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
+        per_gpu_worker_counts = [
+            _dynamic_reward_workers_for_gpu(
+                snapshot,
+                reserved_headroom_gib=reserved_headroom_gib,
+                worker_budget_gib=worker_budget_gib,
+                min_workers_per_gpu=min_workers_per_gpu,
+                max_workers_per_gpu=max_workers_per_gpu,
+            )
+            for snapshot in gpu_memory_snapshots
+        ]
+        if sum(per_gpu_worker_counts) <= 0 and gpu_memory_snapshots:
+            best_snapshot = max(
+                gpu_memory_snapshots,
+                key=lambda snapshot: float(snapshot.get("free_gib") or -1.0),
+            )
+            best_device_index = int(best_snapshot["device_index"])
+            best_free_gib = best_snapshot.get("free_gib")
+            if best_free_gib is None or float(best_free_gib) >= reserved_headroom_gib + (worker_budget_gib * 0.75):
+                per_gpu_worker_counts[best_device_index] = 1
+        mode = (
+            "single_gpu_dynamic_pool"
+            if visible_gpu_count == 1
+            else "multi_gpu_dynamic_pool"
         )
-        for snapshot in gpu_memory_snapshots
-    ]
-    if sum(per_gpu_worker_counts) <= 0 and gpu_memory_snapshots:
-        best_snapshot = max(
-            gpu_memory_snapshots,
-            key=lambda snapshot: float(snapshot.get("free_gib") or -1.0),
-        )
-        best_device_index = int(best_snapshot["device_index"])
-        best_free_gib = best_snapshot.get("free_gib")
-        if best_free_gib is None or float(best_free_gib) >= reserved_headroom_gib + (worker_budget_gib * 0.75):
-            per_gpu_worker_counts[best_device_index] = 1
 
-    mode = (
-        "distributed_dynamic_pool"
-        if runtime["distributed"]
-        else "single_gpu_dynamic_pool"
-        if visible_gpu_count == 1
-        else "multi_gpu_dynamic_pool"
-    )
     return _build_reward_worker_plan(
         mode=mode,
         per_gpu_worker_counts=per_gpu_worker_counts,
@@ -889,9 +950,36 @@ class _EvalWorkerPool:
         worker_device = str(session_info.get("worker_device", "cpu"))
         worker_slot = int(session_info.get("slot", slot))
         entry["payload"]["worker_slot"] = worker_slot
+        reward_batch_index = entry["payload"].get("reward_batch_index")
+        completion_index = entry["payload"].get("completion_index")
+        request_started_at = time.time()
+        print(
+            "[Reward Eval Item] start "
+            f"rank={self._plan['rank']} "
+            f"local_rank={self._plan['local_rank']} "
+            f"reward_batch_index={reward_batch_index} "
+            f"completion_index={completion_index} "
+            f"worker_slot={worker_slot} "
+            f"assigned_gpu={assigned_gpu} "
+            f"worker_device={worker_device} "
+            f"timeout_seconds={timeout:.0f}"
+        )
         try:
             result = session.request(entry["payload"], timeout=timeout)
         except PersistentEvalWorkerError as exc:
+            elapsed_seconds = max(0.0, time.time() - request_started_at)
+            print(
+                "[Reward Eval Item] error "
+                f"rank={self._plan['rank']} "
+                f"local_rank={self._plan['local_rank']} "
+                f"reward_batch_index={reward_batch_index} "
+                f"completion_index={completion_index} "
+                f"worker_slot={worker_slot} "
+                f"assigned_gpu={assigned_gpu} "
+                f"worker_device={worker_device} "
+                f"elapsed_seconds={elapsed_seconds:.2f} "
+                f"error={type(exc).__name__}: {exc}"
+            )
             self._replace_session(slot)
             return self._timeout_result_for_entry(
                 entry,
@@ -904,6 +992,24 @@ class _EvalWorkerPool:
         result["assigned_gpu"] = assigned_gpu
         result["worker_device"] = worker_device
         result["worker_slot"] = worker_slot
+        elapsed_seconds = max(0.0, time.time() - request_started_at)
+        normalized_error = None if not result.get("error") else " ".join(str(result["error"]).split())
+        message = (
+            "[Reward Eval Item] end "
+            f"rank={self._plan['rank']} "
+            f"local_rank={self._plan['local_rank']} "
+            f"reward_batch_index={reward_batch_index} "
+            f"completion_index={completion_index} "
+            f"worker_slot={worker_slot} "
+            f"assigned_gpu={assigned_gpu} "
+            f"worker_device={worker_device} "
+            f"elapsed_seconds={elapsed_seconds:.2f} "
+            f"built_ok={result.get('built_ok')} "
+            f"timed_out={result.get('timed_out', False)}"
+        )
+        if normalized_error:
+            message += f" error={normalized_error!r}"
+        print(message)
         if bool(result.get("worker_restart_requested", False)):
             print(
                 "[Reward Worker Pool] Restart "
