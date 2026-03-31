@@ -1,5 +1,4 @@
 import os
-import multiprocessing as mp
 import shutil
 import random
 import inspect
@@ -65,7 +64,6 @@ import ab.gpt.TuneRL as TuneRL
 import ab.gpt.TuneRLRaw as TuneRLRaw
 import ab.gpt.util.Reward as RewardUtil
 import ab.gpt.util.SFTUtil as SFTUtil
-from ab.gpt.util.torchvision_prewarm import torchvision_prewarm_main
 
 
 def _repo_model_dir(model_id: str) -> Path:
@@ -289,87 +287,6 @@ def _print_runtime_cache_roots() -> None:
     print(f"[SFT RL] HF_HOME={os.environ.get('HF_HOME', '')!r}")
     print(f"[SFT RL] TORCH_HOME={os.environ.get('TORCH_HOME', '')!r}")
     print(f"[SFT RL] Torch hub checkpoints dir: {_torch_hub_checkpoints_dir()}")
-
-
-def _run_torchvision_prewarm(backbone_names: List[str]) -> None:
-    ctx = mp.get_context("spawn")
-    parent_conn, child_conn = ctx.Pipe()
-    process = ctx.Process(
-        target=torchvision_prewarm_main,
-        args=(child_conn, list(backbone_names)),
-    )
-
-    TuneRL.log_memory_snapshot("sft/prewarm_before_spawn")
-    process.start()
-    child_conn.close()
-    print(f"[TorchVision Prewarm] Starting CPU prewarm for {len(backbone_names)} backbones")
-
-    try:
-        while True:
-            if not parent_conn.poll(600):
-                raise RuntimeError("TorchVision prewarm timed out after 600 seconds")
-            message = parent_conn.recv()
-            if not isinstance(message, dict):
-                raise RuntimeError(f"Unexpected TorchVision prewarm message: {message!r}")
-
-            cmd = message.get("cmd")
-            if cmd == "prewarm_ready":
-                print(
-                    "[TorchVision Prewarm] Ready "
-                    f"pid={message['pid']} "
-                    f"rss_gib={message['rss_gib']:.2f} "
-                    f"torch_home={message['torch_home']!r} "
-                    f"checkpoints_dir={message['checkpoints_dir']}"
-                )
-                continue
-
-            if cmd == "prewarm_progress":
-                print(
-                    "[TorchVision Prewarm] "
-                    f"backbone={message['backbone']} "
-                    f"cache_hit={message['cache_hit']} "
-                    f"completed={message['completed']} "
-                    f"failed={message['failed']} "
-                    f"rss_gib={message['rss_gib']:.2f} "
-                    f"checkpoints_dir={message['checkpoints_dir']}"
-                )
-                continue
-
-            if cmd == "prewarm_error":
-                raise RuntimeError(
-                    "TorchVision prewarm failed for "
-                    f"{message['backbone']}: {message['error']}"
-                )
-
-            if cmd == "prewarm_done":
-                print(
-                    "[TorchVision Prewarm] Done "
-                    f"completed={message['completed']} "
-                    f"failed={message['failed']} "
-                    f"rss_gib={message['rss_gib']:.2f} "
-                    f"checkpoints_dir={message['checkpoints_dir']}"
-                )
-                break
-
-            if cmd == "prewarm_fatal":
-                raise RuntimeError(f"TorchVision prewarm fatal error: {message['error']}")
-
-            raise RuntimeError(f"Unknown TorchVision prewarm message: {message!r}")
-
-        process.join(timeout=30)
-        if process.is_alive():
-            raise RuntimeError("TorchVision prewarm process did not exit cleanly")
-        if process.exitcode != 0:
-            raise RuntimeError(f"TorchVision prewarm process exited with code {process.exitcode}")
-    finally:
-        try:
-            parent_conn.close()
-        except Exception:
-            pass
-        if process.is_alive():
-            process.terminate()
-            process.join(timeout=5)
-    TuneRL.log_memory_snapshot("sft/prewarm_after_done")
 
 
 def evaluate_code_and_reward_cifar(
@@ -873,7 +790,6 @@ def run_sft_training():
     rl_dataset = TuneRL.load_rl_dataset(tokenizer)
     if len(rl_dataset) > runtime_settings["dataset_limit"]:
         rl_dataset = rl_dataset.select(range(runtime_settings["dataset_limit"]))
-    _run_torchvision_prewarm(list(SFTUtil.available_backbones))
 
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
