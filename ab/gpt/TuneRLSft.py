@@ -139,6 +139,100 @@ def _runtime_is_main_process(runtime: Dict[str, Any]) -> bool:
     return int(runtime.get("rank", 0)) == 0
 
 
+def _suggested_sft_worker_count(runtime: Dict[str, Any]) -> int:
+    return max(1, int(runtime.get("visible_gpu_count", 0) or 0))
+
+
+def _validate_sft_visible_worker_count(runtime: Dict[str, Any]) -> None:
+    world_size = int(runtime.get("world_size", 1))
+    suggested_worker_count = _suggested_sft_worker_count(runtime)
+    if world_size <= suggested_worker_count:
+        return
+    raise RuntimeError(
+        "SFT RL worker count exceeds visible training GPUs: "
+        f"world_size={world_size}, "
+        f"visible_cuda_devices={int(runtime.get('visible_gpu_count', 0))}, "
+        f"suggested_nproc_per_node={suggested_worker_count}. "
+        "Launch torchrun with as many workers as visible training GPUs."
+    )
+
+
+def _resolve_sft_local_rank(runtime: Dict[str, Any]) -> Dict[str, Any]:
+    visible_cuda_devices = int(runtime.get("visible_gpu_count", 0))
+    raw_local_rank = int(runtime.get("raw_local_rank", 0))
+    rank = int(runtime.get("rank", 0))
+    world_size = int(runtime.get("world_size", 1))
+
+    if visible_cuda_devices < 1:
+        raise RuntimeError(
+            f"SFT RL requires at least one visible CUDA device, got {visible_cuda_devices}"
+        )
+
+    local_rank = 0
+    resolution = "single_visible_gpu"
+
+    if visible_cuda_devices == 1:
+        local_rank = 0
+    elif 0 <= raw_local_rank < visible_cuda_devices:
+        local_rank = raw_local_rank
+        resolution = "direct"
+    else:
+        raise RuntimeError(
+            "SFT RL detected an invalid distributed CUDA mapping: "
+            f"rank={rank}, raw_local_rank={raw_local_rank}, world_size={world_size}, "
+            f"visible_cuda_devices={visible_cuda_devices}, "
+            f"suggested_nproc_per_node={_suggested_sft_worker_count(runtime)}. "
+            "Launch torchrun with as many workers as visible training GPUs."
+        )
+
+    if not (0 <= local_rank < visible_cuda_devices):
+        raise RuntimeError(
+            "SFT RL resolved an invalid local CUDA rank: "
+            f"local_rank={local_rank}, raw_local_rank={raw_local_rank}, visible_cuda_devices={visible_cuda_devices}"
+        )
+
+    return {
+        "rank": rank,
+        "world_size": world_size,
+        "raw_local_rank": raw_local_rank,
+        "local_rank": local_rank,
+        "visible_cuda_devices": visible_cuda_devices,
+        "resolution": resolution,
+    }
+
+
+def _maybe_relaunch_sft_with_visible_gpu_workers() -> None:
+    if os.getenv("NNGPT_SFT_AUTO_TORCHRUN_DONE", "") == "1":
+        return
+    if os.getenv("WORLD_SIZE") not in (None, "", "1"):
+        return
+    if os.getenv("LOCAL_RANK") not in (None, ""):
+        return
+
+    import torch
+
+    if not torch.cuda.is_available():
+        return
+    visible_cuda_devices = int(torch.cuda.device_count())
+    if visible_cuda_devices <= 1:
+        return
+
+    os.environ["NNGPT_SFT_AUTO_TORCHRUN_DONE"] = "1"
+    print(
+        "[SFT RL] Relaunching with visible-GPU worker count: "
+        f"nproc_per_node={visible_cuda_devices}"
+    )
+    os.execvp(
+        "torchrun",
+        [
+            "torchrun",
+            f"--nproc_per_node={visible_cuda_devices}",
+            "-m",
+            "ab.gpt.TuneRLSft",
+        ],
+    )
+
+
 def resolve_sft_runtime_settings(runtime: Dict[str, Any]) -> Dict[str, int]:
     return {
         "dataset_limit": _env_int(
@@ -706,27 +800,14 @@ def run_sft_training():
     if not torch.cuda.is_available():
         raise RuntimeError("SFT RL requires CUDA for GRPO training, but no CUDA device is available")
     runtime = RewardUtil.get_distributed_runtime_info()
-    visible_cuda_devices = int(runtime["visible_gpu_count"])
-    if visible_cuda_devices < 1:
-        raise RuntimeError(
-            f"SFT RL requires at least one visible CUDA device, got {visible_cuda_devices}"
-        )
     runtime_settings = resolve_sft_runtime_settings(runtime)
-    local_rank = int(runtime["local_rank"])
-    raw_local_rank = int(runtime["raw_local_rank"])
-    rank = int(runtime["rank"])
-    world_size = int(runtime["world_size"])
-    if world_size > 1 and visible_cuda_devices > 1 and raw_local_rank != local_rank:
-        raise RuntimeError(
-            "SFT RL detected an inconsistent distributed CUDA mapping: "
-            f"rank={rank}, raw_local_rank={raw_local_rank}, resolved_local_rank={local_rank}, "
-            f"visible_cuda_devices={visible_cuda_devices}"
-        )
-    if not (0 <= local_rank < visible_cuda_devices):
-        raise RuntimeError(
-            "SFT RL resolved an invalid local CUDA rank: "
-            f"local_rank={local_rank}, raw_local_rank={raw_local_rank}, visible_cuda_devices={visible_cuda_devices}"
-        )
+    _validate_sft_visible_worker_count(runtime)
+    local_rank_resolution = _resolve_sft_local_rank(runtime)
+    visible_cuda_devices = int(local_rank_resolution["visible_cuda_devices"])
+    local_rank = int(local_rank_resolution["local_rank"])
+    raw_local_rank = int(local_rank_resolution["raw_local_rank"])
+    rank = int(local_rank_resolution["rank"])
+    world_size = int(local_rank_resolution["world_size"])
     use_deepspeed = _resolve_sft_deepspeed_enabled(runtime)
     deepspeed_config_path = _resolve_sft_deepspeed_config_path() if use_deepspeed else None
     os.environ["NNGPT_SFT_USE_DEEPSPEED"] = "1" if use_deepspeed else "0"
@@ -930,6 +1011,8 @@ def bootstrap_sft_runtime() -> None:
 
 
 def main() -> None:
+    _maybe_relaunch_sft_with_visible_gpu_workers()
+    _validate_sft_visible_worker_count(RewardUtil.get_distributed_runtime_info())
     model_source, tokenizer_source, source_mode = patch_sft_runtime()
     bootstrap_sft_runtime()
 
