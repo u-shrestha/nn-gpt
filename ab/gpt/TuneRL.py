@@ -1851,7 +1851,7 @@ def base_discovery_reward_fn(
             final_code,
             in_shape=(1, 3, 224, 224),
             out_shape=(10,),
-            prm={'lr': 0.01, 'batch': 16, 'dropout': 0.3, 'momentum': 0.9,
+            prm={'lr': 0.01, 'batch': 64, 'dropout': 0.3, 'momentum': 0.9,
                  'transform': 'norm_256_flip', 'epoch': 1},
             device="cuda" if torch.cuda.is_available() else "cpu",
             seed_accuracy_baseline=seed_accuracy_baseline,
@@ -2354,7 +2354,7 @@ def _build_batched_eval_specs(
             "out_shape": (10,),
             "prm": {
                 "lr": 0.01,
-                "batch": 16,
+                "batch": 64,
                 "dropout": 0.3,
                 "momentum": 0.9,
                 "transform": "norm_256_flip",
