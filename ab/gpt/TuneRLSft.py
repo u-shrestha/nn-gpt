@@ -2,6 +2,8 @@ import os
 import shutil
 import random
 import inspect
+import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -222,14 +224,56 @@ def _maybe_relaunch_sft_with_visible_gpu_workers() -> None:
         "[SFT RL] Relaunching with visible-GPU worker count: "
         f"nproc_per_node={visible_cuda_devices}"
     )
-    os.execvp(
-        "torchrun",
+    os.execvpe(
+        sys.executable,
         [
-            "torchrun",
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
             f"--nproc_per_node={visible_cuda_devices}",
             "-m",
             "ab.gpt.TuneRLSft",
         ],
+        os.environ,
+    )
+
+
+def _maybe_init_single_process_deepspeed_group(
+    *,
+    use_deepspeed: bool,
+    world_size: int,
+    visible_cuda_devices: int,
+    local_rank: int,
+) -> None:
+    import torch
+
+    if not use_deepspeed:
+        return
+    if int(world_size) > 1:
+        return
+    if not torch.distributed.is_available():
+        return
+    if torch.distributed.is_initialized():
+        return
+
+    backend = "nccl" if torch.cuda.is_available() else "gloo"
+    init_dir = Path(tempfile.mkdtemp(prefix="nngpt_sft_pg_"))
+    init_file = (init_dir / "store").resolve()
+    init_file.touch()
+    init_method = init_file.as_uri()
+
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+
+    torch.distributed.init_process_group(
+        backend=backend,
+        init_method=init_method,
+        world_size=1,
+        rank=0,
+    )
+    print(
+        "[SFT RL] Initialized single-process distributed group for DeepSpeed: "
+        f"backend={backend} local_rank={local_rank} visible_cuda_devices={visible_cuda_devices}"
     )
 
 
@@ -815,6 +859,12 @@ def run_sft_training():
         os.environ["NNGPT_SFT_DEEPSPEED_CONFIG"] = deepspeed_config_path
     torch.cuda.set_device(local_rank)
     train_device = f"cuda:{local_rank}"
+    _maybe_init_single_process_deepspeed_group(
+        use_deepspeed=use_deepspeed,
+        world_size=world_size,
+        visible_cuda_devices=visible_cuda_devices,
+        local_rank=local_rank,
+    )
 
     torch.cuda.empty_cache()
     TuneRL.reset_reward_runtime_state()
@@ -832,6 +882,11 @@ def run_sft_training():
         "[SFT RL] Distributed Runtime: "
         f"rank={rank} local_rank={local_rank} raw_local_rank={raw_local_rank} world_size={world_size}"
     )
+    if use_deepspeed and world_size <= 1:
+        print(
+            "[SFT RL] DeepSpeed single-process fallback active: "
+            f"visible_cuda_devices={visible_cuda_devices} local_rank={local_rank}"
+        )
     print(f"[SFT RL] DeepSpeed Enabled: {use_deepspeed}")
     if deepspeed_config_path is not None:
         print(f"[SFT RL] DeepSpeed Config: {deepspeed_config_path}")
