@@ -389,6 +389,15 @@ def get_reward_worker_plan() -> Dict[str, Any]:
         return _cpu_reward_worker_plan(mode="cpu_fallback", reason="reward_force_cpu")
     if visible_gpu_count <= 0:
         return _cpu_reward_worker_plan(mode="cpu_fallback", reason="no_visible_cuda_devices")
+    if not runtime["distributed"] and visible_gpu_count == 1:
+        gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(0)]
+        return _build_reward_worker_plan(
+            mode="single_gpu_single_process",
+            per_gpu_worker_counts=[1],
+            dynamic_scaling=False,
+            gpu_memory_snapshots=gpu_memory_snapshots,
+            reason="single_gpu_multiprocess_disabled",
+        )
     if runtime["distributed"] and int(runtime["rank"]) != 0:
         gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
         return _cpu_reward_worker_plan(
@@ -397,9 +406,13 @@ def get_reward_worker_plan() -> Dict[str, Any]:
             gpu_memory_snapshots=gpu_memory_snapshots,
         )
 
+    distributed_single_process_per_gpu = bool(runtime["distributed"])
+
     fixed_workers_override = _env_is_set("NNGPT_REWARD_WORKERS_PER_GPU")
     if fixed_workers_override:
         workers_per_gpu = max(1, _safe_int_env("NNGPT_REWARD_WORKERS_PER_GPU", 1))
+        if distributed_single_process_per_gpu:
+            workers_per_gpu = 1
         per_gpu_worker_counts = [workers_per_gpu] * visible_gpu_count
         gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
         mode = (
@@ -444,6 +457,9 @@ def get_reward_worker_plan() -> Dict[str, Any]:
         min_workers_per_gpu,
         _safe_int_env("NNGPT_REWARD_MAX_WORKERS_PER_GPU", 2),
     )
+    if distributed_single_process_per_gpu:
+        max_workers_per_gpu = 1
+        min_workers_per_gpu = min(min_workers_per_gpu, max_workers_per_gpu)
 
     gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
     per_gpu_worker_counts = [
