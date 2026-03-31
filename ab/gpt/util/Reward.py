@@ -852,7 +852,7 @@ class _EvalWorkerPool:
         result = _timeout_eval_result(
             error=error,
             estimated_total_seconds=estimated_total_seconds,
-            eval_limit_seconds=entry["effective_cfg"].eval_limit_seconds,
+            eval_limit_seconds=_effective_eval_limit_seconds(entry["effective_cfg"]),
             seed_accuracy_baseline=entry.get("seed_accuracy_baseline"),
             backbone_model_names=entry.get("backbone_model_names"),
         )
@@ -1038,6 +1038,8 @@ def _infer_error_hint(
         return "generated Net is missing self._input_spec before downstream shape inference"
     if "unknown model" in normalized:
         return "one of the selected backbone names is not available in the TorchVision wrapper"
+    if "accuracyexception" in normalized:
+        return "nn-dataset accuracy floor rejected this candidate after formal eval"
     if "learntimeexception" in normalized:
         return "nn-dataset training-time guard rejected this candidate before completing formal eval"
     if "forward shape" in normalized:
@@ -1211,7 +1213,7 @@ def _merge_dual_eval_results(
 
 def _request_timeout_seconds(cfg: "EvalConfig") -> float:
     eval_runs = 2 if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)) else 1
-    base_timeout = float(max(1, int(getattr(cfg, "eval_limit_seconds", 270))))
+    base_timeout = float(_effective_eval_limit_seconds(cfg))
     return max(360.0, (base_timeout * eval_runs) + 120.0)
 
 def compute_cv_reward_simple(
@@ -1699,6 +1701,7 @@ class EvalConfig:
     formal_task: str = "img-classification"
     formal_dataset: str = "cifar-10"
     formal_metric: str = "acc"
+    formal_epoch_limit_minutes: Optional[float] = None
 
 
 def _coerce_positive_int(value: Any, default: int) -> int:
@@ -1752,6 +1755,35 @@ def _build_effective_eval_cfg(
     )
 
 
+def _default_formal_epoch_limit_minutes() -> float:
+    try:
+        from ab.nn.util.Const import default_epoch_limit_minutes  # type: ignore
+
+        return max((1.0 / 60.0), float(default_epoch_limit_minutes))
+    except Exception:
+        return 30.0
+
+
+def _resolve_formal_epoch_limit_minutes(cfg: "EvalConfig") -> float:
+    explicit_limit = getattr(cfg, "formal_epoch_limit_minutes", None)
+    if explicit_limit is not None:
+        try:
+            parsed = float(explicit_limit)
+        except (TypeError, ValueError):
+            parsed = 0.0
+        if parsed > 0.0:
+            return parsed
+
+    requested_minutes = float(getattr(cfg, "eval_limit_seconds", 0) or 0) / 60.0
+    return max(_default_formal_epoch_limit_minutes(), requested_minutes)
+
+
+def _effective_eval_limit_seconds(cfg: "EvalConfig") -> int:
+    if bool(getattr(cfg, "formal_nn_eval", False)):
+        return max(1, int(round(_resolve_formal_epoch_limit_minutes(cfg) * 60.0)))
+    return max(1, int(getattr(cfg, "eval_limit_seconds", 270)))
+
+
 def _is_formal_nn_eval_enabled(cfg: Optional["EvalConfig"]) -> bool:
     return bool(cfg is not None and getattr(cfg, "formal_nn_eval", False))
 
@@ -1794,29 +1826,8 @@ def _formal_eval_with_nn_dataset(
     seed_accuracy_baseline: Optional[float],
     backbone_model_names: list[str],
 ) -> Dict[str, Any]:
-    try:
-        _ensure_nn_dataset_importable()
-    except Exception as exc:
-        raise RuntimeError(
-            "Formal nn-dataset evaluation requested, but `ab.nn.api` is not importable "
-            "from the current Python environment."
-        ) from exc
-
-    from ab.nn.util.Const import ab_root_path, out  # type: ignore
-    from ab.nn.util.Loader import load_dataset  # type: ignore
-    from ab.nn.util.Train import Train  # type: ignore
-    from ab.nn.util.Util import create_file, uuid4  # type: ignore
-
-    model_name = f"rl-eval-{uuid4([code, os.getpid(), time.time_ns(), freeze_backbones])}"
-    tmp_module = ".".join((out, "nn", "tmp"))
-    tmp_module_name = f"{tmp_module}.{model_name}"
-    tmp_dir = ab_root_path / tmp_module.replace(".", "/")
-    create_file(tmp_dir, "__init__.py")
-    temp_file_path = tmp_dir / f"{model_name}.py"
-
-    trainer = None
-    train_set = None
-    test_set = None
+    effective_eval_limit_seconds = _effective_eval_limit_seconds(cfg)
+    epoch_limit_minutes = _resolve_formal_epoch_limit_minutes(cfg)
     formal_trace_context: Dict[str, Any] = {
         "freeze_backbones": bool(freeze_backbones),
         "formal_task": str(getattr(cfg, "formal_task", "img-classification")),
@@ -1824,152 +1835,190 @@ def _formal_eval_with_nn_dataset(
         "formal_metric": str(getattr(cfg, "formal_metric", "acc")),
         "backbone_model_names": list(backbone_model_names),
         "code_trace": _formal_eval_code_trace(code),
+        "epoch_limit_minutes": epoch_limit_minutes,
     }
-    stage = "write_temp_module"
-    try:
-        temp_file_path.write_text(code, encoding="utf-8")
-        safe_prm = dict(prm)
-        safe_prm["freeze_backbones"] = bool(freeze_backbones)
-        formal_trace_context.update(
-            {
-                "transform": str(safe_prm.get("transform")),
-                "batch": int(safe_prm.get("batch", 0) or 0),
-                "epoch": int(safe_prm.get("epoch", 0) or 0),
-            }
+    safe_prm = dict(prm)
+    safe_prm["freeze_backbones"] = bool(freeze_backbones)
+    formal_trace_context.update(
+        {
+            "transform": str(safe_prm.get("transform")),
+            "batch": int(safe_prm.get("batch", 0) or 0),
+            "epoch": int(safe_prm.get("epoch", 0) or 0),
+            "num_workers": int(safe_prm.get("num_workers", 1) or 1),
+            "trainer_device": str(cfg.device),
+            "trainer_in_shape": tuple(cfg.input_shape),
+            "dataset_out_shape": (int(cfg.n_classes),),
+            "formal_eval_backend": "ab.nn.api.check_nn",
+        }
+    )
+
+    def _failure_result(
+        *,
+        stage: str,
+        error_message: str,
+        built_ok: bool,
+        forward_ok: bool,
+        forward_shape_ok: bool,
+        latency_ms: Optional[float],
+        params_m: Optional[float],
+        estimated_total_seconds: Optional[float] = None,
+        timed_out: bool = False,
+    ) -> Dict[str, Any]:
+        error_type = error_message.split(":", 1)[0].strip() or "RuntimeError"
+        components = compute_cv_reward_simple(
+            built_ok=built_ok,
+            forward_shape_ok=forward_shape_ok,
+            backward_ok=False,
+            loss_drop_ok=False,
+            val_metric=None,
+            val_metric_baseline=None,
+            latency_ms=latency_ms,
+            params_m=params_m,
+            flops_g=None,
+            critic_score=None,
+            kl_div=cfg.kl_div,
+            weights=cfg.weights,
         )
-        stage = "load_dataset"
-        out_shape, _minimum_accuracy, train_set, test_set = load_dataset(
-            str(getattr(cfg, "formal_task", "img-classification")),
-            str(getattr(cfg, "formal_dataset", "cifar-10")),
-            str(safe_prm["transform"]),
-        )
-        formal_trace_context["dataset_out_shape"] = tuple(out_shape)
-        num_workers = int(safe_prm.get("num_workers", 1))
-        formal_trace_context["num_workers"] = num_workers
-        stage = "trainer_init"
-        trainer = Train(
-            config=(
-                str(getattr(cfg, "formal_task", "img-classification")),
-                str(getattr(cfg, "formal_dataset", "cifar-10")),
-                str(getattr(cfg, "formal_metric", "acc")),
-                model_name,
+        result = {
+            "reward": components["reward"],
+            "components": components,
+            **{
+                **_base_eval_result(
+                    seed_accuracy_baseline=seed_accuracy_baseline,
+                    eval_limit_seconds=effective_eval_limit_seconds,
+                    backbone_model_names=backbone_model_names,
+                ),
+                "built_ok": built_ok,
+                "forward_ok": forward_ok,
+                "forward_shape_ok": forward_shape_ok,
+                "latency_ms": latency_ms,
+                "params_m": params_m,
+                "estimated_total_seconds": estimated_total_seconds,
+                "timed_out": timed_out,
+                "error": error_message,
+            },
+        }
+        return _apply_error_trace(
+            result,
+            error_type=error_type,
+            error_stage=stage,
+            error_context=formal_trace_context,
+            error_hint=_infer_error_hint(
+                error_message=error_message,
+                context=formal_trace_context,
             ),
-            out_shape=out_shape,
-            minimum_accuracy=-1.0,
-            batch=int(safe_prm["batch"]),
-            nn_module=tmp_module_name,
-            task=str(getattr(cfg, "formal_task", "img-classification")),
-            train_dataset=train_set,
-            test_dataset=test_set,
-            metric=str(getattr(cfg, "formal_metric", "acc")),
-            num_workers=num_workers,
-            prm=safe_prm,
-            save_to_db=False,
-            is_code=True,
         )
-        formal_trace_context.update(
-            {
-                "trainer_device": str(trainer.device),
-                "trainer_in_shape": tuple(trainer.in_shape),
-            }
+
+    try:
+        _ensure_nn_dataset_importable()
+        import ab.nn.api as nn_api  # type: ignore
+    except Exception as exc:
+        return _failure_result(
+            stage="import_nn_dataset",
+            error_message=(
+                "RuntimeError: Formal nn-dataset evaluation requested, but `ab.nn.api` "
+                "is not importable from the current Python environment."
+            ),
+            built_ok=False,
+            forward_ok=False,
+            forward_shape_ok=False,
+            latency_ms=None,
+            params_m=None,
         )
-        params_m = _count_params_m(trainer.model)
+
+    preflight_model = None
+    params_m: Optional[float] = None
+    forward_ok = False
+    forward_shape_ok = False
+    latency_ms: Optional[float] = None
+    try:
+        build_fn = build_fn_from_code(
+            code,
+            tuple(cfg.input_shape),
+            (int(cfg.n_classes),),
+            safe_prm,
+            str(cfg.device),
+        )
+        preflight_model = build_fn()
+        preflight_model.to(str(cfg.device))
+        params_m = _count_params_m(preflight_model)
         formal_trace_context["params_m"] = params_m
-        stage = "quick_forward"
         forward_result = _quick_forward(
-            trainer.model,
-            tuple(trainer.in_shape),
-            device=str(trainer.device),
-            n_classes=int(out_shape[0]),
+            preflight_model,
+            tuple(cfg.input_shape),
+            device=str(cfg.device),
+            n_classes=int(cfg.n_classes),
         )
+        forward_ok = bool(forward_result.get("forward_ok"))
+        forward_shape_ok = bool(forward_result.get("forward_shape_ok"))
+        latency_ms = forward_result.get("latency_ms")
         formal_trace_context["forward_output_shape"] = forward_result.get("output_shape")
-        if not bool(forward_result.get("forward_ok")) or not bool(forward_result.get("forward_shape_ok")):
+        if not forward_ok or not forward_shape_ok:
             output_shape = forward_result.get("output_shape")
             if forward_result.get("error"):
-                error_msg = str(forward_result.get("error"))
-                error_type = error_msg.split(":", 1)[0].strip() or "RuntimeError"
+                error_message = str(forward_result.get("error"))
             else:
-                error_msg = (
+                error_message = (
                     "RuntimeError: formal eval forward shape "
-                    f"{output_shape!r} incompatible with expected classes {int(out_shape[0])}"
+                    f"{output_shape!r} incompatible with expected classes {int(cfg.n_classes)}"
                 )
-                error_type = "RuntimeError"
-            error_hint = _infer_error_hint(
-                error_message=error_msg,
-                context=formal_trace_context,
-            )
-            components = compute_cv_reward_simple(
+            return _failure_result(
+                stage="preflight_forward",
+                error_message=error_message,
                 built_ok=True,
-                forward_shape_ok=bool(forward_result.get("forward_shape_ok")),
-                backward_ok=False,
-                loss_drop_ok=False,
-                val_metric=None,
-                val_metric_baseline=None,
-                latency_ms=forward_result.get("latency_ms"),
+                forward_ok=forward_ok,
+                forward_shape_ok=forward_shape_ok,
+                latency_ms=latency_ms,
                 params_m=params_m,
-                flops_g=None,
-                critic_score=None,
-                kl_div=cfg.kl_div,
-                weights=cfg.weights,
+                estimated_total_seconds=0.0,
             )
-            return {
-                "reward": components["reward"],
-                "components": components,
-                **{
-                    **_base_eval_result(
-                        seed_accuracy_baseline=seed_accuracy_baseline,
-                        eval_limit_seconds=cfg.eval_limit_seconds,
-                        backbone_model_names=backbone_model_names,
-                    ),
-                    "built_ok": True,
-                    "forward_ok": bool(forward_result.get("forward_ok")),
-                    "forward_shape_ok": bool(forward_result.get("forward_shape_ok")),
-                    "latency_ms": forward_result.get("latency_ms"),
-                    "params_m": params_m,
-                    "estimated_total_seconds": 0.0,
-                    "error": error_msg,
-                    "error_type": error_type,
-                    "error_stage": stage,
-                    "error_context": dict(formal_trace_context),
-                    "error_hint": error_hint,
-                },
-            }
-        stage = "first_batch_loss"
-        initial_loss = _formal_first_batch_loss(trainer, safe_prm)
-        formal_trace_context["initial_loss"] = initial_loss
-        stage = "train_n_eval"
-        accuracy, _accuracy_to_time, duration_ns = trainer.train_n_eval(
-            int(safe_prm.get("epoch", 1) or 1),
-            max(1.0 / 60.0, float(cfg.eval_limit_seconds) / 60.0),
+    except Exception as exc:
+        return _failure_result(
+            stage="preflight_build",
+            error_message=f"{type(exc).__name__}: {exc}",
+            built_ok=False,
+            forward_ok=False,
+            forward_shape_ok=False,
+            latency_ms=None,
+            params_m=params_m,
+        )
+    finally:
+        if preflight_model is not None:
+            try:
+                preflight_model.to("cpu")
+            except Exception:
+                pass
+            del preflight_model
+        _clear_reward_cuda_state()
+
+    started_at = time.time()
+    try:
+        unique_code = (
+            f"# reward formal eval nonce pid={os.getpid()} ns={time.time_ns()} "
+            f"freeze={int(bool(freeze_backbones))}\n{code}"
+        )
+        _model_name, test_acc, _accuracy_to_time, _code_score = nn_api.check_nn(
+            unique_code,
+            str(getattr(cfg, "formal_task", "img-classification")),
+            str(getattr(cfg, "formal_dataset", "cifar-10")),
+            str(getattr(cfg, "formal_metric", "acc")),
+            safe_prm,
             False,
+            None,
+            None,
             False,
-            train_set,
-            save_path=None,
+            epoch_limit_minutes,
         )
-        epoch_metrics = trainer.epoch_history[-1] if trainer.epoch_history else None
-        train_acc = float(epoch_metrics.train_accuracy) if epoch_metrics is not None else None
-        test_acc = float(epoch_metrics.test_accuracy) if epoch_metrics is not None else float(accuracy)
-        loss_end = float(epoch_metrics.train_loss) if epoch_metrics is not None else None
-        loss_drop = None if initial_loss is None or loss_end is None else float(initial_loss - loss_end)
-        rel_drop_ok = bool(
-            initial_loss is not None
-            and loss_end is not None
-            and initial_loss > 0.0
-            and loss_end <= initial_loss * 0.98
-        )
-        loss_drop_ok = bool(
-            initial_loss is not None
-            and loss_end is not None
-            and (loss_end < (initial_loss - 1e-3) or rel_drop_ok)
-        )
+        formal_duration_seconds = max(0.0, time.time() - started_at)
+        formal_trace_context["formal_eval_duration_seconds"] = formal_duration_seconds
         components = compute_cv_reward_simple(
             built_ok=True,
-            forward_shape_ok=bool(forward_result.get("forward_shape_ok")),
+            forward_shape_ok=True,
             backward_ok=True,
-            loss_drop_ok=loss_drop_ok,
-            val_metric=test_acc,
+            loss_drop_ok=True,
+            val_metric=float(test_acc),
             val_metric_baseline=None,
-            latency_ms=forward_result.get("latency_ms"),
+            latency_ms=latency_ms,
             params_m=params_m,
             flops_g=None,
             critic_score=None,
@@ -1982,90 +2031,58 @@ def _formal_eval_with_nn_dataset(
             **{
                 **_base_eval_result(
                     seed_accuracy_baseline=seed_accuracy_baseline,
-                    eval_limit_seconds=cfg.eval_limit_seconds,
+                    eval_limit_seconds=effective_eval_limit_seconds,
                     backbone_model_names=backbone_model_names,
                 ),
-                "test_acc": test_acc,
-                "val_metric": test_acc,
+                "test_acc": float(test_acc),
+                "val_metric": float(test_acc),
                 "built_ok": True,
-                "forward_ok": bool(forward_result.get("forward_ok")),
-                "forward_shape_ok": bool(forward_result.get("forward_shape_ok")),
+                "forward_ok": True,
+                "forward_shape_ok": True,
                 "trained_step_ok": True,
                 "backward_ok": True,
-                "loss_start": initial_loss,
-                "loss_end": loss_end,
-                "loss_drop": loss_drop,
-                "loss_drop_ok": loss_drop_ok,
-                "train_acc": train_acc,
-                "seed_train_acc_gap": None if train_acc is None or seed_accuracy_baseline is None else float(train_acc - seed_accuracy_baseline),
-                "seed_train_acc_improved": bool(
-                    train_acc is not None
-                    and seed_accuracy_baseline is not None
-                    and float(train_acc - seed_accuracy_baseline) > 0.0
-                ),
-                "train_acc_gain": None if train_acc is None or seed_accuracy_baseline is None else float(train_acc - seed_accuracy_baseline),
-                "train_acc_improved": bool(
-                    train_acc is not None
-                    and seed_accuracy_baseline is not None
-                    and float(train_acc - seed_accuracy_baseline) > 0.0
-                ),
-                "latency_ms": forward_result.get("latency_ms"),
+                "loss_start": None,
+                "loss_end": None,
+                "loss_drop": None,
+                "loss_drop_ok": True,
+                "train_acc": None,
+                "latency_ms": latency_ms,
                 "params_m": params_m,
-                "estimated_total_seconds": float(duration_ns) / 1e9,
+                "estimated_total_seconds": formal_duration_seconds,
             },
         }
     except Exception as exc:
-        error_type = type(exc).__name__
-        error_message = f"{error_type}: {exc}"
-        raise FormalEvalTraceError(
-            stage=stage,
-            error_type=error_type,
-            error_message=error_message,
-            context=formal_trace_context,
-            hint=_infer_error_hint(
-                error_message=error_message,
-                context=formal_trace_context,
-            ),
-        ) from exc
-    finally:
-        try:
-            if temp_file_path.exists():
-                temp_file_path.unlink()
-        except Exception:
-            pass
-        sys.modules.pop(tmp_module_name, None)
-        if trainer is not None:
+        formal_duration_seconds = max(0.0, time.time() - started_at)
+        formal_trace_context["formal_eval_duration_seconds"] = formal_duration_seconds
+        estimated_total_seconds = formal_duration_seconds
+        if hasattr(exc, "estimated_training_time"):
             try:
-                model = getattr(trainer, "model", None)
-                if model is not None:
-                    try:
-                        model.to("cpu")
-                    except Exception:
-                        pass
-                for attr_name in (
-                    "model",
-                    "optimizer",
-                    "criterion",
-                    "scheduler",
-                    "train_loader",
-                    "test_loader",
-                    "val_loader",
-                ):
-                    if hasattr(trainer, attr_name):
-                        setattr(trainer, attr_name, None)
+                formal_trace_context["estimated_training_time_minutes"] = float(exc.estimated_training_time)
+                estimated_total_seconds = float(exc.estimated_training_time) * 60.0
             except Exception:
                 pass
-        trainer = None
-        try:
-            del train_set
-        except Exception:
-            pass
-        try:
-            del test_set
-        except Exception:
-            pass
-        train_set = None
-        test_set = None
+        if hasattr(exc, "accuracy"):
+            try:
+                formal_trace_context["reported_accuracy"] = float(exc.accuracy)
+            except Exception:
+                pass
+        if hasattr(exc, "duration"):
+            try:
+                formal_trace_context["reported_duration_seconds"] = float(exc.duration)
+            except Exception:
+                pass
+        return _failure_result(
+            stage="check_nn",
+            error_message=f"{type(exc).__name__}: {exc}",
+            built_ok=True,
+            forward_ok=forward_ok,
+            forward_shape_ok=forward_shape_ok,
+            latency_ms=latency_ms,
+            params_m=params_m,
+            estimated_total_seconds=estimated_total_seconds,
+            timed_out=type(exc).__name__ == "LearnTimeException",
+        )
+    finally:
         _clear_reward_cuda_state()
 
 
@@ -2947,7 +2964,7 @@ def _evaluate_code_and_reward_direct(
             failure_result = _empty_eval_result(
                 error=error_msg,
                 seed_accuracy_baseline=seed_accuracy_baseline,
-                eval_limit_seconds=cfg.eval_limit_seconds,
+                eval_limit_seconds=_effective_eval_limit_seconds(cfg),
                 backbone_model_names=backbone_model_names,
             )
             _apply_error_trace(

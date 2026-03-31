@@ -32,7 +32,7 @@ SFT_LORA_ALPHA = 32
 SFT_LORA_DROPOUT = 0.05
 SFT_DEEPSPEED_DEFAULT_CONFIG = str(conf_dir / "DeepSpeedSftGrpo.json")
 
-# CIFAR-10 reward evaluation proxy.
+# CIFAR-10 reward evaluation via nn-dataset / NNEval-aligned formal acc.
 SFT_EVAL_IMAGE_SIZE = 256
 SFT_EVAL_BATCH_SIZE = 32
 SFT_EVAL_TRAIN_SUBSET = 256
@@ -42,6 +42,7 @@ SFT_EVAL_VAL_BATCHES = 2
 SFT_EVAL_FULL_TEST_ACC = True
 SFT_EVAL_RUN_UNFROZEN = True
 SFT_EVAL_LIMIT_SECONDS = 900
+SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES = 30
 SFT_EVAL_DATA_ROOT = "data_v2"
 SFT_EVAL_DOWNLOAD = True
 SFT_VAL_METRIC_BASELINE = 0.10
@@ -418,6 +419,7 @@ def evaluate_code_and_reward_cifar(
                 formal_task="img-classification",
                 formal_dataset="cifar-10",
                 formal_metric="acc",
+                formal_epoch_limit_minutes=SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES,
             )
         else:
             cfg = RewardUtil.EvalConfig(
@@ -445,6 +447,11 @@ def evaluate_code_and_reward_cifar(
                 formal_task=getattr(cfg, "formal_task", "img-classification"),
                 formal_dataset=getattr(cfg, "formal_dataset", "cifar-10"),
                 formal_metric=getattr(cfg, "formal_metric", "acc"),
+                formal_epoch_limit_minutes=getattr(
+                    cfg,
+                    "formal_epoch_limit_minutes",
+                    SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES,
+                ),
             )
 
         return RewardUtil.evaluate_code_and_reward(
@@ -503,6 +510,7 @@ def build_sft_reward_eval_cfg(
             formal_task="img-classification",
             formal_dataset="cifar-10",
             formal_metric="acc",
+            formal_epoch_limit_minutes=SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES,
         )
 
     return RewardUtil.EvalConfig(
@@ -530,6 +538,11 @@ def build_sft_reward_eval_cfg(
         formal_task=getattr(cfg, "formal_task", "img-classification"),
         formal_dataset=getattr(cfg, "formal_dataset", "cifar-10"),
         formal_metric=getattr(cfg, "formal_metric", "acc"),
+        formal_epoch_limit_minutes=getattr(
+            cfg,
+            "formal_epoch_limit_minutes",
+            SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES,
+        ),
     )
 
 
@@ -1008,11 +1021,10 @@ def main() -> None:
     print(f"[SFT RL] Temperature: {SFT_TEMPERATURE}")
     print(
         f"[SFT RL] CIFAR-10 eval: backend=nn-dataset-formal, resize={SFT_EVAL_IMAGE_SIZE}, batch<={SFT_EVAL_BATCH_SIZE}, "
-        f"train_set=full, "
-        f"{'test_subset=full' if SFT_EVAL_FULL_TEST_ACC else f'val_subset={SFT_EVAL_VAL_SUBSET}'}, "
-        f"train_epochs={SFT_EVAL_TRAIN_EPOCHS}, val_batches={SFT_EVAL_VAL_BATCHES}, "
-        f"full_test_acc={SFT_EVAL_FULL_TEST_ACC}, run_unfrozen={SFT_EVAL_RUN_UNFROZEN}, "
-        f"eval_limit_seconds={SFT_EVAL_LIMIT_SECONDS}, "
+        f"train_set=full, test_set=full, "
+        f"train_epochs={SFT_EVAL_TRAIN_EPOCHS}, run_unfrozen={SFT_EVAL_RUN_UNFROZEN}, "
+        f"formal_epoch_limit_minutes={SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES}, "
+        f"worker_eval_limit_seconds={SFT_EVAL_LIMIT_SECONDS}, "
         f"baseline={SFT_VAL_METRIC_BASELINE:.2f}"
     )
     print(f"[SFT RL] Save RL adapter: {SFT_SAVE_RL_MODEL}")

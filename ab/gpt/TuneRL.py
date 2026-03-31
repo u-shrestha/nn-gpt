@@ -2251,14 +2251,21 @@ def _format_reward_trace_context(context: Optional[Dict[str, Any]]) -> str:
         return ""
     preferred_keys = (
         "freeze_backbones",
+        "formal_eval_backend",
+        "formal_eval_duration_seconds",
         "trainer_device",
         "trainer_in_shape",
         "dataset_out_shape",
         "forward_output_shape",
+        "params_m",
         "batch",
         "epoch",
+        "epoch_limit_minutes",
         "transform",
         "num_workers",
+        "estimated_training_time_minutes",
+        "reported_accuracy",
+        "reported_duration_seconds",
     )
     parts = []
     for key in preferred_keys:
