@@ -42,6 +42,24 @@ class EvalTimeException(RuntimeError):
         )
 
 
+class FormalEvalTraceError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        stage: str,
+        error_type: str,
+        error_message: str,
+        context: Optional[Dict[str, Any]] = None,
+        hint: Optional[str] = None,
+    ) -> None:
+        self.stage = str(stage)
+        self.error_type = str(error_type)
+        self.error_message = str(error_message)
+        self.context = dict(context or {})
+        self.hint = None if hint is None else str(hint)
+        super().__init__(self.error_message)
+
+
 def _safe_int_env(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None or raw == "":
@@ -980,6 +998,56 @@ def _extract_backbone_model_names_from_code(code: str) -> list[str]:
     ]
 
 
+def _formal_eval_code_trace(code: str) -> Dict[str, Any]:
+    text = str(code or "")
+    return {
+        "references_input_spec": "self._input_spec" in text,
+        "assigns_input_spec": bool(re.search(r"self\._input_spec\s*=", text)),
+        "references_pattern_attr": "self.pattern" in text,
+        "line_count": len(text.splitlines()),
+    }
+
+
+def _infer_error_hint(
+    *,
+    error_message: Optional[str],
+    context: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    normalized = " ".join(str(error_message or "").split()).lower()
+    trace_context = dict(context or {})
+    code_trace = dict(trace_context.get("code_trace") or {})
+    if "_input_spec" in normalized:
+        if code_trace.get("references_input_spec") and not code_trace.get("assigns_input_spec"):
+            return "generated Net references self._input_spec but never assigns it in __init__"
+        return "generated Net is missing self._input_spec before downstream shape inference"
+    if "unknown model" in normalized:
+        return "one of the selected backbone names is not available in the TorchVision wrapper"
+    if "learntimeexception" in normalized:
+        return "nn-dataset training-time guard rejected this candidate before completing formal eval"
+    if "forward shape" in normalized:
+        return "forward output shape is incompatible with the expected class dimension"
+    return None
+
+
+def _apply_error_trace(
+    result: Dict[str, Any],
+    *,
+    error_type: Optional[str] = None,
+    error_stage: Optional[str] = None,
+    error_context: Optional[Dict[str, Any]] = None,
+    error_hint: Optional[str] = None,
+) -> Dict[str, Any]:
+    if error_type is not None:
+        result["error_type"] = str(error_type)
+    if error_stage is not None:
+        result["error_stage"] = str(error_stage)
+    if error_context is not None:
+        result["error_context"] = dict(error_context)
+    if error_hint is not None:
+        result["error_hint"] = str(error_hint)
+    return result
+
+
 def _base_eval_result(
     *,
     seed_accuracy_baseline: Optional[float] = None,
@@ -1026,6 +1094,10 @@ def _base_eval_result(
         "unfrozen_eval": None,
         "reward_target_metric": "frozen_test_acc",
         "reward_target_value": None,
+        "error_type": None,
+        "error_stage": None,
+        "error_context": None,
+        "error_hint": None,
     }
 
 
@@ -1064,6 +1136,10 @@ def _nested_eval_payload(
         "seed_train_acc_gap": result.get("seed_train_acc_gap"),
         "seed_train_acc_improved": result.get("seed_train_acc_improved"),
         "error": result.get("error"),
+        "error_type": result.get("error_type"),
+        "error_stage": result.get("error_stage"),
+        "error_context": dict(result.get("error_context") or {}) if result.get("error_context") is not None else None,
+        "error_hint": result.get("error_hint"),
     }
 
 
@@ -1725,16 +1801,36 @@ def _formal_eval_with_nn_dataset(
     trainer = None
     train_set = None
     test_set = None
+    formal_trace_context: Dict[str, Any] = {
+        "freeze_backbones": bool(freeze_backbones),
+        "formal_task": str(getattr(cfg, "formal_task", "img-classification")),
+        "formal_dataset": str(getattr(cfg, "formal_dataset", "cifar-10")),
+        "formal_metric": str(getattr(cfg, "formal_metric", "acc")),
+        "backbone_model_names": list(backbone_model_names),
+        "code_trace": _formal_eval_code_trace(code),
+    }
+    stage = "write_temp_module"
     try:
         temp_file_path.write_text(code, encoding="utf-8")
         safe_prm = dict(prm)
         safe_prm["freeze_backbones"] = bool(freeze_backbones)
+        formal_trace_context.update(
+            {
+                "transform": str(safe_prm.get("transform")),
+                "batch": int(safe_prm.get("batch", 0) or 0),
+                "epoch": int(safe_prm.get("epoch", 0) or 0),
+            }
+        )
+        stage = "load_dataset"
         out_shape, _minimum_accuracy, train_set, test_set = load_dataset(
             str(getattr(cfg, "formal_task", "img-classification")),
             str(getattr(cfg, "formal_dataset", "cifar-10")),
             str(safe_prm["transform"]),
         )
+        formal_trace_context["dataset_out_shape"] = tuple(out_shape)
         num_workers = int(safe_prm.get("num_workers", 1))
+        formal_trace_context["num_workers"] = num_workers
+        stage = "trainer_init"
         trainer = Train(
             config=(
                 str(getattr(cfg, "formal_task", "img-classification")),
@@ -1755,22 +1851,37 @@ def _formal_eval_with_nn_dataset(
             save_to_db=False,
             is_code=True,
         )
+        formal_trace_context.update(
+            {
+                "trainer_device": str(trainer.device),
+                "trainer_in_shape": tuple(trainer.in_shape),
+            }
+        )
         params_m = _count_params_m(trainer.model)
+        formal_trace_context["params_m"] = params_m
+        stage = "quick_forward"
         forward_result = _quick_forward(
             trainer.model,
             tuple(trainer.in_shape),
             device=str(trainer.device),
             n_classes=int(out_shape[0]),
         )
+        formal_trace_context["forward_output_shape"] = forward_result.get("output_shape")
         if not bool(forward_result.get("forward_ok")) or not bool(forward_result.get("forward_shape_ok")):
             output_shape = forward_result.get("output_shape")
             if forward_result.get("error"):
                 error_msg = str(forward_result.get("error"))
+                error_type = error_msg.split(":", 1)[0].strip() or "RuntimeError"
             else:
                 error_msg = (
                     "RuntimeError: formal eval forward shape "
                     f"{output_shape!r} incompatible with expected classes {int(out_shape[0])}"
                 )
+                error_type = "RuntimeError"
+            error_hint = _infer_error_hint(
+                error_message=error_msg,
+                context=formal_trace_context,
+            )
             components = compute_cv_reward_simple(
                 built_ok=True,
                 forward_shape_ok=bool(forward_result.get("forward_shape_ok")),
@@ -1801,9 +1912,16 @@ def _formal_eval_with_nn_dataset(
                     "params_m": params_m,
                     "estimated_total_seconds": 0.0,
                     "error": error_msg,
+                    "error_type": error_type,
+                    "error_stage": stage,
+                    "error_context": dict(formal_trace_context),
+                    "error_hint": error_hint,
                 },
             }
+        stage = "first_batch_loss"
         initial_loss = _formal_first_batch_loss(trainer, safe_prm)
+        formal_trace_context["initial_loss"] = initial_loss
+        stage = "train_n_eval"
         accuracy, _accuracy_to_time, duration_ns = trainer.train_n_eval(
             int(safe_prm.get("epoch", 1) or 1),
             max(1.0 / 60.0, float(cfg.eval_limit_seconds) / 60.0),
@@ -1880,6 +1998,19 @@ def _formal_eval_with_nn_dataset(
                 "estimated_total_seconds": float(duration_ns) / 1e9,
             },
         }
+    except Exception as exc:
+        error_type = type(exc).__name__
+        error_message = f"{error_type}: {exc}"
+        raise FormalEvalTraceError(
+            stage=stage,
+            error_type=error_type,
+            error_message=error_message,
+            context=formal_trace_context,
+            hint=_infer_error_hint(
+                error_message=error_message,
+                context=formal_trace_context,
+            ),
+        ) from exc
     finally:
         try:
             if temp_file_path.exists():
@@ -2788,11 +2919,27 @@ def _evaluate_code_and_reward_direct(
         except Exception as e:
             error_type = type(e).__name__
             error_msg = f"{error_type}: {e}"
+            error_stage = None
+            error_context = None
+            error_hint = None
+            if isinstance(e, FormalEvalTraceError):
+                error_type = e.error_type
+                error_msg = e.error_message
+                error_stage = e.stage
+                error_context = dict(e.context)
+                error_hint = e.hint
             failure_result = _empty_eval_result(
                 error=error_msg,
                 seed_accuracy_baseline=seed_accuracy_baseline,
                 eval_limit_seconds=cfg.eval_limit_seconds,
                 backbone_model_names=backbone_model_names,
+            )
+            _apply_error_trace(
+                failure_result,
+                error_type=error_type,
+                error_stage=error_stage,
+                error_context=error_context,
+                error_hint=error_hint,
             )
             failure_result["frozen_eval"] = _nested_eval_payload(
                 failure_result,

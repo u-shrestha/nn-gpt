@@ -2246,6 +2246,72 @@ def _precompute_eval_results(
         entry["precomputed_eval_result"] = eval_result
 
 
+def _format_reward_trace_context(context: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(context, dict) or not context:
+        return ""
+    preferred_keys = (
+        "freeze_backbones",
+        "trainer_device",
+        "trainer_in_shape",
+        "dataset_out_shape",
+        "forward_output_shape",
+        "batch",
+        "epoch",
+        "transform",
+        "num_workers",
+    )
+    parts = []
+    for key in preferred_keys:
+        if key in context and context[key] is not None:
+            parts.append(f"{key}={context[key]!r}")
+    code_trace = context.get("code_trace")
+    if isinstance(code_trace, dict):
+        for key in ("references_input_spec", "assigns_input_spec", "references_pattern_attr", "line_count"):
+            if key in code_trace and code_trace[key] is not None:
+                parts.append(f"code_trace.{key}={code_trace[key]!r}")
+    return ", ".join(parts)
+
+
+def _log_reward_failure_trace(entry: Dict[str, Any], res: Dict[str, Any]) -> None:
+    graph_info = entry.get("graph_info")
+    pattern_name = getattr(graph_info, "suggested_pattern_name", None) if graph_info is not None else None
+    branches = [("root", res)]
+    frozen_eval = res.get("frozen_eval")
+    unfrozen_eval = res.get("unfrozen_eval")
+    if isinstance(frozen_eval, dict):
+        branches.append(("frozen", frozen_eval))
+    if isinstance(unfrozen_eval, dict):
+        branches.append(("unfrozen", unfrozen_eval))
+
+    seen = set()
+    for branch_name, payload in branches:
+        error = payload.get("error")
+        if not error:
+            continue
+        stage = payload.get("error_stage")
+        hint = payload.get("error_hint")
+        context = payload.get("error_context")
+        dedupe_key = (branch_name, str(error), str(stage), str(hint), repr(context))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+
+        trace_message = (
+            f"[Reward Failure Trace] rank={entry['rank']} "
+            f"batch_index={entry['local_index']} "
+            f"branch={branch_name} "
+            f"pattern={pattern_name!r} "
+            f"stage={stage or 'unknown'} "
+            f"error={error!r}"
+        )
+        if hint:
+            trace_message += f" hint={hint!r}"
+        formatted_context = _format_reward_trace_context(context)
+        if formatted_context:
+            trace_message += f" context=({formatted_context})"
+        code_logger.log_to_file(trace_message)
+
+
 def _score_reward_entries(
     entries: List[Dict[str, Any]],
     *,
@@ -2299,6 +2365,7 @@ def _score_reward_entries(
                 code_logger.log_to_file(
                     f"[Reward Dispatch] rank={entry['rank']} batch_index={index}, " + ", ".join(dispatch_parts)
                 )
+            _log_reward_failure_trace(entry, res)
             score = float(res.get("reward", -2.0))
         except PersistentEvalWorkerError:
             raise
