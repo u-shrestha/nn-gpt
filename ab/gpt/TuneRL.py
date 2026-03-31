@@ -1,4 +1,58 @@
 import ast
+import sys
+import warnings
+
+
+_RL_FILTERED_LOG_PATTERNS = (
+    "Skipping import of cpp extensions due to incompatible torch version",
+    "github.com/pytorch/ao/issues/2919",
+)
+
+
+class _RLFilteredStream:
+    def __init__(self, wrapped) -> None:
+        self._wrapped = wrapped
+        self._buffer = ""
+
+    def write(self, text):
+        text = str(text)
+        self._buffer += text
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            self._write_line(line + "\n")
+        return len(text)
+
+    def flush(self):
+        if self._buffer:
+            self._write_line(self._buffer)
+            self._buffer = ""
+        return self._wrapped.flush()
+
+    def _write_line(self, text: str) -> None:
+        normalized = " ".join(text.split())
+        if all(pattern in normalized for pattern in _RL_FILTERED_LOG_PATTERNS):
+            return
+        self._wrapped.write(text)
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
+def _install_rl_runtime_noise_filters() -> None:
+    if getattr(_install_rl_runtime_noise_filters, "_installed", False):
+        return
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers\. Use `HF_HOME` instead\..*",
+        category=FutureWarning,
+    )
+    sys.stdout = _RLFilteredStream(sys.stdout)
+    sys.stderr = _RLFilteredStream(sys.stderr)
+    _install_rl_runtime_noise_filters._installed = True
+
+
+_install_rl_runtime_noise_filters()
+
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments
 from peft import LoraConfig, get_peft_model, PeftModel, prepare_model_for_kbit_training

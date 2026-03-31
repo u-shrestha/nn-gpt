@@ -492,6 +492,19 @@ def _clear_reward_cuda_state() -> None:
         pass
 
 
+def _is_fatal_cuda_worker_error(error: Optional[str]) -> bool:
+    if not error:
+        return False
+    normalized = " ".join(str(error).split()).lower()
+    fatal_patterns = (
+        "device-side assert triggered",
+        "cudaerrorassert",
+        "an illegal memory access was encountered",
+        "unspecified launch failure",
+    )
+    return any(pattern in normalized for pattern in fatal_patterns)
+
+
 class _PersistentEvalWorkerSession:
     def __init__(
         self,
@@ -857,6 +870,15 @@ class _EvalWorkerPool:
         result["assigned_gpu"] = assigned_gpu
         result["worker_device"] = worker_device
         result["worker_slot"] = worker_slot
+        if bool(result.get("worker_restart_requested", False)):
+            print(
+                "[Reward Worker Pool] Restart "
+                f"slot={worker_slot} "
+                f"assigned_gpu={assigned_gpu} "
+                f"worker_device={worker_device} "
+                f"reason={result.get('error', 'unknown')!r}"
+            )
+            self._replace_session(slot)
         return result
 
     def request_entry(self, entry: Dict[str, Any], *, timeout: float) -> Dict[str, Any]:
@@ -1691,7 +1713,7 @@ def _formal_eval_with_nn_dataset(
     from ab.nn.util.Const import ab_root_path, out  # type: ignore
     from ab.nn.util.Loader import load_dataset  # type: ignore
     from ab.nn.util.Train import Train  # type: ignore
-    from ab.nn.util.Util import create_file, release_memory, uuid4  # type: ignore
+    from ab.nn.util.Util import create_file, uuid4  # type: ignore
 
     model_name = f"rl-eval-{uuid4([code, os.getpid(), time.time_ns(), freeze_backbones])}"
     tmp_module = ".".join((out, "nn", "tmp"))
@@ -1740,6 +1762,47 @@ def _formal_eval_with_nn_dataset(
             device=str(trainer.device),
             n_classes=int(out_shape[0]),
         )
+        if not bool(forward_result.get("forward_ok")) or not bool(forward_result.get("forward_shape_ok")):
+            output_shape = forward_result.get("output_shape")
+            if forward_result.get("error"):
+                error_msg = str(forward_result.get("error"))
+            else:
+                error_msg = (
+                    "RuntimeError: formal eval forward shape "
+                    f"{output_shape!r} incompatible with expected classes {int(out_shape[0])}"
+                )
+            components = compute_cv_reward_simple(
+                built_ok=True,
+                forward_shape_ok=bool(forward_result.get("forward_shape_ok")),
+                backward_ok=False,
+                loss_drop_ok=False,
+                val_metric=None,
+                val_metric_baseline=None,
+                latency_ms=forward_result.get("latency_ms"),
+                params_m=params_m,
+                flops_g=None,
+                critic_score=None,
+                kl_div=cfg.kl_div,
+                weights=cfg.weights,
+            )
+            return {
+                "reward": components["reward"],
+                "components": components,
+                **{
+                    **_base_eval_result(
+                        seed_accuracy_baseline=seed_accuracy_baseline,
+                        eval_limit_seconds=cfg.eval_limit_seconds,
+                        backbone_model_names=backbone_model_names,
+                    ),
+                    "built_ok": True,
+                    "forward_ok": bool(forward_result.get("forward_ok")),
+                    "forward_shape_ok": bool(forward_result.get("forward_shape_ok")),
+                    "latency_ms": forward_result.get("latency_ms"),
+                    "params_m": params_m,
+                    "estimated_total_seconds": 0.0,
+                    "error": error_msg,
+                },
+            }
         initial_loss = _formal_first_batch_loss(trainer, safe_prm)
         accuracy, _accuracy_to_time, duration_ns = trainer.train_n_eval(
             int(safe_prm.get("epoch", 1) or 1),
@@ -1856,10 +1919,6 @@ def _formal_eval_with_nn_dataset(
             pass
         train_set = None
         test_set = None
-        try:
-            release_memory()
-        except Exception:
-            pass
         _clear_reward_cuda_state()
 
 
@@ -2621,9 +2680,11 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
                     backbone_model_names=_extract_backbone_model_names_from_code(request.get("code", "")),
                 )
                 result["components"]["reward"] = -1.0
+            worker_restart_requested = _is_fatal_cuda_worker_error(result.get("error"))
             result["assigned_gpu"] = assigned_gpu
             result["worker_device"] = worker_device
             result["worker_slot"] = request.get("worker_slot", None)
+            result["worker_restart_requested"] = worker_restart_requested
             if bool(request.get("worker_batch_last_item")):
                 if worker_device.startswith("cuda") and torch.cuda.is_available():
                     _clear_reward_cuda_state()
@@ -2644,6 +2705,8 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
                 )
 
             conn.send(result)
+            if worker_restart_requested:
+                break
     finally:
         cuda_allocated_gib, cuda_reserved_gib = _worker_cuda_memory_gib()
         print(
