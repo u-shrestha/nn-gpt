@@ -1501,20 +1501,14 @@ def _merge_dual_eval_results(
     merged = dict(frozen_result)
     frozen_train_acc = frozen_result.get("train_acc")
     frozen_test_acc = frozen_result.get("test_acc", frozen_result.get("val_metric"))
-    unfrozen_train_acc = None if unfrozen_result is None else unfrozen_result.get("train_acc")
-    unfrozen_test_acc = None if unfrozen_result is None else unfrozen_result.get("test_acc", unfrozen_result.get("val_metric"))
     reward_target_metric = str(getattr(cfg, "reward_target_metric", "frozen_test_acc") or "frozen_test_acc")
+    if reward_target_metric not in {"frozen_test_acc", "frozen_train_acc"}:
+        reward_target_metric = "frozen_test_acc"
 
     if reward_target_metric == "frozen_test_acc":
         reward_target_value = frozen_test_acc
-    elif reward_target_metric == "frozen_train_acc":
-        reward_target_value = frozen_train_acc
-    elif reward_target_metric == "unfrozen_test_acc":
-        reward_target_value = unfrozen_test_acc
-    elif reward_target_metric == "unfrozen_train_acc":
-        reward_target_value = unfrozen_train_acc
     else:
-        reward_target_value = frozen_test_acc
+        reward_target_value = frozen_train_acc
 
     merged.update(
         {
@@ -1523,18 +1517,14 @@ def _merge_dual_eval_results(
             "val_metric": frozen_test_acc,
             "frozen_train_acc": frozen_train_acc,
             "frozen_test_acc": frozen_test_acc,
-            "unfrozen_train_acc": unfrozen_train_acc,
-            "unfrozen_test_acc": unfrozen_test_acc,
+            "unfrozen_train_acc": None,
+            "unfrozen_test_acc": None,
             "frozen_eval": _nested_eval_payload(
                 frozen_result,
                 eval_mode="frozen",
                 backbone_frozen=True,
             ),
-            "unfrozen_eval": _nested_eval_payload(
-                unfrozen_result,
-                eval_mode="unfrozen",
-                backbone_frozen=False,
-            ),
+            "unfrozen_eval": None,
             "reward_target_metric": reward_target_metric,
             "reward_target_value": reward_target_value,
         }
@@ -1543,9 +1533,8 @@ def _merge_dual_eval_results(
 
 
 def _request_timeout_seconds(cfg: "EvalConfig") -> float:
-    eval_runs = 2 if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)) else 1
     base_timeout = float(_effective_eval_limit_seconds(cfg))
-    return max(360.0, (base_timeout * eval_runs) + 120.0)
+    return max(360.0, base_timeout + 120.0)
 
 
 def _is_cuda_oom_error_message(error_message: Optional[str]) -> bool:
@@ -2193,6 +2182,12 @@ def _build_effective_eval_cfg(
         default_batch_size=_coerce_positive_int(
             prm_payload.get("batch"),
             getattr(base_cfg, "default_batch_size", 32),
+        ),
+        run_unfrozen_backbone_eval=False,
+        reward_target_metric=(
+            "frozen_train_acc"
+            if str(getattr(base_cfg, "reward_target_metric", "frozen_test_acc") or "frozen_test_acc") == "frozen_train_acc"
+            else "frozen_test_acc"
         ),
     )
 
@@ -3868,25 +3863,9 @@ def _evaluate_code_and_reward_direct(
             if frozen_result.get("error"):
                 return frozen_result
 
-            unfrozen_result = None
-            if bool(getattr(frozen_cfg, "run_unfrozen_backbone_eval", False)):
-                _clear_reward_cuda_state()
-                unfrozen_result, _unfrozen_cfg, _unfrozen_prm = _run_formal_eval_with_backoff(
-                    code=code,
-                    prm=prm,
-                    cfg=frozen_cfg,
-                    freeze_backbones=False,
-                    seed_accuracy_baseline=seed_accuracy_baseline,
-                    backbone_model_names=backbone_model_names,
-                )
-                if unfrozen_result.get("error") and _is_cuda_oom_error_message(unfrozen_result.get("error")):
-                    print(
-                        "[Reward Formal Eval] Degrade optional unfrozen eval after CUDA OOM; "
-                        "keeping frozen reward target"
-                    )
             return _merge_dual_eval_results(
                 frozen_result=frozen_result,
-                unfrozen_result=unfrozen_result,
+                unfrozen_result=None,
                 cfg=frozen_cfg,
             )
         except Exception as e:
@@ -3919,12 +3898,6 @@ def _evaluate_code_and_reward_direct(
                 eval_mode="frozen",
                 backbone_frozen=True,
             )
-            if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)):
-                failure_result["unfrozen_eval"] = _nested_eval_payload(
-                    failure_result,
-                    eval_mode="unfrozen",
-                    backbone_frozen=False,
-                )
             return failure_result
 
     try:
@@ -3944,12 +3917,6 @@ def _evaluate_code_and_reward_direct(
             eval_mode="frozen",
             backbone_frozen=True,
         )
-        if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)):
-            failure_result["unfrozen_eval"] = _nested_eval_payload(
-                failure_result,
-                eval_mode="unfrozen",
-                backbone_frozen=False,
-            )
         return failure_result
     try:
         frozen_result = evaluate_and_reward(
@@ -3962,24 +3929,9 @@ def _evaluate_code_and_reward_direct(
             backbone_model_names=backbone_model_names,
             freeze_backbones=True,
         )
-        unfrozen_result = None
-        if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)):
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            gc.collect()
-            unfrozen_result = evaluate_and_reward(
-                build_fn=builder,
-                train_loader=train_loader,
-                val_loader=val_loader,
-                val_metric_baseline=val_metric_baseline,
-                seed_accuracy_baseline=seed_accuracy_baseline,
-                cfg=cfg,
-                backbone_model_names=backbone_model_names,
-                freeze_backbones=False,
-            )
         return _merge_dual_eval_results(
             frozen_result=frozen_result,
-            unfrozen_result=unfrozen_result,
+            unfrozen_result=None,
             cfg=cfg,
         )
     except Exception as e:
@@ -3996,12 +3948,6 @@ def _evaluate_code_and_reward_direct(
             eval_mode="frozen",
             backbone_frozen=True,
         )
-        if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)):
-            failure_result["unfrozen_eval"] = _nested_eval_payload(
-                failure_result,
-                eval_mode="unfrozen",
-                backbone_frozen=False,
-            )
         return failure_result
 
 

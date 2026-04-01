@@ -41,7 +41,7 @@ SFT_EVAL_VAL_SUBSET = 128
 SFT_EVAL_TRAIN_EPOCHS = 1
 SFT_EVAL_VAL_BATCHES = 2
 SFT_EVAL_FULL_TEST_ACC = True
-SFT_EVAL_RUN_UNFROZEN = True
+SFT_EVAL_RUN_UNFROZEN = False
 SFT_EVAL_LIMIT_SECONDS = 900
 SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES = 30
 SFT_EVAL_DATA_ROOT = "data_v2"
@@ -519,7 +519,7 @@ def evaluate_code_and_reward_cifar(
                 critic_fn=None,
                 weights=None,
                 eval_limit_seconds=SFT_EVAL_LIMIT_SECONDS,
-                run_unfrozen_backbone_eval=SFT_EVAL_RUN_UNFROZEN,
+                run_unfrozen_backbone_eval=False,
                 full_test_acc=SFT_EVAL_FULL_TEST_ACC,
                 reward_target_metric="frozen_test_acc",
                 formal_nn_eval=True,
@@ -547,7 +547,7 @@ def evaluate_code_and_reward_cifar(
                 weights=cfg.weights,
                 eval_limit_seconds=cfg.eval_limit_seconds,
                 budget_probe_batches=cfg.budget_probe_batches,
-                run_unfrozen_backbone_eval=cfg.run_unfrozen_backbone_eval,
+                run_unfrozen_backbone_eval=False,
                 full_test_acc=cfg.full_test_acc,
                 reward_target_metric=cfg.reward_target_metric,
                 formal_nn_eval=getattr(cfg, "formal_nn_eval", True),
@@ -610,7 +610,7 @@ def build_sft_reward_eval_cfg(
             critic_fn=None,
             weights=None,
             eval_limit_seconds=SFT_EVAL_LIMIT_SECONDS,
-            run_unfrozen_backbone_eval=SFT_EVAL_RUN_UNFROZEN,
+            run_unfrozen_backbone_eval=False,
             full_test_acc=SFT_EVAL_FULL_TEST_ACC,
             reward_target_metric="frozen_test_acc",
             formal_nn_eval=True,
@@ -638,7 +638,7 @@ def build_sft_reward_eval_cfg(
         weights=cfg.weights,
         eval_limit_seconds=cfg.eval_limit_seconds,
         budget_probe_batches=cfg.budget_probe_batches,
-        run_unfrozen_backbone_eval=cfg.run_unfrozen_backbone_eval,
+        run_unfrozen_backbone_eval=False,
         full_test_acc=cfg.full_test_acc,
         reward_target_metric=cfg.reward_target_metric,
         formal_nn_eval=getattr(cfg, "formal_nn_eval", True),
@@ -1152,7 +1152,7 @@ def main() -> None:
     print(
         f"[SFT RL] CIFAR-10 eval: backend=nn-dataset-formal, resize={SFT_EVAL_IMAGE_SIZE}, batch={SFT_EVAL_BATCH_SIZE}, "
         f"train_set=full, test_set=full, "
-        f"train_epochs={SFT_EVAL_TRAIN_EPOCHS}, run_unfrozen={SFT_EVAL_RUN_UNFROZEN}, "
+        f"train_epochs={SFT_EVAL_TRAIN_EPOCHS}, freeze_only_backbone_eval=True, "
         f"formal_epoch_limit_minutes={SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES}, "
         f"worker_eval_limit_seconds={SFT_EVAL_LIMIT_SECONDS}, "
         f"baseline={SFT_VAL_METRIC_BASELINE:.2f}"
