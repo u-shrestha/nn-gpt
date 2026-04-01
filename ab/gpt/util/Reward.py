@@ -2,6 +2,7 @@ from typing import Optional, Dict, Tuple, Callable, Any
 from dataclasses import dataclass, asdict, replace
 import atexit
 import ast
+import csv
 import time
 import gc
 import multiprocessing as mp
@@ -9,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import importlib
 import os
 import re
+import subprocess
 import sys
 
 import torch
@@ -162,16 +164,12 @@ def get_distributed_runtime_info() -> Dict[str, Any]:
         reward_gpu_tokens = [
             str(token)
             for token in configured_reward_gpu_tokens
-            if str(token) in visible_gpu_tokens and str(token) != train_gpu_token
+            if str(token) in visible_gpu_tokens
         ]
     elif world_size > 1:
         reward_gpu_tokens = [str(train_gpu_token)] if train_gpu_token is not None else []
     else:
-        reward_gpu_tokens = [
-            str(token)
-            for token in visible_gpu_tokens
-            if train_gpu_token is None or str(token) != train_gpu_token
-        ]
+        reward_gpu_tokens = [str(token) for token in visible_gpu_tokens]
     reward_gpu_indices = [
         int(visible_gpu_tokens.index(token))
         for token in reward_gpu_tokens
@@ -340,9 +338,30 @@ def get_reward_worker_plan() -> Dict[str, Any]:
     def _expand_reward_gpu_assignments(per_gpu_worker_counts: list[int]) -> tuple[list[int], list[str]]:
         reward_gpu_indices: list[int] = []
         reward_gpu_tokens: list[str] = []
+        active_device_indices = [
+            int(device_index)
+            for device_index, worker_count in enumerate(per_gpu_worker_counts)
+            if int(worker_count) > 0
+        ]
+        if train_gpu is not None:
+            train_device_index = int(train_gpu)
+            active_device_indices = [
+                device_index
+                for device_index in active_device_indices
+                if device_index != train_device_index
+            ] + (
+                [train_device_index]
+                if train_device_index in set(
+                    int(device_index)
+                    for device_index, worker_count in enumerate(per_gpu_worker_counts)
+                    if int(worker_count) > 0
+                )
+                else []
+            )
         max_workers = max(per_gpu_worker_counts, default=0)
         for round_index in range(max_workers):
-            for device_index, worker_count in enumerate(per_gpu_worker_counts):
+            for device_index in active_device_indices:
+                worker_count = per_gpu_worker_counts[device_index]
                 if round_index >= int(worker_count):
                     continue
                 reward_gpu_indices.append(int(device_index))
@@ -547,7 +566,7 @@ def get_reward_worker_plan() -> Dict[str, Any]:
     min_workers_per_gpu = max(0, _safe_int_env("NNGPT_REWARD_MIN_WORKERS_PER_GPU", default_min_workers))
     max_workers_per_gpu = max(
         min_workers_per_gpu,
-        _safe_int_env("NNGPT_REWARD_MAX_WORKERS_PER_GPU", 2),
+        _safe_int_env("NNGPT_REWARD_MAX_WORKERS_PER_GPU", 1),
     )
     if distributed_single_process_per_gpu:
         max_workers_per_gpu = 1
@@ -651,20 +670,45 @@ class _PersistentEvalWorkerSession:
         assigned_cuda_visible_device: Optional[str],
         worker_slot: int,
     ) -> None:
-        from ab.gpt.util.reward_worker_bootstrap import reward_worker_main
-
         self._assigned_gpu = assigned_gpu
         self._assigned_cuda_visible_device = (
             None if assigned_cuda_visible_device is None else str(assigned_cuda_visible_device)
         )
         self._worker_slot = int(worker_slot)
-        self.ctx = mp.get_context("spawn")
-        self._parent_conn, child_conn = self.ctx.Pipe()
-        self._process = self.ctx.Process(
-            target=reward_worker_main,
-            args=(child_conn, assigned_gpu, self._assigned_cuda_visible_device),
+        self._parent_conn, child_conn = mp.Pipe(duplex=True)
+        child_fd = int(child_conn.fileno())
+        os.set_inheritable(child_fd, True)
+        child_env = os.environ.copy()
+        if assigned_gpu is None:
+            child_env["CUDA_VISIBLE_DEVICES"] = ""
+        else:
+            child_env["CUDA_VISIBLE_DEVICES"] = (
+                self._assigned_cuda_visible_device
+                if self._assigned_cuda_visible_device is not None
+                else str(int(assigned_gpu))
+            )
+            child_env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        command = [
+            sys.executable,
+            "-u",
+            "-m",
+            "ab.gpt.util.reward_worker_bootstrap",
+            "--conn-fd",
+            str(child_fd),
+            "--assigned-gpu",
+            "" if assigned_gpu is None else str(int(assigned_gpu)),
+            "--assigned-cuda-visible-device",
+            "" if self._assigned_cuda_visible_device is None else self._assigned_cuda_visible_device,
+        ]
+        self._process = subprocess.Popen(
+            command,
+            env=child_env,
+            stdin=subprocess.DEVNULL,
+            stdout=None,
+            stderr=None,
+            close_fds=True,
+            pass_fds=(child_fd,),
         )
-        self._process.start()
         child_conn.close()
         self._worker_info = self._wait_for_ready(timeout=30.0)
         print(
@@ -678,11 +722,15 @@ class _PersistentEvalWorkerSession:
             f"cuda_available={self._worker_info['cuda_available']}, "
             f"cuda_device_count={self._worker_info['cuda_device_count']}, "
             f"rss_gib={self._worker_info['rss_gib']:.2f}, "
-            f"torch_home={self._worker_info['torch_home']!r}"
+            f"torch_home={self._worker_info['torch_home']!r}, "
+            f"physical_gpu_index={self._worker_info.get('physical_gpu_index')}, "
+            f"physical_gpu_bus_id={self._worker_info.get('physical_gpu_bus_id', '')!r}, "
+            f"physical_gpu_uuid={self._worker_info.get('physical_gpu_uuid', '')!r}, "
+            f"physical_binding_verified={self._worker_info.get('physical_binding_verified', False)}"
         )
 
     def request(self, payload: Dict[str, Any], *, timeout: float) -> Dict[str, Any]:
-        if not self._process.is_alive():
+        if self._process.poll() is not None:
             raise PersistentEvalWorkerError("Persistent eval worker exited before handling a request")
         try:
             self._parent_conn.send(payload)
@@ -708,7 +756,7 @@ class _PersistentEvalWorkerSession:
         return response
 
     def _wait_for_ready(self, *, timeout: float) -> Dict[str, Any]:
-        if not self._process.is_alive():
+        if self._process.poll() is not None:
             raise PersistentEvalWorkerError("Persistent eval worker exited during startup")
         if not self._parent_conn.poll(timeout):
             self.close(force=True)
@@ -748,6 +796,11 @@ class _PersistentEvalWorkerSession:
             "cuda_device_count",
             "rss_gib",
             "torch_home",
+            "physical_gpu_index",
+            "physical_gpu_uuid",
+            "physical_gpu_bus_id",
+            "physical_gpu_name",
+            "physical_binding_verified",
         }
         missing = sorted(required_keys.difference(response))
         if missing:
@@ -799,6 +852,25 @@ class _PersistentEvalWorkerSession:
                     "GPU reward worker must expose exactly one visible CUDA device, but reported "
                     f"(available={response['cuda_available']}, count={response['cuda_device_count']})"
                 )
+            physical_gpu_index = response.get("physical_gpu_index")
+            expected_visible_device = (
+                None
+                if self._assigned_cuda_visible_device is None
+                else str(self._assigned_cuda_visible_device).strip()
+            )
+            if (
+                expected_visible_device
+                and expected_visible_device.isdigit()
+                and bool(response.get("physical_binding_verified", False))
+                and physical_gpu_index is not None
+                and int(physical_gpu_index) != int(expected_visible_device)
+            ):
+                self.close(force=True)
+                raise PersistentEvalWorkerError(
+                    "Reward worker slot "
+                    f"{self._worker_slot} resolved physical GPU {physical_gpu_index!r}, "
+                    f"expected CUDA_VISIBLE_DEVICES token {expected_visible_device!r}"
+                )
         return {
             "pid": int(response["pid"]),
             "assigned_gpu": assigned_gpu,
@@ -811,26 +883,36 @@ class _PersistentEvalWorkerSession:
             "cuda_device_count": int(response["cuda_device_count"]),
             "rss_gib": float(response["rss_gib"]),
             "torch_home": str(response["torch_home"]),
+            "physical_gpu_index": response.get("physical_gpu_index"),
+            "physical_gpu_uuid": str(response.get("physical_gpu_uuid") or ""),
+            "physical_gpu_bus_id": str(response.get("physical_gpu_bus_id") or ""),
+            "physical_gpu_name": str(response.get("physical_gpu_name") or ""),
+            "physical_binding_verified": bool(response.get("physical_binding_verified", False)),
             "slot": self._worker_slot,
         }
 
     def diagnostics(self) -> Dict[str, Any]:
-        return {**self._worker_info, "alive": self._process.is_alive()}
+        return {**self._worker_info, "alive": self._process.poll() is None}
 
     def close(self, *, force: bool = False) -> None:
         try:
-            if not force and self._process.is_alive():
+            if not force and self._process.poll() is None:
                 self._parent_conn.send({"cmd": "shutdown"})
         except Exception:
             pass
 
-        if self._process.is_alive():
+        if self._process.poll() is None:
             if force:
                 self._process.terminate()
-            self._process.join(timeout=5)
-            if self._process.is_alive():
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
                 self._process.terminate()
-                self._process.join(timeout=5)
+                try:
+                    self._process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+                    self._process.wait(timeout=5)
 
         try:
             self._parent_conn.close()
@@ -992,6 +1074,8 @@ class _EvalWorkerPool:
         assigned_gpu = session_info.get("assigned_gpu")
         worker_device = str(session_info.get("worker_device", "cpu"))
         worker_slot = int(session_info.get("slot", slot))
+        physical_gpu_index = session_info.get("physical_gpu_index")
+        physical_gpu_bus_id = str(session_info.get("physical_gpu_bus_id") or "")
         entry["payload"]["worker_slot"] = worker_slot
         reward_batch_index = entry["payload"].get("reward_batch_index")
         completion_index = entry["payload"].get("completion_index")
@@ -1004,6 +1088,8 @@ class _EvalWorkerPool:
             f"completion_index={completion_index} "
             f"worker_slot={worker_slot} "
             f"assigned_gpu={assigned_gpu} "
+            f"physical_gpu_index={physical_gpu_index} "
+            f"physical_gpu_bus_id={physical_gpu_bus_id!r} "
             f"worker_device={worker_device} "
             f"timeout_seconds={timeout:.0f}"
         )
@@ -1019,6 +1105,8 @@ class _EvalWorkerPool:
                 f"completion_index={completion_index} "
                 f"worker_slot={worker_slot} "
                 f"assigned_gpu={assigned_gpu} "
+                f"physical_gpu_index={physical_gpu_index} "
+                f"physical_gpu_bus_id={physical_gpu_bus_id!r} "
                 f"worker_device={worker_device} "
                 f"elapsed_seconds={elapsed_seconds:.2f} "
                 f"error={type(exc).__name__}: {exc}"
@@ -1045,6 +1133,8 @@ class _EvalWorkerPool:
             f"completion_index={completion_index} "
             f"worker_slot={worker_slot} "
             f"assigned_gpu={assigned_gpu} "
+            f"physical_gpu_index={physical_gpu_index} "
+            f"physical_gpu_bus_id={physical_gpu_bus_id!r} "
             f"worker_device={worker_device} "
             f"elapsed_seconds={elapsed_seconds:.2f} "
             f"built_ok={result.get('built_ok')} "
@@ -3187,6 +3277,107 @@ def _worker_visible_cuda_memory_gib() -> Tuple[Optional[float], Optional[float],
         return None, None, None
 
 
+def _query_nvidia_smi_rows(query_type: str, field_names: list[str]) -> list[dict[str, str]]:
+    try:
+        completed = subprocess.run(
+            [
+                "nvidia-smi",
+                f"--query-{query_type}={','.join(field_names)}",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+    except Exception:
+        return []
+    output = str(completed.stdout or "").strip()
+    if not output:
+        return []
+    reader = csv.reader(output.splitlines())
+    rows: list[dict[str, str]] = []
+    for row in reader:
+        if not row:
+            continue
+        normalized = [str(value).strip() for value in row]
+        if len(normalized) != len(field_names):
+            continue
+        rows.append({name: value for name, value in zip(field_names, normalized)})
+    return rows
+
+
+def _prime_worker_cuda_context(worker_device: str) -> None:
+    if not worker_device.startswith("cuda") or not torch.cuda.is_available():
+        return
+    try:
+        torch.cuda.set_device(0)
+    except Exception:
+        pass
+    try:
+        probe = torch.empty(1, device=worker_device)
+        del probe
+        torch.cuda.synchronize()
+    except Exception:
+        pass
+
+
+def _resolve_worker_physical_gpu_info(
+    *,
+    worker_device: str,
+    assigned_cuda_visible_device: Optional[str],
+) -> Dict[str, Any]:
+    info: Dict[str, Any] = {
+        "physical_gpu_index": None,
+        "physical_gpu_uuid": "",
+        "physical_gpu_bus_id": "",
+        "physical_gpu_name": "",
+        "physical_binding_verified": False,
+    }
+    if not worker_device.startswith("cuda") or not torch.cuda.is_available():
+        return info
+
+    _prime_worker_cuda_context(worker_device)
+    pid = str(os.getpid())
+    matched_uuid = ""
+    for _attempt in range(10):
+        app_rows = _query_nvidia_smi_rows("compute-apps", ["pid", "gpu_uuid"])
+        matched_row = next((row for row in app_rows if str(row.get("pid", "")).strip() == pid), None)
+        if matched_row is not None:
+            matched_uuid = str(matched_row.get("gpu_uuid") or "").strip()
+            if matched_uuid:
+                break
+        time.sleep(0.1)
+    gpu_rows = _query_nvidia_smi_rows("gpu", ["index", "uuid", "pci.bus_id", "name"])
+    if matched_uuid:
+        matched_gpu_row = next(
+            (row for row in gpu_rows if str(row.get("uuid") or "").strip() == matched_uuid),
+            None,
+        )
+        if matched_gpu_row is not None:
+            info["physical_gpu_uuid"] = matched_uuid
+            info["physical_gpu_index"] = int(matched_gpu_row["index"])
+            info["physical_gpu_bus_id"] = str(matched_gpu_row.get("pci.bus_id") or "")
+            info["physical_gpu_name"] = str(matched_gpu_row.get("name") or "")
+            info["physical_binding_verified"] = True
+            return info
+
+    visible_device_token = (
+        None if assigned_cuda_visible_device is None else str(assigned_cuda_visible_device).strip()
+    )
+    if visible_device_token and visible_device_token.isdigit():
+        matched_gpu_row = next(
+            (row for row in gpu_rows if str(row.get("index") or "").strip() == visible_device_token),
+            None,
+        )
+        if matched_gpu_row is not None:
+            info["physical_gpu_index"] = int(matched_gpu_row["index"])
+            info["physical_gpu_uuid"] = str(matched_gpu_row.get("uuid") or "")
+            info["physical_gpu_bus_id"] = str(matched_gpu_row.get("pci.bus_id") or "")
+            info["physical_gpu_name"] = str(matched_gpu_row.get("name") or "")
+    return info
+
+
 def _log_reward_worker_memory(
     stage: str,
     *,
@@ -3229,6 +3420,10 @@ def _persistent_eval_worker_entry(
 ) -> None:
     worker_device = "cuda:0" if assigned_gpu is not None else "cpu"
     try:
+        physical_gpu_info = _resolve_worker_physical_gpu_info(
+            worker_device=worker_device,
+            assigned_cuda_visible_device=assigned_cuda_visible_device,
+        )
         conn.send(
             {
                 "cmd": "worker_ready",
@@ -3241,6 +3436,13 @@ def _persistent_eval_worker_entry(
                 "cuda_device_count": int(torch.cuda.device_count()),
                 "rss_gib": float(_read_process_rss_gib() or 0.0),
                 "torch_home": os.environ.get("TORCH_HOME", ""),
+                "physical_gpu_index": physical_gpu_info.get("physical_gpu_index"),
+                "physical_gpu_uuid": physical_gpu_info.get("physical_gpu_uuid", ""),
+                "physical_gpu_bus_id": physical_gpu_info.get("physical_gpu_bus_id", ""),
+                "physical_gpu_name": physical_gpu_info.get("physical_gpu_name", ""),
+                "physical_binding_verified": bool(
+                    physical_gpu_info.get("physical_binding_verified", False)
+                ),
             }
         )
         _persistent_eval_worker_loop(conn, worker_device=worker_device, assigned_gpu=assigned_gpu)

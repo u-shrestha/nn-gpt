@@ -160,7 +160,7 @@ def _resolved_visible_cuda_device_tokens(visible_cuda_devices: int) -> List[str]
 def _configure_sft_gpu_role_env(visible_cuda_devices: int) -> Dict[str, List[str]]:
     visible_gpu_tokens = _resolved_visible_cuda_device_tokens(visible_cuda_devices)
     train_gpu_tokens = visible_gpu_tokens[:1]
-    reward_gpu_tokens = visible_gpu_tokens[1:]
+    reward_gpu_tokens = list(visible_gpu_tokens)
     if train_gpu_tokens:
         os.environ[_TRAIN_GPU_TOKENS_ENV] = ",".join(train_gpu_tokens)
     else:
@@ -187,7 +187,7 @@ def _validate_sft_visible_worker_count(runtime: Dict[str, Any]) -> None:
     if world_size == suggested_worker_count:
         return
     raise RuntimeError(
-        "SFT RL now runs with a single training rank so the reward pool can use the remaining GPUs: "
+        "SFT RL now runs with a single training rank so the reward pool can use the visible GPUs: "
         f"world_size={world_size}, "
         f"visible_cuda_devices={int(runtime.get('visible_gpu_count', 0))}, "
         f"suggested_nproc_per_node={suggested_worker_count}. "

@@ -1,4 +1,6 @@
+import argparse
 import os
+from multiprocessing.connection import Connection
 
 
 def _clear_distributed_env() -> None:
@@ -43,3 +45,42 @@ def reward_worker_main(conn, assigned_gpu=None, assigned_cuda_visible_device=Non
     from ab.gpt.util import Reward as RewardUtil
 
     RewardUtil._persistent_eval_worker_entry(conn, assigned_gpu, assigned_cuda_visible_device)
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Reward worker bootstrap")
+    parser.add_argument("--conn-fd", type=int, required=True)
+    parser.add_argument("--assigned-gpu", default="")
+    parser.add_argument("--assigned-cuda-visible-device", default="")
+    return parser.parse_args()
+
+
+def _parse_optional_int(raw: str):
+    raw = str(raw).strip()
+    if raw == "":
+        return None
+    return int(raw)
+
+
+def main() -> None:
+    args = _parse_args()
+    conn = Connection(int(args.conn_fd))
+    try:
+        reward_worker_main(
+            conn,
+            assigned_gpu=_parse_optional_int(args.assigned_gpu),
+            assigned_cuda_visible_device=(
+                None
+                if str(args.assigned_cuda_visible_device).strip() == ""
+                else str(args.assigned_cuda_visible_device).strip()
+            ),
+        )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    main()
