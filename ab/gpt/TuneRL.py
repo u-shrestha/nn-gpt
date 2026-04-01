@@ -3561,7 +3561,7 @@ def main():
     model_load_kwargs: Dict[str, Any] = {
         "trust_remote_code": True,
         "quantization_config": bnb_config,
-        "dtype": precision["torch_dtype"],
+        "torch_dtype": precision["torch_dtype"],
     }
     if not use_deepspeed:
         model_load_kwargs["device_map"] = {"": train_device}
