@@ -293,6 +293,7 @@ def resolve_sft_runtime_settings(runtime: Dict[str, Any]) -> Dict[str, int]:
             "NNGPT_SFT_MAX_COMPLETION_LENGTH",
             SFT_MAX_COMPLETION_LENGTH,
         ),
+        "min_generations_per_rank": generation_plan["min_generations_per_rank"],
         "requested_global_num_generations": generation_plan["requested_global_num_generations"],
         "global_num_generations": generation_plan["global_num_generations"],
         "trainer_num_generations": generation_plan["trainer_num_generations"],
@@ -904,6 +905,7 @@ def run_sft_training():
         f"dataset_limit={runtime_settings['dataset_limit']} "
         f"max_completion_length={runtime_settings['max_completion_length']} "
         f"grad_accum={runtime_settings['grad_accum']} "
+        f"min_generations_per_rank={runtime_settings['min_generations_per_rank']} "
         f"requested_global_num_generations={runtime_settings['requested_global_num_generations']} "
         f"global_num_generations={runtime_settings['global_num_generations']} "
         f"trainer_num_generations_per_rank={runtime_settings['trainer_num_generations']} "

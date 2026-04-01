@@ -518,14 +518,18 @@ def resolve_generation_plan(
 ) -> Dict[str, int]:
     world_size = max(1, int(runtime.get("world_size", 1)))
     requested_global_num_generations = max(1, env_int(env_name, default))
+    min_generations_per_rank = 2
     if world_size <= 1:
-        trainer_num_generations = requested_global_num_generations
-        effective_global_num_generations = requested_global_num_generations
+        trainer_num_generations = max(min_generations_per_rank, requested_global_num_generations)
     else:
-        trainer_num_generations = max(1, requested_global_num_generations // world_size)
-        effective_global_num_generations = trainer_num_generations * world_size
+        trainer_num_generations = max(
+            min_generations_per_rank,
+            (requested_global_num_generations + world_size - 1) // world_size,
+        )
+    effective_global_num_generations = trainer_num_generations * world_size
     return {
         "world_size": world_size,
+        "min_generations_per_rank": min_generations_per_rank,
         "requested_global_num_generations": requested_global_num_generations,
         "global_num_generations": effective_global_num_generations,
         "trainer_num_generations": trainer_num_generations,
@@ -544,6 +548,7 @@ def resolve_rl_runtime_settings(runtime: Dict[str, Any]) -> Dict[str, int]:
         "dataset_limit": env_int("NNGPT_RL_DATASET_LIMIT", 500),
         "grad_accum": env_int("NNGPT_RL_GRAD_ACCUM", 16),
         "max_completion_length": env_int("NNGPT_RL_MAX_COMPLETION_LENGTH", 1024),
+        "min_generations_per_rank": generation_plan["min_generations_per_rank"],
         "requested_global_num_generations": generation_plan["requested_global_num_generations"],
         "global_num_generations": generation_plan["global_num_generations"],
         "trainer_num_generations": generation_plan["trainer_num_generations"],
@@ -3499,6 +3504,7 @@ def main():
         f"dataset_limit={runtime_settings['dataset_limit']} "
         f"max_completion_length={runtime_settings['max_completion_length']} "
         f"grad_accum={runtime_settings['grad_accum']} "
+        f"min_generations_per_rank={runtime_settings['min_generations_per_rank']} "
         f"requested_global_num_generations={runtime_settings['requested_global_num_generations']} "
         f"global_num_generations={runtime_settings['global_num_generations']} "
         f"trainer_num_generations_per_rank={runtime_settings['trainer_num_generations']} "
