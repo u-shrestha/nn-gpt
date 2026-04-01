@@ -278,27 +278,30 @@ def _maybe_init_single_process_deepspeed_group(
 
 
 def resolve_sft_runtime_settings(runtime: Dict[str, Any]) -> Dict[str, int]:
+    grad_accum = _env_int("NNGPT_SFT_GRAD_ACCUM", SFT_GRAD_ACCUM)
     generation_plan = TuneRL.resolve_generation_plan(
         runtime,
         env_name="NNGPT_SFT_NUM_GENERATIONS",
         default=SFT_NUM_GENERATIONS,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=grad_accum,
     )
     return {
         "dataset_limit": _env_int(
             "NNGPT_SFT_DATASET_LIMIT",
             SFT_DATASET_LIMIT,
         ),
-        "grad_accum": _env_int("NNGPT_SFT_GRAD_ACCUM", SFT_GRAD_ACCUM),
+        "grad_accum": grad_accum,
         "max_completion_length": _env_int(
             "NNGPT_SFT_MAX_COMPLETION_LENGTH",
             SFT_MAX_COMPLETION_LENGTH,
         ),
-        "min_generations_per_rank": generation_plan["min_generations_per_rank"],
+        "effective_train_batch_size": generation_plan["effective_train_batch_size"],
         "requested_global_num_generations": generation_plan["requested_global_num_generations"],
         "global_num_generations": generation_plan["global_num_generations"],
-        "trainer_num_generations": generation_plan["trainer_num_generations"],
         "effective_global_num_generations": generation_plan["effective_global_num_generations"],
         "global_num_generations_adapted": generation_plan["global_num_generations_adapted"],
+        "valid_generation_values": generation_plan["valid_generation_values"],
     }
 
 
@@ -833,7 +836,7 @@ def _build_sft_grpo_config(
         "bf16": precision["bf16"],
         "fp16": precision["fp16"],
         "gradient_checkpointing": True,
-        "num_generations": runtime_settings["trainer_num_generations"],
+        "num_generations": runtime_settings["global_num_generations"],
     }
     if use_deepspeed:
         if "deepspeed" not in config_signature.parameters:
@@ -905,10 +908,9 @@ def run_sft_training():
         f"dataset_limit={runtime_settings['dataset_limit']} "
         f"max_completion_length={runtime_settings['max_completion_length']} "
         f"grad_accum={runtime_settings['grad_accum']} "
-        f"min_generations_per_rank={runtime_settings['min_generations_per_rank']} "
+        f"effective_train_batch_size={runtime_settings['effective_train_batch_size']} "
         f"requested_global_num_generations={runtime_settings['requested_global_num_generations']} "
         f"global_num_generations={runtime_settings['global_num_generations']} "
-        f"trainer_num_generations_per_rank={runtime_settings['trainer_num_generations']} "
         f"effective_global_num_generations={runtime_settings['effective_global_num_generations']}"
     )
     if runtime_settings["global_num_generations_adapted"]:
@@ -916,6 +918,7 @@ def run_sft_training():
             "[SFT RL] Generation plan adapted "
             f"requested={runtime_settings['requested_global_num_generations']} "
             f"effective={runtime_settings['effective_global_num_generations']} "
+            f"valid_generation_values={runtime_settings['valid_generation_values']} "
             f"world_size={world_size}"
         )
     reward_worker_plan = RewardUtil.get_reward_worker_plan()

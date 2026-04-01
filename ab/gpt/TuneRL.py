@@ -515,45 +515,67 @@ def resolve_generation_plan(
     *,
     env_name: str,
     default: int,
+    per_device_train_batch_size: int,
+    gradient_accumulation_steps: int,
 ) -> Dict[str, int]:
     world_size = max(1, int(runtime.get("world_size", 1)))
     requested_global_num_generations = max(1, env_int(env_name, default))
-    min_generations_per_rank = 2
-    if world_size <= 1:
-        trainer_num_generations = max(min_generations_per_rank, requested_global_num_generations)
-    else:
-        trainer_num_generations = max(
-            min_generations_per_rank,
-            (requested_global_num_generations + world_size - 1) // world_size,
+    effective_train_batch_size = max(
+        1,
+        int(world_size) * max(1, int(per_device_train_batch_size)) * max(1, int(gradient_accumulation_steps)),
+    )
+    valid_generation_values = [
+        value
+        for value in range(2, effective_train_batch_size + 1)
+        if effective_train_batch_size % value == 0
+    ]
+    if not valid_generation_values:
+        raise ValueError(
+            f"{env_name} cannot be resolved because effective_train_batch_size={effective_train_batch_size} "
+            "does not permit GRPO's minimum 2 generations per prompt. Increase gradient accumulation or batch size."
         )
-    effective_global_num_generations = trainer_num_generations * world_size
+
+    if requested_global_num_generations in valid_generation_values:
+        resolved_global_num_generations = requested_global_num_generations
+    else:
+        lower_or_equal = [value for value in valid_generation_values if value <= requested_global_num_generations]
+        resolved_global_num_generations = (
+            max(lower_or_equal)
+            if lower_or_equal
+            else min(valid_generation_values)
+        )
     return {
         "world_size": world_size,
-        "min_generations_per_rank": min_generations_per_rank,
+        "per_device_train_batch_size": int(per_device_train_batch_size),
+        "gradient_accumulation_steps": int(gradient_accumulation_steps),
+        "effective_train_batch_size": int(effective_train_batch_size),
         "requested_global_num_generations": requested_global_num_generations,
-        "global_num_generations": effective_global_num_generations,
-        "trainer_num_generations": trainer_num_generations,
-        "effective_global_num_generations": effective_global_num_generations,
-        "global_num_generations_adapted": int(effective_global_num_generations != requested_global_num_generations),
+        "global_num_generations": int(resolved_global_num_generations),
+        "effective_global_num_generations": int(resolved_global_num_generations),
+        "global_num_generations_adapted": int(resolved_global_num_generations != requested_global_num_generations),
+        "valid_generation_values": list(valid_generation_values),
     }
 
 
 def resolve_rl_runtime_settings(runtime: Dict[str, Any]) -> Dict[str, int]:
+    grad_accum = env_int("NNGPT_RL_GRAD_ACCUM", 16)
     generation_plan = resolve_generation_plan(
         runtime,
         env_name="NNGPT_RL_NUM_GENERATIONS",
         default=8,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=grad_accum,
     )
     return {
         "dataset_limit": env_int("NNGPT_RL_DATASET_LIMIT", 500),
-        "grad_accum": env_int("NNGPT_RL_GRAD_ACCUM", 16),
+        "grad_accum": grad_accum,
         "max_completion_length": env_int("NNGPT_RL_MAX_COMPLETION_LENGTH", 1024),
-        "min_generations_per_rank": generation_plan["min_generations_per_rank"],
+        "effective_train_batch_size": generation_plan["effective_train_batch_size"],
         "requested_global_num_generations": generation_plan["requested_global_num_generations"],
         "global_num_generations": generation_plan["global_num_generations"],
-        "trainer_num_generations": generation_plan["trainer_num_generations"],
         "effective_global_num_generations": generation_plan["effective_global_num_generations"],
         "global_num_generations_adapted": generation_plan["global_num_generations_adapted"],
+        "valid_generation_values": generation_plan["valid_generation_values"],
     }
 
 
@@ -609,7 +631,7 @@ def _build_rl_grpo_config(
         "bf16": precision["bf16"],
         "fp16": precision["fp16"],
         "gradient_checkpointing": True,
-        "num_generations": runtime_settings["trainer_num_generations"],
+        "num_generations": runtime_settings["global_num_generations"],
     }
     if use_deepspeed:
         if "deepspeed" not in config_signature.parameters:
@@ -3504,10 +3526,9 @@ def main():
         f"dataset_limit={runtime_settings['dataset_limit']} "
         f"max_completion_length={runtime_settings['max_completion_length']} "
         f"grad_accum={runtime_settings['grad_accum']} "
-        f"min_generations_per_rank={runtime_settings['min_generations_per_rank']} "
+        f"effective_train_batch_size={runtime_settings['effective_train_batch_size']} "
         f"requested_global_num_generations={runtime_settings['requested_global_num_generations']} "
         f"global_num_generations={runtime_settings['global_num_generations']} "
-        f"trainer_num_generations_per_rank={runtime_settings['trainer_num_generations']} "
         f"effective_global_num_generations={runtime_settings['effective_global_num_generations']}"
     )
     if runtime_settings["global_num_generations_adapted"]:
@@ -3515,6 +3536,7 @@ def main():
             "[RL] Generation plan adapted "
             f"requested={runtime_settings['requested_global_num_generations']} "
             f"effective={runtime_settings['effective_global_num_generations']} "
+            f"valid_generation_values={runtime_settings['valid_generation_values']} "
             f"world_size={world_size}"
         )
     tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
