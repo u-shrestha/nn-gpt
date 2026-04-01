@@ -1150,7 +1150,7 @@ def main() -> None:
         print(f"[SFT RL] Init adapter path: {SFT_INIT_ADAPTER}")
     print(f"[SFT RL] Temperature: {SFT_TEMPERATURE}")
     print(
-        f"[SFT RL] CIFAR-10 eval: backend=nn-dataset-formal, resize={SFT_EVAL_IMAGE_SIZE}, batch<={SFT_EVAL_BATCH_SIZE}, "
+        f"[SFT RL] CIFAR-10 eval: backend=nn-dataset-formal, resize={SFT_EVAL_IMAGE_SIZE}, batch={SFT_EVAL_BATCH_SIZE}, "
         f"train_set=full, test_set=full, "
         f"train_epochs={SFT_EVAL_TRAIN_EPOCHS}, run_unfrozen={SFT_EVAL_RUN_UNFROZEN}, "
         f"formal_epoch_limit_minutes={SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES}, "

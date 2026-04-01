@@ -1445,7 +1445,10 @@ def log_memory_snapshot(
     world_size = _distributed_world_size()
     train_gpu = _resolved_train_gpu_index()
     if include_all_visible_gpus is None:
-        include_all_visible_gpus = bool(world_size <= 1 or is_main_process())
+        # In single-process SFT/RL runs, touching every visible GPU here creates
+        # extra CUDA contexts on reward GPUs. Default to the training GPU only
+        # unless a caller explicitly asks for a full visible-device snapshot.
+        include_all_visible_gpus = bool(world_size > 1 and is_main_process())
     visible_cuda_snapshots = _visible_cuda_memory_snapshots(
         include_all_visible_gpus=bool(include_all_visible_gpus)
     )

@@ -1587,39 +1587,11 @@ def _adapt_formal_eval_inputs_for_worker(
     cfg: "EvalConfig",
     prm: Dict[str, Any],
 ) -> tuple["EvalConfig", Dict[str, Any]]:
-    if not (_is_formal_nn_eval_enabled(cfg) and str(getattr(cfg, "device", "cpu")).startswith("cuda")):
-        return cfg, dict(prm)
-
-    batch_size = max(1, int(prm.get("batch", getattr(cfg, "default_batch_size", 32)) or 32))
-    free_gib, used_gib, total_gib = _worker_visible_cuda_memory_gib()
-    adjusted_batch_size = batch_size
-    if used_gib is not None and float(used_gib) >= 2.0 and adjusted_batch_size > 32:
-        adjusted_batch_size = 32
-    if used_gib is not None and float(used_gib) >= 8.0 and adjusted_batch_size > 16:
-        adjusted_batch_size = 16
-    if free_gib is not None and float(free_gib) <= 16.0 and adjusted_batch_size > 8:
-        adjusted_batch_size = 8
-
-    run_unfrozen = bool(getattr(cfg, "run_unfrozen_backbone_eval", False))
-    reward_target_metric = str(getattr(cfg, "reward_target_metric", "frozen_test_acc") or "frozen_test_acc")
-    if adjusted_batch_size <= 16 and run_unfrozen and reward_target_metric == "frozen_test_acc":
-        run_unfrozen = False
-
-    if adjusted_batch_size == batch_size and run_unfrozen == bool(getattr(cfg, "run_unfrozen_backbone_eval", False)):
-        return cfg, dict(prm)
-
-    next_cfg, next_prm = _replace_eval_batch_size(cfg, prm, batch_size=adjusted_batch_size)
-    if run_unfrozen != bool(getattr(next_cfg, "run_unfrozen_backbone_eval", False)):
-        next_cfg = replace(next_cfg, run_unfrozen_backbone_eval=run_unfrozen)
-    print(
-        "[Reward Formal Eval] Auto-tune "
-        f"batch={batch_size}->{adjusted_batch_size} "
-        f"run_unfrozen={bool(getattr(cfg, 'run_unfrozen_backbone_eval', False))}->{run_unfrozen} "
-        f"cuda_free_gib={_format_mem_value(free_gib)} "
-        f"cuda_used_gib={_format_mem_value(used_gib)} "
-        f"cuda_total_gib={_format_mem_value(total_gib)}"
-    )
-    return next_cfg, next_prm
+    # Keep the configured formal-eval batch unchanged. The previous heuristic
+    # probed live worker memory and preemptively shrank batch / disabled
+    # unfrozen eval, which was both noisy and misleading in single-process
+    # reward setups. We still retain the actual CUDA OOM retry path below.
+    return cfg, dict(prm)
 
 
 def _run_formal_eval_with_backoff(
@@ -1632,43 +1604,24 @@ def _run_formal_eval_with_backoff(
     backbone_model_names: list[str],
 ) -> tuple[Dict[str, Any], "EvalConfig", Dict[str, Any]]:
     active_cfg, active_prm = _adapt_formal_eval_inputs_for_worker(cfg, prm)
-    last_result: Optional[Dict[str, Any]] = None
-    attempted_batch_sizes: set[int] = set()
     attempt_batch_size = max(
         1,
         int(active_prm.get("batch", getattr(active_cfg, "default_batch_size", 32)) or 32),
     )
-    eval_mode = "frozen" if freeze_backbones else "unfrozen"
-
-    while attempt_batch_size not in attempted_batch_sizes:
-        attempted_batch_sizes.add(int(attempt_batch_size))
-        attempt_cfg, attempt_prm = _replace_eval_batch_size(active_cfg, active_prm, batch_size=attempt_batch_size)
-        last_result = _formal_eval_with_nn_dataset(
-            code,
-            prm=attempt_prm,
-            cfg=attempt_cfg,
-            freeze_backbones=freeze_backbones,
-            seed_accuracy_baseline=seed_accuracy_baseline,
-            backbone_model_names=backbone_model_names,
-        )
-        if not _is_cuda_oom_error_message(last_result.get("error")):
-            return last_result, attempt_cfg, attempt_prm
-
-        next_batch_size = _halve_batch_size(attempt_batch_size)
-        if next_batch_size is None:
-            return last_result, attempt_cfg, attempt_prm
-        print(
-            "[Reward Formal Eval] Retry after CUDA OOM "
-            f"eval_mode={eval_mode} "
-            f"batch={attempt_batch_size}->{next_batch_size}"
-        )
-        _clear_reward_cuda_state()
-        active_cfg, active_prm = attempt_cfg, attempt_prm
-        attempt_batch_size = next_batch_size
-
-    if last_result is None:
-        raise RuntimeError("formal eval retry loop exited without producing a result")
-    return last_result, active_cfg, active_prm
+    attempt_cfg, attempt_prm = _replace_eval_batch_size(
+        active_cfg,
+        active_prm,
+        batch_size=attempt_batch_size,
+    )
+    result = _formal_eval_with_nn_dataset(
+        code,
+        prm=attempt_prm,
+        cfg=attempt_cfg,
+        freeze_backbones=freeze_backbones,
+        seed_accuracy_baseline=seed_accuracy_baseline,
+        backbone_model_names=backbone_model_names,
+    )
+    return result, attempt_cfg, attempt_prm
 
 
 def _preview_eval_request(
