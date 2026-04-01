@@ -80,6 +80,7 @@ from ab.gpt.util.Reward import (
     evaluate_code_and_reward_batch,
     get_distributed_runtime_info,
     get_eval_worker_diagnostics,
+    prewarm_eval_workers,
     shutdown_eval_worker,
 )
 import ab.nn.api as api
@@ -3610,6 +3611,8 @@ def main():
         reward_funcs=compute_reward, 
         args=grpo_config,
     )
+    prewarm_eval_workers(timeout_seconds=60.0, require_gpu=True)
+    log_memory_snapshot("rl/reward_workers_prewarmed")
 
     print("Starting GRPO training for Backbone Search...")
     memory_monitor = start_cuda_memory_monitor("rl/trainer")

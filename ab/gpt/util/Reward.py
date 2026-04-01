@@ -3253,6 +3253,118 @@ def get_eval_worker_diagnostics() -> Optional[Dict[str, Any]]:
     return _EVAL_WORKER_POOL.diagnostics()
 
 
+def _reward_worker_summary(worker: Dict[str, Any]) -> str:
+    return (
+        f"slot={worker.get('slot')} "
+        f"pid={worker.get('pid')} "
+        f"assigned_gpu={worker.get('assigned_gpu')} "
+        f"assigned_cuda_visible_device={worker.get('assigned_cuda_visible_device')!r} "
+        f"physical_gpu_index={worker.get('physical_gpu_index')} "
+        f"physical_gpu_bus_id={str(worker.get('physical_gpu_bus_id') or '')!r} "
+        f"physical_binding_verified={bool(worker.get('physical_binding_verified', False))} "
+        f"alive={bool(worker.get('alive', False))}"
+    )
+
+
+def _validate_reward_worker_binding(worker: Dict[str, Any]) -> Optional[str]:
+    slot = worker.get("slot")
+    pid = worker.get("pid")
+    assigned_gpu = worker.get("assigned_gpu")
+    if not bool(worker.get("alive", False)):
+        return f"slot={slot} pid={pid} is not alive"
+    if assigned_gpu is None:
+        if str(worker.get("worker_device", "")) != "cpu":
+            return f"slot={slot} pid={pid} expected cpu worker, got {worker.get('worker_device')!r}"
+        return None
+
+    if str(worker.get("worker_device", "")) != "cuda:0":
+        return f"slot={slot} pid={pid} expected worker_device='cuda:0', got {worker.get('worker_device')!r}"
+    if not bool(worker.get("cuda_available", False)):
+        return f"slot={slot} pid={pid} reported cuda_available=False"
+    if int(worker.get("cuda_device_count", 0) or 0) != 1:
+        return (
+            f"slot={slot} pid={pid} expected exactly one visible CUDA device, "
+            f"got {worker.get('cuda_device_count')!r}"
+        )
+    if not bool(worker.get("physical_binding_verified", False)):
+        return f"slot={slot} pid={pid} could not verify physical GPU binding"
+
+    visible_device_token = str(worker.get("assigned_cuda_visible_device") or "").strip()
+    physical_gpu_index = worker.get("physical_gpu_index")
+    if visible_device_token.isdigit():
+        if physical_gpu_index is None:
+            return (
+                f"slot={slot} pid={pid} missing physical_gpu_index for "
+                f"assigned token {visible_device_token!r}"
+            )
+        if int(physical_gpu_index) != int(visible_device_token):
+            return (
+                f"slot={slot} pid={pid} bound physical GPU {physical_gpu_index!r}, "
+                f"expected token {visible_device_token!r}"
+            )
+    if not str(worker.get("physical_gpu_bus_id") or "").strip():
+        return f"slot={slot} pid={pid} missing physical_gpu_bus_id"
+    if not str(worker.get("physical_gpu_uuid") or "").strip():
+        return f"slot={slot} pid={pid} missing physical_gpu_uuid"
+    return None
+
+
+def prewarm_eval_workers(*, timeout_seconds: float = 60.0, require_gpu: bool = False) -> Dict[str, Any]:
+    desired_plan = get_reward_worker_plan()
+    planned_gpu_workers = int(
+        sum(max(0, int(count)) for count in desired_plan.get("per_gpu_worker_counts", []) or [])
+    )
+    should_require_gpu = bool(require_gpu or planned_gpu_workers > 0 or desired_plan.get("mode") == "reward_gpu_wait")
+    print(
+        "[Reward Worker Warmup] start "
+        f"mode={desired_plan.get('mode')} "
+        f"require_gpu={should_require_gpu} "
+        f"planned_gpu_workers={planned_gpu_workers} "
+        f"per_gpu_worker_counts={desired_plan.get('per_gpu_worker_counts', [])} "
+        f"reward_gpu_indices={desired_plan.get('reward_gpu_indices', [])} "
+        f"reward_gpu_tokens={desired_plan.get('reward_gpu_tokens', [])} "
+        f"timeout_seconds={timeout_seconds:.0f}"
+    )
+    pool = _await_eval_worker_pool(require_gpu=should_require_gpu, timeout=float(timeout_seconds))
+    if pool is None:
+        raise PersistentEvalWorkerError(
+            "Reward worker warmup timed out while waiting for GPU workers "
+            f"(timeout_seconds={timeout_seconds:.0f}, mode={desired_plan.get('mode')!r})"
+        )
+    diagnostics = pool.diagnostics()
+    workers = list(diagnostics.get("workers", []) or [])
+    failure_reasons = [
+        reason
+        for reason in (_validate_reward_worker_binding(worker) for worker in workers)
+        if reason is not None
+    ]
+    if should_require_gpu and not any(worker.get("assigned_gpu") is not None for worker in workers):
+        failure_reasons.append("warmup completed without any GPU reward worker")
+
+    worker_summaries = [_reward_worker_summary(worker) for worker in workers]
+    if failure_reasons:
+        print(
+            "[Reward Worker Warmup] failure "
+            f"mode={diagnostics.get('mode')} "
+            f"workers={worker_summaries} "
+            f"reasons={failure_reasons}"
+        )
+        shutdown_eval_worker()
+        raise PersistentEvalWorkerError(
+            "Reward worker warmup failed: " + "; ".join(str(reason) for reason in failure_reasons)
+        )
+
+    print(
+        "[Reward Worker Warmup] end "
+        f"mode={diagnostics.get('mode')} "
+        f"pool_size={diagnostics.get('pool_size')} "
+        f"verified_workers={len(workers)} "
+        f"worker_pids={diagnostics.get('worker_pids', [])} "
+        f"workers={worker_summaries}"
+    )
+    return diagnostics
+
+
 def _worker_cuda_memory_gib() -> Tuple[Optional[float], Optional[float]]:
     if not torch.cuda.is_available():
         return 0.0, 0.0

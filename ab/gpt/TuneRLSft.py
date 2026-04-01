@@ -1046,6 +1046,8 @@ def run_sft_training():
         args=grpo_config,
     )
     TuneRL.log_memory_snapshot("sft/grpo_trainer_initialized")
+    RewardUtil.prewarm_eval_workers(timeout_seconds=60.0, require_gpu=True)
+    TuneRL.log_memory_snapshot("sft/reward_workers_prewarmed")
 
     print("Starting GRPO training for Backbone Search...")
     memory_monitor = TuneRL.start_cuda_memory_monitor("sft/trainer")
