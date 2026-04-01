@@ -103,6 +103,16 @@ def _visible_cuda_device_tokens() -> Optional[list[str]]:
     return [token.strip() for token in raw.split(",") if token.strip()]
 
 
+def _configured_cuda_device_tokens(env_name: str) -> Optional[list[str]]:
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if raw == "":
+        return []
+    return [token.strip() for token in raw.split(",") if token.strip()]
+
+
 def get_distributed_runtime_info() -> Dict[str, Any]:
     visible_gpu_count = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
     world_size = max(1, _safe_int_env("WORLD_SIZE", 1))
@@ -129,13 +139,44 @@ def get_distributed_runtime_info() -> Dict[str, Any]:
         local_rank = 0
 
     visible_gpu_tokens = _visible_cuda_device_tokens()
+    if visible_gpu_tokens is None:
+        visible_gpu_tokens = [str(index) for index in range(max(0, visible_gpu_count))]
+    configured_train_gpu_tokens = _configured_cuda_device_tokens("NNGPT_TRAIN_GPU_TOKENS")
+    configured_reward_gpu_tokens = _configured_cuda_device_tokens("NNGPT_REWARD_GPU_TOKENS")
+
     train_gpu = local_rank if visible_gpu_count > 0 else None
     train_gpu_token = None
-    if train_gpu is not None:
+    if configured_train_gpu_tokens:
+        configured_train_token = str(configured_train_gpu_tokens[0])
+        if configured_train_token in visible_gpu_tokens:
+            train_gpu = int(visible_gpu_tokens.index(configured_train_token))
+            train_gpu_token = configured_train_token
+    if train_gpu is not None and train_gpu_token is None:
         if visible_gpu_tokens and train_gpu < len(visible_gpu_tokens):
-            train_gpu_token = visible_gpu_tokens[train_gpu]
+            train_gpu_token = str(visible_gpu_tokens[train_gpu])
         else:
             train_gpu_token = str(int(train_gpu))
+
+    reward_gpu_tokens: list[str]
+    if configured_reward_gpu_tokens is not None:
+        reward_gpu_tokens = [
+            str(token)
+            for token in configured_reward_gpu_tokens
+            if str(token) in visible_gpu_tokens and str(token) != train_gpu_token
+        ]
+    elif world_size > 1:
+        reward_gpu_tokens = [str(train_gpu_token)] if train_gpu_token is not None else []
+    else:
+        reward_gpu_tokens = [
+            str(token)
+            for token in visible_gpu_tokens
+            if train_gpu_token is None or str(token) != train_gpu_token
+        ]
+    reward_gpu_indices = [
+        int(visible_gpu_tokens.index(token))
+        for token in reward_gpu_tokens
+        if token in visible_gpu_tokens
+    ]
 
     return {
         "distributed": world_size > 1,
@@ -147,6 +188,8 @@ def get_distributed_runtime_info() -> Dict[str, Any]:
         "visible_gpu_tokens": list(visible_gpu_tokens or []),
         "train_gpu": train_gpu,
         "train_gpu_token": train_gpu_token,
+        "reward_gpu_indices": list(reward_gpu_indices),
+        "reward_gpu_tokens": list(reward_gpu_tokens),
     }
 
 
@@ -239,13 +282,16 @@ def get_reward_worker_plan() -> Dict[str, Any]:
     reward_force_cpu = _safe_bool_env("NNGPT_REWARD_FORCE_CPU", False)
     train_gpu = runtime["train_gpu"]
 
-    def _distributed_local_reward_gpu_indices() -> list[int]:
-        if train_gpu is None:
-            return []
-        train_gpu_index = int(train_gpu)
-        if 0 <= train_gpu_index < visible_gpu_count:
-            return [train_gpu_index]
-        return []
+    def _configured_reward_gpu_indices() -> list[int]:
+        reward_gpu_indices = []
+        for device_index in runtime.get("reward_gpu_indices", []) or []:
+            try:
+                parsed_index = int(device_index)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= parsed_index < visible_gpu_count:
+                reward_gpu_indices.append(parsed_index)
+        return reward_gpu_indices
 
     def _device_token(device_index: int) -> str:
         visible_gpu_tokens = list(runtime.get("visible_gpu_tokens") or [])
@@ -419,14 +465,15 @@ def get_reward_worker_plan() -> Dict[str, Any]:
         return _cpu_reward_worker_plan(mode="cpu_fallback", reason="reward_force_cpu")
     if visible_gpu_count <= 0:
         return _cpu_reward_worker_plan(mode="cpu_fallback", reason="no_visible_cuda_devices")
-    if not runtime["distributed"] and visible_gpu_count == 1:
-        gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(0)]
-        return _build_reward_worker_plan(
-            mode="single_gpu_single_process",
-            per_gpu_worker_counts=[1],
-            dynamic_scaling=False,
+    configured_reward_gpu_indices = _configured_reward_gpu_indices()
+    if not runtime["distributed"] and not configured_reward_gpu_indices:
+        gpu_memory_snapshots = [
+            _cuda_device_memory_snapshot_gib(0)
+        ] if visible_gpu_count > 0 else []
+        return _cpu_reward_worker_plan(
+            mode="cpu_fallback",
             gpu_memory_snapshots=gpu_memory_snapshots,
-            reason="single_gpu_multiprocess_disabled",
+            reason="no_dedicated_reward_gpu_available",
         )
 
     distributed_single_process_per_gpu = bool(runtime["distributed"])
@@ -436,30 +483,25 @@ def get_reward_worker_plan() -> Dict[str, Any]:
         workers_per_gpu = max(1, _safe_int_env("NNGPT_REWARD_WORKERS_PER_GPU", 1))
         if distributed_single_process_per_gpu:
             workers_per_gpu = 1
-        if runtime["distributed"]:
-            reward_gpu_indices = _distributed_local_reward_gpu_indices()
-            gpu_memory_snapshots = [
-                _cuda_device_memory_snapshot_gib(index)
-                for index in reward_gpu_indices
-            ]
-            if not reward_gpu_indices:
-                return _cpu_reward_worker_plan(
-                    mode="distributed_cpu_fallback",
-                    reason="distributed_local_reward_gpu_unavailable",
-                    gpu_memory_snapshots=gpu_memory_snapshots,
-                )
-            per_gpu_worker_counts = [0] * visible_gpu_count
-            for reward_gpu_index in reward_gpu_indices:
-                per_gpu_worker_counts[int(reward_gpu_index)] = workers_per_gpu
-            mode = "distributed_local_fixed_pool"
-        else:
-            per_gpu_worker_counts = [workers_per_gpu] * visible_gpu_count
-            gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
-            mode = (
-                "single_gpu_fixed_pool"
-                if visible_gpu_count == 1
-                else "multi_gpu_fixed_pool"
+        reward_gpu_indices = list(configured_reward_gpu_indices)
+        gpu_memory_snapshots = [
+            _cuda_device_memory_snapshot_gib(index)
+            for index in reward_gpu_indices
+        ]
+        if not reward_gpu_indices:
+            return _cpu_reward_worker_plan(
+                mode="cpu_fallback",
+                reason="configured_reward_gpu_unavailable",
+                gpu_memory_snapshots=gpu_memory_snapshots,
             )
+        per_gpu_worker_counts = [0] * visible_gpu_count
+        for reward_gpu_index in reward_gpu_indices:
+            per_gpu_worker_counts[int(reward_gpu_index)] = workers_per_gpu
+        mode = (
+            "distributed_dedicated_fixed_pool"
+            if runtime["distributed"]
+            else "single_rank_dedicated_fixed_pool"
+        )
         return _build_reward_worker_plan(
             mode=mode,
             per_gpu_worker_counts=per_gpu_worker_counts,
@@ -470,30 +512,25 @@ def get_reward_worker_plan() -> Dict[str, Any]:
 
     dynamic_scaling = _safe_bool_env("NNGPT_REWARD_ENABLE_DYNAMIC_SCALING", True)
     if not dynamic_scaling:
-        if runtime["distributed"]:
-            reward_gpu_indices = _distributed_local_reward_gpu_indices()
-            gpu_memory_snapshots = [
-                _cuda_device_memory_snapshot_gib(index)
-                for index in reward_gpu_indices
-            ]
-            if not reward_gpu_indices:
-                return _cpu_reward_worker_plan(
-                    mode="distributed_cpu_fallback",
-                    reason="distributed_local_reward_gpu_unavailable",
-                    gpu_memory_snapshots=gpu_memory_snapshots,
-                )
-            per_gpu_worker_counts = [0] * visible_gpu_count
-            for reward_gpu_index in reward_gpu_indices:
-                per_gpu_worker_counts[int(reward_gpu_index)] = 1
-            mode = "distributed_local_static_pool"
-        else:
-            per_gpu_worker_counts = [1] * visible_gpu_count
-            gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
-            mode = (
-                "single_gpu_static_pool"
-                if visible_gpu_count == 1
-                else "multi_gpu_static_pool"
+        reward_gpu_indices = list(configured_reward_gpu_indices)
+        gpu_memory_snapshots = [
+            _cuda_device_memory_snapshot_gib(index)
+            for index in reward_gpu_indices
+        ]
+        if not reward_gpu_indices:
+            return _cpu_reward_worker_plan(
+                mode="cpu_fallback",
+                reason="configured_reward_gpu_unavailable",
+                gpu_memory_snapshots=gpu_memory_snapshots,
             )
+        per_gpu_worker_counts = [0] * visible_gpu_count
+        for reward_gpu_index in reward_gpu_indices:
+            per_gpu_worker_counts[int(reward_gpu_index)] = 1
+        mode = (
+            "distributed_dedicated_static_pool"
+            if runtime["distributed"]
+            else "single_rank_dedicated_static_pool"
+        )
         return _build_reward_worker_plan(
             mode=mode,
             per_gpu_worker_counts=per_gpu_worker_counts,
@@ -516,68 +553,45 @@ def get_reward_worker_plan() -> Dict[str, Any]:
         max_workers_per_gpu = 1
         min_workers_per_gpu = min(min_workers_per_gpu, max_workers_per_gpu)
 
-    if runtime["distributed"]:
-        reward_gpu_indices = _distributed_local_reward_gpu_indices()
-        gpu_memory_snapshots = [
-            _cuda_device_memory_snapshot_gib(index)
-            for index in reward_gpu_indices
-        ]
-        if not reward_gpu_indices:
-            return _cpu_reward_worker_plan(
-                mode="distributed_cpu_fallback",
-                reason="distributed_local_reward_gpu_unavailable",
-                gpu_memory_snapshots=gpu_memory_snapshots,
-                worker_budget_gib=worker_budget_gib,
-                reserved_headroom_gib=reserved_headroom_gib,
-            )
-        per_gpu_worker_counts = [0] * visible_gpu_count
-        local_worker_counts = [
-            _dynamic_reward_workers_for_gpu(
-                snapshot,
-                reserved_headroom_gib=reserved_headroom_gib,
-                worker_budget_gib=worker_budget_gib,
-                min_workers_per_gpu=min_workers_per_gpu,
-                max_workers_per_gpu=max_workers_per_gpu,
-            )
-            for snapshot in gpu_memory_snapshots
-        ]
-        for reward_gpu_index, worker_count in zip(reward_gpu_indices, local_worker_counts):
-            per_gpu_worker_counts[int(reward_gpu_index)] = int(worker_count)
-        if sum(per_gpu_worker_counts) <= 0:
-            return _cpu_reward_worker_plan(
-                mode="distributed_gpu_wait",
-                reason="awaiting_gpu_headroom",
-                gpu_memory_snapshots=gpu_memory_snapshots,
-                worker_budget_gib=worker_budget_gib,
-                reserved_headroom_gib=reserved_headroom_gib,
-            )
-        mode = "distributed_local_dynamic_pool"
-    else:
-        gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
-        per_gpu_worker_counts = [
-            _dynamic_reward_workers_for_gpu(
-                snapshot,
-                reserved_headroom_gib=reserved_headroom_gib,
-                worker_budget_gib=worker_budget_gib,
-                min_workers_per_gpu=min_workers_per_gpu,
-                max_workers_per_gpu=max_workers_per_gpu,
-            )
-            for snapshot in gpu_memory_snapshots
-        ]
-        if sum(per_gpu_worker_counts) <= 0 and gpu_memory_snapshots:
-            best_snapshot = max(
-                gpu_memory_snapshots,
-                key=lambda snapshot: float(snapshot.get("free_gib") or -1.0),
-            )
-            best_device_index = int(best_snapshot["device_index"])
-            best_free_gib = best_snapshot.get("free_gib")
-            if best_free_gib is None or float(best_free_gib) >= reserved_headroom_gib + (worker_budget_gib * 0.75):
-                per_gpu_worker_counts[best_device_index] = 1
-        mode = (
-            "single_gpu_dynamic_pool"
-            if visible_gpu_count == 1
-            else "multi_gpu_dynamic_pool"
+    reward_gpu_indices = list(configured_reward_gpu_indices)
+    gpu_memory_snapshots = [
+        _cuda_device_memory_snapshot_gib(index)
+        for index in reward_gpu_indices
+    ]
+    if not reward_gpu_indices:
+        return _cpu_reward_worker_plan(
+            mode="cpu_fallback",
+            reason="configured_reward_gpu_unavailable",
+            gpu_memory_snapshots=gpu_memory_snapshots,
+            worker_budget_gib=worker_budget_gib,
+            reserved_headroom_gib=reserved_headroom_gib,
         )
+    per_gpu_worker_counts = [0] * visible_gpu_count
+    local_worker_counts = [
+        _dynamic_reward_workers_for_gpu(
+            snapshot,
+            reserved_headroom_gib=reserved_headroom_gib,
+            worker_budget_gib=worker_budget_gib,
+            min_workers_per_gpu=min_workers_per_gpu,
+            max_workers_per_gpu=max_workers_per_gpu,
+        )
+        for snapshot in gpu_memory_snapshots
+    ]
+    for reward_gpu_index, worker_count in zip(reward_gpu_indices, local_worker_counts):
+        per_gpu_worker_counts[int(reward_gpu_index)] = int(worker_count)
+    if sum(per_gpu_worker_counts) <= 0:
+        return _cpu_reward_worker_plan(
+            mode="reward_gpu_wait",
+            reason="awaiting_gpu_headroom",
+            gpu_memory_snapshots=gpu_memory_snapshots,
+            worker_budget_gib=worker_budget_gib,
+            reserved_headroom_gib=reserved_headroom_gib,
+        )
+    mode = (
+        "distributed_dedicated_dynamic_pool"
+        if runtime["distributed"]
+        else "single_rank_dedicated_dynamic_pool"
+    )
 
     return _build_reward_worker_plan(
         mode=mode,
@@ -1442,6 +1456,129 @@ def _request_timeout_seconds(cfg: "EvalConfig") -> float:
     eval_runs = 2 if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)) else 1
     base_timeout = float(_effective_eval_limit_seconds(cfg))
     return max(360.0, (base_timeout * eval_runs) + 120.0)
+
+
+def _is_cuda_oom_error_message(error_message: Optional[str]) -> bool:
+    normalized = " ".join(str(error_message or "").split()).lower()
+    oom_markers = (
+        "cuda out of memory",
+        "outofmemoryerror",
+        "cublas_status_alloc_failed",
+        "cuda error: out of memory",
+    )
+    return any(marker in normalized for marker in oom_markers)
+
+
+def _halve_batch_size(batch_size: int, *, min_batch_size: int = 4) -> Optional[int]:
+    current = max(1, int(batch_size))
+    minimum = max(1, int(min_batch_size))
+    if current <= minimum:
+        return None
+    next_batch = max(minimum, current // 2)
+    if next_batch >= current:
+        return None
+    return int(next_batch)
+
+
+def _replace_eval_batch_size(
+    cfg: "EvalConfig",
+    prm: Dict[str, Any],
+    *,
+    batch_size: int,
+) -> tuple["EvalConfig", Dict[str, Any]]:
+    resolved_batch_size = max(1, int(batch_size))
+    next_cfg = replace(cfg, default_batch_size=resolved_batch_size)
+    next_prm = dict(prm)
+    next_prm["batch"] = resolved_batch_size
+    return next_cfg, next_prm
+
+
+def _adapt_formal_eval_inputs_for_worker(
+    cfg: "EvalConfig",
+    prm: Dict[str, Any],
+) -> tuple["EvalConfig", Dict[str, Any]]:
+    if not (_is_formal_nn_eval_enabled(cfg) and str(getattr(cfg, "device", "cpu")).startswith("cuda")):
+        return cfg, dict(prm)
+
+    batch_size = max(1, int(prm.get("batch", getattr(cfg, "default_batch_size", 32)) or 32))
+    free_gib, used_gib, total_gib = _worker_visible_cuda_memory_gib()
+    adjusted_batch_size = batch_size
+    if used_gib is not None and float(used_gib) >= 2.0 and adjusted_batch_size > 32:
+        adjusted_batch_size = 32
+    if used_gib is not None and float(used_gib) >= 8.0 and adjusted_batch_size > 16:
+        adjusted_batch_size = 16
+    if free_gib is not None and float(free_gib) <= 16.0 and adjusted_batch_size > 8:
+        adjusted_batch_size = 8
+
+    run_unfrozen = bool(getattr(cfg, "run_unfrozen_backbone_eval", False))
+    reward_target_metric = str(getattr(cfg, "reward_target_metric", "frozen_test_acc") or "frozen_test_acc")
+    if adjusted_batch_size <= 16 and run_unfrozen and reward_target_metric == "frozen_test_acc":
+        run_unfrozen = False
+
+    if adjusted_batch_size == batch_size and run_unfrozen == bool(getattr(cfg, "run_unfrozen_backbone_eval", False)):
+        return cfg, dict(prm)
+
+    next_cfg, next_prm = _replace_eval_batch_size(cfg, prm, batch_size=adjusted_batch_size)
+    if run_unfrozen != bool(getattr(next_cfg, "run_unfrozen_backbone_eval", False)):
+        next_cfg = replace(next_cfg, run_unfrozen_backbone_eval=run_unfrozen)
+    print(
+        "[Reward Formal Eval] Auto-tune "
+        f"batch={batch_size}->{adjusted_batch_size} "
+        f"run_unfrozen={bool(getattr(cfg, 'run_unfrozen_backbone_eval', False))}->{run_unfrozen} "
+        f"cuda_free_gib={_format_mem_value(free_gib)} "
+        f"cuda_used_gib={_format_mem_value(used_gib)} "
+        f"cuda_total_gib={_format_mem_value(total_gib)}"
+    )
+    return next_cfg, next_prm
+
+
+def _run_formal_eval_with_backoff(
+    *,
+    code: str,
+    prm: Dict[str, Any],
+    cfg: "EvalConfig",
+    freeze_backbones: bool,
+    seed_accuracy_baseline: Optional[float],
+    backbone_model_names: list[str],
+) -> tuple[Dict[str, Any], "EvalConfig", Dict[str, Any]]:
+    active_cfg, active_prm = _adapt_formal_eval_inputs_for_worker(cfg, prm)
+    last_result: Optional[Dict[str, Any]] = None
+    attempted_batch_sizes: set[int] = set()
+    attempt_batch_size = max(
+        1,
+        int(active_prm.get("batch", getattr(active_cfg, "default_batch_size", 32)) or 32),
+    )
+    eval_mode = "frozen" if freeze_backbones else "unfrozen"
+
+    while attempt_batch_size not in attempted_batch_sizes:
+        attempted_batch_sizes.add(int(attempt_batch_size))
+        attempt_cfg, attempt_prm = _replace_eval_batch_size(active_cfg, active_prm, batch_size=attempt_batch_size)
+        last_result = _formal_eval_with_nn_dataset(
+            code,
+            prm=attempt_prm,
+            cfg=attempt_cfg,
+            freeze_backbones=freeze_backbones,
+            seed_accuracy_baseline=seed_accuracy_baseline,
+            backbone_model_names=backbone_model_names,
+        )
+        if not _is_cuda_oom_error_message(last_result.get("error")):
+            return last_result, attempt_cfg, attempt_prm
+
+        next_batch_size = _halve_batch_size(attempt_batch_size)
+        if next_batch_size is None:
+            return last_result, attempt_cfg, attempt_prm
+        print(
+            "[Reward Formal Eval] Retry after CUDA OOM "
+            f"eval_mode={eval_mode} "
+            f"batch={attempt_batch_size}->{next_batch_size}"
+        )
+        _clear_reward_cuda_state()
+        active_cfg, active_prm = attempt_cfg, attempt_prm
+        attempt_batch_size = next_batch_size
+
+    if last_result is None:
+        raise RuntimeError("formal eval retry loop exited without producing a result")
+    return last_result, active_cfg, active_prm
 
 
 def _preview_eval_request(
@@ -3453,29 +3590,37 @@ def _evaluate_code_and_reward_direct(
 
     if _is_formal_nn_eval_enabled(cfg):
         try:
-            frozen_result = _formal_eval_with_nn_dataset(
-                code,
+            frozen_result, frozen_cfg, _frozen_prm = _run_formal_eval_with_backoff(
+                code=code,
                 prm=prm,
                 cfg=cfg,
                 freeze_backbones=True,
                 seed_accuracy_baseline=seed_accuracy_baseline,
                 backbone_model_names=backbone_model_names,
             )
+            if frozen_result.get("error"):
+                return frozen_result
+
             unfrozen_result = None
-            if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)):
+            if bool(getattr(frozen_cfg, "run_unfrozen_backbone_eval", False)):
                 _clear_reward_cuda_state()
-                unfrozen_result = _formal_eval_with_nn_dataset(
-                    code,
+                unfrozen_result, _unfrozen_cfg, _unfrozen_prm = _run_formal_eval_with_backoff(
+                    code=code,
                     prm=prm,
-                    cfg=cfg,
+                    cfg=frozen_cfg,
                     freeze_backbones=False,
                     seed_accuracy_baseline=seed_accuracy_baseline,
                     backbone_model_names=backbone_model_names,
                 )
+                if unfrozen_result.get("error") and _is_cuda_oom_error_message(unfrozen_result.get("error")):
+                    print(
+                        "[Reward Formal Eval] Degrade optional unfrozen eval after CUDA OOM; "
+                        "keeping frozen reward target"
+                    )
             return _merge_dual_eval_results(
                 frozen_result=frozen_result,
                 unfrozen_result=unfrozen_result,
-                cfg=cfg,
+                cfg=frozen_cfg,
             )
         except Exception as e:
             error_type = type(e).__name__

@@ -68,6 +68,10 @@ import ab.gpt.util.Reward as RewardUtil
 import ab.gpt.util.SFTUtil as SFTUtil
 
 
+_TRAIN_GPU_TOKENS_ENV = "NNGPT_TRAIN_GPU_TOKENS"
+_REWARD_GPU_TOKENS_ENV = "NNGPT_REWARD_GPU_TOKENS"
+
+
 def _repo_model_dir(model_id: str) -> Path:
     return Path("out/llm") / model_id
 
@@ -141,21 +145,53 @@ def _runtime_is_main_process(runtime: Dict[str, Any]) -> bool:
     return int(runtime.get("rank", 0)) == 0
 
 
+def _resolved_visible_cuda_device_tokens(visible_cuda_devices: int) -> List[str]:
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is not None:
+        raw = raw.strip()
+        if raw in {"", "-1"}:
+            return []
+        tokens = [token.strip() for token in raw.split(",") if token.strip()]
+        if tokens:
+            return tokens
+    return [str(index) for index in range(max(0, int(visible_cuda_devices)))]
+
+
+def _configure_sft_gpu_role_env(visible_cuda_devices: int) -> Dict[str, List[str]]:
+    visible_gpu_tokens = _resolved_visible_cuda_device_tokens(visible_cuda_devices)
+    train_gpu_tokens = visible_gpu_tokens[:1]
+    reward_gpu_tokens = visible_gpu_tokens[1:]
+    if train_gpu_tokens:
+        os.environ[_TRAIN_GPU_TOKENS_ENV] = ",".join(train_gpu_tokens)
+    else:
+        os.environ.pop(_TRAIN_GPU_TOKENS_ENV, None)
+    if reward_gpu_tokens:
+        os.environ[_REWARD_GPU_TOKENS_ENV] = ",".join(reward_gpu_tokens)
+    else:
+        os.environ.pop(_REWARD_GPU_TOKENS_ENV, None)
+    return {
+        "visible_gpu_tokens": list(visible_gpu_tokens),
+        "train_gpu_tokens": list(train_gpu_tokens),
+        "reward_gpu_tokens": list(reward_gpu_tokens),
+    }
+
+
 def _suggested_sft_worker_count(runtime: Dict[str, Any]) -> int:
-    return max(1, int(runtime.get("visible_gpu_count", 0) or 0))
+    _ = runtime
+    return 1
 
 
 def _validate_sft_visible_worker_count(runtime: Dict[str, Any]) -> None:
     world_size = int(runtime.get("world_size", 1))
     suggested_worker_count = _suggested_sft_worker_count(runtime)
-    if world_size <= suggested_worker_count:
+    if world_size == suggested_worker_count:
         return
     raise RuntimeError(
-        "SFT RL worker count exceeds visible training GPUs: "
+        "SFT RL now runs with a single training rank so the reward pool can use the remaining GPUs: "
         f"world_size={world_size}, "
         f"visible_cuda_devices={int(runtime.get('visible_gpu_count', 0))}, "
         f"suggested_nproc_per_node={suggested_worker_count}. "
-        "Launch torchrun with as many workers as visible training GPUs."
+        "Launch without torchrun or use --nproc_per_node=1."
     )
 
 
@@ -216,13 +252,19 @@ def _maybe_relaunch_sft_with_visible_gpu_workers() -> None:
     if not torch.cuda.is_available():
         return
     visible_cuda_devices = int(torch.cuda.device_count())
+    gpu_role_plan = _configure_sft_gpu_role_env(visible_cuda_devices)
     if visible_cuda_devices <= 1:
         return
 
     os.environ["NNGPT_SFT_AUTO_TORCHRUN_DONE"] = "1"
     print(
-        "[SFT RL] Relaunching with visible-GPU worker count: "
-        f"nproc_per_node={visible_cuda_devices}"
+        "[SFT RL] GPU role plan: "
+        f"train_gpu_tokens={gpu_role_plan['train_gpu_tokens']} "
+        f"reward_gpu_tokens={gpu_role_plan['reward_gpu_tokens']}"
+    )
+    print(
+        "[SFT RL] Relaunching with single training worker: "
+        "nproc_per_node=1"
     )
     os.execvpe(
         sys.executable,
@@ -230,7 +272,7 @@ def _maybe_relaunch_sft_with_visible_gpu_workers() -> None:
             sys.executable,
             "-m",
             "torch.distributed.run",
-            f"--nproc_per_node={visible_cuda_devices}",
+            "--nproc_per_node=1",
             "-m",
             "ab.gpt.TuneRLSft",
         ],
@@ -1087,6 +1129,10 @@ def bootstrap_sft_runtime() -> None:
 
 
 def main() -> None:
+    import torch
+
+    if torch.cuda.is_available():
+        _configure_sft_gpu_role_env(int(torch.cuda.device_count()))
     _maybe_relaunch_sft_with_visible_gpu_workers()
     _validate_sft_visible_worker_count(RewardUtil.get_distributed_runtime_info())
     model_source, tokenizer_source, source_mode = patch_sft_runtime()

@@ -39,6 +39,7 @@ def reward_worker_main(conn, assigned_gpu=None, assigned_cuda_visible_device=Non
             else str(int(assigned_gpu))
         )
         os.environ["CUDA_VISIBLE_DEVICES"] = visible_device
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     from ab.gpt.util import Reward as RewardUtil
 
     RewardUtil._persistent_eval_worker_entry(conn, assigned_gpu, assigned_cuda_visible_device)
