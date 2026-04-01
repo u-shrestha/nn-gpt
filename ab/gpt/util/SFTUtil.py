@@ -254,7 +254,8 @@ Complete the three missing components. **DO NOT** write generic code. You must i
    - **Initialization**: 
      - Initialize `self.backbone_a` and `self.backbone_b` using `TorchVision(model='...', in_channels=...)`.
      - Initialize `self.features` (1-2 `FractalUnit` layers).
-     - Call `self.infer_dimensions_dynamically(in_shape, out_shape[0])`.
+     - Set `self._input_spec = tuple(in_shape[1:])`.
+     - Call `self.infer_dimensions_dynamically(out_shape[0])`.
    - **Example Implementation Fragment**:
      ```python
      self.pattern = '{target_pattern}'

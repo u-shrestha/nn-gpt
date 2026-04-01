@@ -1,22 +1,16 @@
 #!/usr/bin/env python3
-"""Plot cycle-level SFT RL reward diagnostics from generation_samples.jsonl and group_progress.jsonl."""
+"""Plot reward diagnostics for RL discovery runs."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import math
-from collections import defaultdict
+import re
+import statistics
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
-
-import matplotlib.pyplot as plt
-import numpy as np
-
-try:
-    from scipy import stats as scipy_stats
-except Exception:  # pragma: no cover - scipy is optional at runtime
-    scipy_stats = None
 
 
 def _coerce_float(value: Any) -> Optional[float]:
@@ -31,75 +25,160 @@ def _coerce_float(value: Any) -> Optional[float]:
     return parsed
 
 
+def _require_float(value: Any, *, field_name: str, line_no: int) -> float:
+    parsed = _coerce_float(value)
+    if parsed is None:
+        raise ValueError(f"Line {line_no}: invalid {field_name} value {value!r}")
+    return parsed
+
+
 def _coerce_bool(value: Any) -> Optional[bool]:
     if isinstance(value, bool):
         return value
     return None
 
 
-def _as_percent(values: Iterable[float]) -> list[float]:
-    return [float(value) * 100.0 for value in values]
+def _require_bool(value: Any, *, field_name: str, line_no: int) -> bool:
+    parsed = _coerce_bool(value)
+    if parsed is None:
+        raise ValueError(f"Line {line_no}: invalid {field_name} value {value!r}")
+    return parsed
 
 
-def _mean(values: list[float]) -> float:
-    return float(np.mean(values)) if values else float("nan")
+def _float_or_nan(value: Optional[float]) -> float:
+    return float(value) if value is not None else float("nan")
 
 
-def _median(values: list[float]) -> float:
-    return float(np.median(values)) if values else float("nan")
+def _bool_or_nan(value: Optional[bool]) -> float:
+    if value is None:
+        return float("nan")
+    return 1.0 if value else 0.0
 
 
-def _best(values: list[float]) -> float:
-    return float(np.max(values)) if values else float("nan")
+def _mean_or_nan(values: Iterable[float]) -> float:
+    filtered = [float(value) for value in values if not math.isnan(float(value))]
+    if not filtered:
+        return float("nan")
+    return float(statistics.fmean(filtered))
 
 
-def _ci_half_width(values: list[float]) -> float:
-    if len(values) < 2:
-        return 0.0
-    array = np.asarray(values, dtype=float)
-    sem = float(np.std(array, ddof=1) / math.sqrt(len(array)))
-    if scipy_stats is not None:
-        return float(sem * scipy_stats.t.ppf(0.975, len(array) - 1))
-    return float(1.96 * sem)
+def _min_or_nan(values: Iterable[float]) -> float:
+    filtered = [float(value) for value in values if not math.isnan(float(value))]
+    if not filtered:
+        return float("nan")
+    return float(min(filtered))
 
 
-def _series_stats(values: list[float]) -> dict[str, float]:
-    if not values:
-        return {
-            "best": float("nan"),
-            "mean": float("nan"),
-            "median": float("nan"),
-            "ci": float("nan"),
-        }
-    return {
-        "best": _best(values),
-        "mean": _mean(values),
-        "median": _median(values),
-        "ci": _ci_half_width(values),
+def _max_or_nan(values: Iterable[float]) -> float:
+    filtered = [float(value) for value in values if not math.isnan(float(value))]
+    if not filtered:
+        return float("nan")
+    return float(max(filtered))
+
+
+def rolling_nanmean(values: Iterable[float], window: int) -> list[float]:
+    series = list(values)
+    if window <= 0:
+        raise ValueError("window must be positive")
+    rolled: list[float] = []
+    for index in range(len(series)):
+        start = max(0, index - window + 1)
+        filtered = [float(value) for value in series[start : index + 1] if not math.isnan(float(value))]
+        if not filtered:
+            rolled.append(float("nan"))
+        else:
+            rolled.append(float(statistics.fmean(filtered)))
+    return rolled
+
+
+@dataclass
+class RewardLogData:
+    sample_index: list[int] = field(default_factory=list)
+    reward: list[float] = field(default_factory=list)
+    reward_target_value: list[float] = field(default_factory=list)
+    built_ok: list[float] = field(default_factory=list)
+    forward_shape_ok: list[float] = field(default_factory=list)
+    backward_ok: list[float] = field(default_factory=list)
+    loss_drop_ok: list[float] = field(default_factory=list)
+    timed_out: list[float] = field(default_factory=list)
+    train_acc: list[float] = field(default_factory=list)
+    frozen_train_acc: list[float] = field(default_factory=list)
+    frozen_test_acc: list[float] = field(default_factory=list)
+    unfrozen_train_acc: list[float] = field(default_factory=list)
+    unfrozen_test_acc: list[float] = field(default_factory=list)
+    seed_accuracy_baseline: list[float] = field(default_factory=list)
+    seed_train_acc_gap: list[float] = field(default_factory=list)
+    group_baseline_train_acc: list[float] = field(default_factory=list)
+    group_train_acc_gain: list[float] = field(default_factory=list)
+    group_train_acc_improved: list[float] = field(default_factory=list)
+    reward_batch_index: list[float] = field(default_factory=list)
+    reward_group_id: list[int] = field(default_factory=list)
+    group_warmup: list[float] = field(default_factory=list)
+    loss_start: list[float] = field(default_factory=list)
+    loss_end: list[float] = field(default_factory=list)
+    loss_drop: list[float] = field(default_factory=list)
+    val_metric: list[float] = field(default_factory=list)
+    estimated_total_seconds: list[float] = field(default_factory=list)
+    eval_limit_seconds: list[float] = field(default_factory=list)
+    warmup_dense_reward: list[float] = field(default_factory=list)
+    anti_collapse_trainable_ok: list[float] = field(default_factory=list)
+    xml_tag_exact: list[float] = field(default_factory=list)
+    dual_backbone_ok: list[float] = field(default_factory=list)
+    format_violation: list[float] = field(default_factory=list)
+    cpu_prevalidate_failed: list[float] = field(default_factory=list)
+    gpu_wait_timeout: list[float] = field(default_factory=list)
+    progress_generation_total: list[float] = field(default_factory=list)
+    progress_success_count: list[float] = field(default_factory=list)
+    progress_success_rate: list[float] = field(default_factory=list)
+    progress_warmup_trainable_count: list[float] = field(default_factory=list)
+    progress_warmup_positive_count: list[float] = field(default_factory=list)
+    progress_timeout_count: list[float] = field(default_factory=list)
+    progress_improved_count: list[float] = field(default_factory=list)
+    group_progress_by_group: dict[int, dict[str, Any]] = field(default_factory=dict)
+    total_file_samples: int = 0
+    current_run_sample_count: int = 0
+    trimmed_stale_samples: int = 0
+
+    @property
+    def count(self) -> int:
+        return len(self.reward)
+
+
+def _parse_training_progress(log_dir: Path) -> dict[str, list[float]]:
+    progress_path = log_dir / "training_progress.log"
+    metrics = {
+        "generation_total": [],
+        "success_count": [],
+        "success_rate": [],
+        "warmup_trainable_count": [],
+        "warmup_positive_count": [],
+        "timeout_count": [],
+        "improved_count": [],
     }
+    if not progress_path.exists():
+        return metrics
 
-
-def _load_generation_samples(log_dir: Path) -> dict[int, list[dict[str, Any]]]:
-    sample_path = log_dir / "generation_samples.jsonl"
-    if not sample_path.exists():
-        raise FileNotFoundError(f"Missing generation_samples.jsonl under {log_dir}")
-
-    grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    with sample_path.open("r", encoding="utf-8") as handle:
-        for line_no, line in enumerate(handle, start=1):
-            stripped = line.strip()
-            if not stripped:
+    pattern = re.compile(
+        r"progress:\s*(?P<generation>\d+)\s+generation[，,]\s*"
+        r"(?P<success>\d+)\s+success[，,]\s*success rate\s*(?P<success_rate>[0-9.]+)%"
+        r".*?warmup_trainable_count=(?P<warmup_trainable>\d+)"
+        r".*?warmup_positive_count=(?P<warmup_positive>\d+)"
+        r".*?timeout_count=(?P<timeout>\d+)"
+        r".*?improved_count=(?P<improved>\d+)"
+    )
+    with progress_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            match = pattern.search(line)
+            if not match:
                 continue
-            payload = json.loads(stripped)
-            api_result = payload.get("api_result") or {}
-            group_id = api_result.get("reward_group_id")
-            if group_id is None:
-                continue
-            try:
-                grouped[int(group_id)].append(api_result)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"Line {line_no}: invalid reward_group_id {group_id!r}") from exc
-    return dict(grouped)
+            metrics["generation_total"].append(float(match.group("generation")))
+            metrics["success_count"].append(float(match.group("success")))
+            metrics["success_rate"].append(float(match.group("success_rate")) / 100.0)
+            metrics["warmup_trainable_count"].append(float(match.group("warmup_trainable")))
+            metrics["warmup_positive_count"].append(float(match.group("warmup_positive")))
+            metrics["timeout_count"].append(float(match.group("timeout")))
+            metrics["improved_count"].append(float(match.group("improved")))
+    return metrics
 
 
 def _load_group_progress(log_dir: Path) -> dict[int, dict[str, Any]]:
@@ -113,253 +192,427 @@ def _load_group_progress(log_dir: Path) -> dict[int, dict[str, Any]]:
             stripped = line.strip()
             if not stripped:
                 continue
-            payload = json.loads(stripped)
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Line {line_no}: invalid JSON in group_progress.jsonl: {exc}") from exc
             group_id = payload.get("group_id")
             if group_id is None:
                 raise ValueError(f"Line {line_no}: group_progress row missing group_id")
-            progress_by_group[int(group_id)] = payload
+            try:
+                progress_by_group[int(group_id)] = payload
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Line {line_no}: invalid group_id {group_id!r}") from exc
     return progress_by_group
 
 
-def _metric_values(rows: list[dict[str, Any]], key: str) -> list[float]:
-    values: list[float] = []
-    for row in rows:
-        value = _coerce_float(row.get(key))
-        if value is not None:
-            values.append(value)
-    return values
+def _derive_forward_shape_ok(api_result: dict[str, Any], *, line_no: int) -> bool:
+    if "forward_shape_ok" in api_result:
+        return _require_bool(api_result["forward_shape_ok"], field_name="forward_shape_ok", line_no=line_no)
+    if "forward_ok" in api_result:
+        return _require_bool(api_result["forward_ok"], field_name="forward_ok", line_no=line_no)
+    return False
 
 
-def _rate(rows: list[dict[str, Any]], *, predicate) -> float:
-    if not rows:
+def _derive_backward_ok(api_result: dict[str, Any], *, line_no: int) -> bool:
+    if "backward_ok" in api_result:
+        return _require_bool(api_result["backward_ok"], field_name="backward_ok", line_no=line_no)
+    if "trained_step_ok" in api_result:
+        return _require_bool(api_result["trained_step_ok"], field_name="trained_step_ok", line_no=line_no)
+    return False
+
+
+def _derive_loss_drop_ok(api_result: dict[str, Any], *, line_no: int) -> bool:
+    if "loss_drop_ok" in api_result:
+        return _require_bool(api_result["loss_drop_ok"], field_name="loss_drop_ok", line_no=line_no)
+    loss_drop = _coerce_float(api_result.get("loss_drop"))
+    if loss_drop is not None:
+        return loss_drop > 0.0
+    loss_start = _coerce_float(api_result.get("loss_start"))
+    loss_end = _coerce_float(api_result.get("loss_end"))
+    if loss_start is not None and loss_end is not None:
+        return loss_end < loss_start
+    return False
+
+
+def _derive_format_violation(raw_extraction: Optional[dict[str, Any]]) -> float:
+    if not isinstance(raw_extraction, dict):
         return float("nan")
-    hits = sum(1 for row in rows if predicate(row))
-    return float(hits) / float(len(rows))
+    xml_tag_exact = _coerce_bool(raw_extraction.get("xml_tag_exact"))
+    dual_backbone_ok = _coerce_bool(raw_extraction.get("dual_backbone_ok"))
+    class_count = int(_coerce_float(raw_extraction.get("class_count")) or 0.0)
+    import_count = int(_coerce_float(raw_extraction.get("import_count")) or 0.0)
+    bad_signature_count = int(_coerce_float(raw_extraction.get("bad_signature_count")) or 0.0)
+    violation = (
+        xml_tag_exact is False
+        or dual_backbone_ok is False
+        or class_count > 0
+        or import_count > 0
+        or bad_signature_count > 0
+    )
+    return 1.0 if violation else 0.0
 
 
-def _trainable_rate(rows: list[dict[str, Any]]) -> float:
-    return _rate(
-        rows,
-        predicate=lambda row: all(
-            _coerce_bool(row.get(field)) is True
-            for field in ("built_ok", "forward_shape_ok", "backward_ok", "loss_drop_ok")
-        ),
+def _is_trainable_sample(data: RewardLogData, index: int) -> bool:
+    return all(
+        bool(series[index] == 1.0)
+        for series in (data.built_ok, data.forward_shape_ok, data.backward_ok, data.loss_drop_ok)
     )
 
 
-def _positive_reward_rate(rows: list[dict[str, Any]]) -> float:
-    return _rate(rows, predicate=lambda row: (_coerce_float(row.get("reward")) or 0.0) > 0.0)
+def load_reward_log(log_dir: Path | str) -> RewardLogData:
+    resolved_log_dir = Path(log_dir).expanduser().resolve()
+    sample_path = resolved_log_dir / "generation_samples.jsonl"
+    if not sample_path.exists():
+        raise FileNotFoundError(f"Missing generation_samples.jsonl under {resolved_log_dir}")
 
+    raw_records: list[dict[str, Any]] = []
+    with sample_path.open("r", encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Line {line_no}: invalid JSON: {exc}") from exc
+            if not isinstance(payload, dict):
+                raise ValueError(f"Line {line_no}: reward row must be a JSON object")
+            if "api_result" not in payload:
+                raise ValueError(f"Line {line_no}: reward row missing api_result")
+            if not isinstance(payload.get("api_result"), dict):
+                raise ValueError(f"Line {line_no}: invalid api_result {payload.get('api_result')!r}")
+            _require_float(payload.get("reward"), field_name="reward", line_no=line_no)
+            payload["_line_no"] = line_no
+            raw_records.append(payload)
 
-def _timeout_rate(rows: list[dict[str, Any]]) -> float:
-    return _rate(rows, predicate=lambda row: _coerce_bool(row.get("timed_out")) is True)
+    progress_metrics = _parse_training_progress(resolved_log_dir)
+    group_progress_by_group = _load_group_progress(resolved_log_dir)
+    total_file_samples = len(raw_records)
+    current_run_target = None
+    if progress_metrics["generation_total"]:
+        latest_total = int(progress_metrics["generation_total"][-1])
+        if latest_total > 0 and latest_total <= total_file_samples:
+            current_run_target = latest_total
+    if current_run_target is None:
+        current_run_records = raw_records
+    else:
+        current_run_records = raw_records[-current_run_target:]
 
-
-def _plot_accuracy_panel(
-    ax,
-    cycles: list[int],
-    grouped_samples: dict[int, list[dict[str, Any]]],
-    progress_by_group: dict[int, dict[str, Any]],
-    *,
-    metric_key: str,
-    progress_key: Optional[str],
-    title: str,
-) -> None:
-    best_values: list[float] = []
-    mean_values: list[float] = []
-    median_values: list[float] = []
-    ci_values: list[float] = []
-    closed_means: list[float] = []
-
-    for cycle in cycles:
-        stats = _series_stats(_metric_values(grouped_samples[cycle], metric_key))
-        best_values.append(stats["best"])
-        mean_values.append(stats["mean"])
-        median_values.append(stats["median"])
-        ci_values.append(stats["ci"])
-        if progress_key is None or cycle not in progress_by_group:
-            closed_means.append(float("nan"))
-        else:
-            closed_means.append(_coerce_float(progress_by_group[cycle].get(progress_key)) or float("nan"))
-
-    mean_pct = np.asarray(_as_percent(mean_values), dtype=float)
-    median_pct = np.asarray(_as_percent(median_values), dtype=float)
-    best_pct = np.asarray(_as_percent(best_values), dtype=float)
-    ci_pct = np.asarray(_as_percent([0.0 if math.isnan(v) else v for v in ci_values]), dtype=float)
-    closed_mean_pct = np.asarray(_as_percent(closed_means), dtype=float)
-
-    ax.grid(True, linestyle="--", alpha=0.35, zorder=0)
-    ax.errorbar(
-        cycles,
-        mean_pct,
-        yerr=ci_pct,
-        fmt="none",
-        ecolor="#FF9800",
-        elinewidth=1.6,
-        capsize=4,
-        alpha=0.65,
-        zorder=1,
-        label="95% CI",
+    data = RewardLogData(
+        total_file_samples=total_file_samples,
+        current_run_sample_count=len(current_run_records),
+        trimmed_stale_samples=max(0, total_file_samples - len(current_run_records)),
+        group_progress_by_group=group_progress_by_group,
     )
-    ax.scatter(cycles, best_pct, marker="D", color="#E65100", s=56, edgecolors="white", linewidth=0.8, label="Best", zorder=5)
-    ax.scatter(cycles, median_pct, marker="_", color="#D32F2F", s=180, linewidths=2.4, label="Median", zorder=6)
-    ax.scatter(cycles, mean_pct, marker="o", color="#F57C00", s=36, edgecolors="black", linewidth=0.4, label="Mean", zorder=4)
-    ax.plot(cycles, mean_pct, color="#F57C00", linewidth=1.4, alpha=0.75, zorder=2)
-    if not np.all(np.isnan(closed_mean_pct)):
-        ax.plot(cycles, closed_mean_pct, color="#1565C0", linewidth=1.8, linestyle="--", label="Closed Mean", zorder=3)
-    ax.set_title(title)
-    ax.set_xlabel("Cycle")
-    ax.set_ylabel("Accuracy (%)")
-    ax.set_ylim(0, 100)
+
+    data.progress_generation_total = list(progress_metrics["generation_total"])
+    data.progress_success_count = list(progress_metrics["success_count"])
+    data.progress_success_rate = list(progress_metrics["success_rate"])
+    data.progress_warmup_trainable_count = list(progress_metrics["warmup_trainable_count"])
+    data.progress_warmup_positive_count = list(progress_metrics["warmup_positive_count"])
+    data.progress_timeout_count = list(progress_metrics["timeout_count"])
+    data.progress_improved_count = list(progress_metrics["improved_count"])
+
+    for sample_index, payload in enumerate(current_run_records, start=1):
+        line_no = int(payload["_line_no"])
+        api_result = dict(payload["api_result"])
+        raw_extraction = api_result.get("raw_extraction")
+        anti_collapse = api_result.get("anti_collapse")
+        reward = _require_float(payload.get("reward"), field_name="reward", line_no=line_no)
+        built_ok = _require_bool(api_result.get("built_ok"), field_name="built_ok", line_no=line_no)
+        forward_shape_ok = _derive_forward_shape_ok(api_result, line_no=line_no)
+        backward_ok = _derive_backward_ok(api_result, line_no=line_no)
+        loss_drop_ok = _derive_loss_drop_ok(api_result, line_no=line_no)
+        timed_out = (
+            _require_bool(api_result["timed_out"], field_name="timed_out", line_no=line_no)
+            if "timed_out" in api_result
+            else False
+        )
+        seed_accuracy_baseline = _coerce_float(
+            api_result.get("seed_accuracy_baseline", api_result.get("accuracy_baseline"))
+        )
+        reward_target_value = _coerce_float(
+            api_result.get(
+                "reward_target_value",
+                api_result.get("frozen_test_acc", api_result.get("test_acc", api_result.get("val_metric"))),
+            )
+        )
+        frozen_test_acc = _coerce_float(api_result.get("frozen_test_acc", api_result.get("test_acc", api_result.get("val_metric"))))
+        frozen_train_acc = _coerce_float(api_result.get("frozen_train_acc", api_result.get("train_acc")))
+        error_message = str(api_result.get("error") or "")
+        error_stage = str(api_result.get("error_stage") or "")
+
+        data.sample_index.append(sample_index)
+        data.reward.append(reward)
+        data.reward_target_value.append(_float_or_nan(reward_target_value))
+        data.built_ok.append(_bool_or_nan(built_ok))
+        data.forward_shape_ok.append(_bool_or_nan(forward_shape_ok))
+        data.backward_ok.append(_bool_or_nan(backward_ok))
+        data.loss_drop_ok.append(_bool_or_nan(loss_drop_ok))
+        data.timed_out.append(_bool_or_nan(timed_out))
+        data.train_acc.append(_float_or_nan(_coerce_float(api_result.get("train_acc"))))
+        data.frozen_train_acc.append(_float_or_nan(frozen_train_acc))
+        data.frozen_test_acc.append(_float_or_nan(frozen_test_acc))
+        data.unfrozen_train_acc.append(_float_or_nan(_coerce_float(api_result.get("unfrozen_train_acc"))))
+        data.unfrozen_test_acc.append(_float_or_nan(_coerce_float(api_result.get("unfrozen_test_acc"))))
+        data.seed_accuracy_baseline.append(_float_or_nan(seed_accuracy_baseline))
+        data.seed_train_acc_gap.append(_float_or_nan(_coerce_float(api_result.get("seed_train_acc_gap", api_result.get("train_acc_gain")))))
+        data.group_baseline_train_acc.append(_float_or_nan(_coerce_float(api_result.get("group_baseline_train_acc"))))
+        data.group_train_acc_gain.append(_float_or_nan(_coerce_float(api_result.get("group_train_acc_gain"))))
+        data.group_train_acc_improved.append(_bool_or_nan(_coerce_bool(api_result.get("group_train_acc_improved"))))
+        data.reward_batch_index.append(_float_or_nan(_coerce_float(api_result.get("reward_batch_index"))))
+        data.reward_group_id.append(int(_coerce_float(api_result.get("reward_group_id")) or 0.0))
+        data.group_warmup.append(_bool_or_nan(_coerce_bool(api_result.get("group_warmup"))))
+        data.loss_start.append(_float_or_nan(_coerce_float(api_result.get("loss_start"))))
+        data.loss_end.append(_float_or_nan(_coerce_float(api_result.get("loss_end"))))
+        data.loss_drop.append(_float_or_nan(_coerce_float(api_result.get("loss_drop"))))
+        data.val_metric.append(_float_or_nan(_coerce_float(api_result.get("val_metric"))))
+        data.estimated_total_seconds.append(_float_or_nan(_coerce_float(api_result.get("estimated_total_seconds"))))
+        data.eval_limit_seconds.append(_float_or_nan(_coerce_float(api_result.get("eval_limit_seconds"))))
+        data.warmup_dense_reward.append(_float_or_nan(_coerce_float(api_result.get("warmup_dense_reward"))))
+        data.anti_collapse_trainable_ok.append(
+            _bool_or_nan(_coerce_bool(anti_collapse.get("trainable_ok"))) if isinstance(anti_collapse, dict) else float("nan")
+        )
+        data.xml_tag_exact.append(
+            _bool_or_nan(_coerce_bool(raw_extraction.get("xml_tag_exact"))) if isinstance(raw_extraction, dict) else float("nan")
+        )
+        data.dual_backbone_ok.append(
+            _bool_or_nan(_coerce_bool(raw_extraction.get("dual_backbone_ok"))) if isinstance(raw_extraction, dict) else float("nan")
+        )
+        data.format_violation.append(_derive_format_violation(raw_extraction))
+        data.cpu_prevalidate_failed.append(1.0 if error_stage == "cpu_prevalidate" else 0.0)
+        data.gpu_wait_timeout.append(
+            1.0
+            if ("waiting for available gpu reward worker" in error_message.lower() or "awaiting_gpu_headroom" in error_message.lower())
+            else 0.0
+        )
+
+    return data
 
 
-def _plot_rate_panel(ax, cycles: list[int], grouped_samples: dict[int, list[dict[str, Any]]]) -> None:
-    trainable = _as_percent([_trainable_rate(grouped_samples[cycle]) for cycle in cycles])
-    positive = _as_percent([_positive_reward_rate(grouped_samples[cycle]) for cycle in cycles])
-    timed_out = _as_percent([_timeout_rate(grouped_samples[cycle]) for cycle in cycles])
+def compute_summary(data: RewardLogData, window: int = 20) -> dict[str, float]:
+    del window
+    trainable_mask = [_is_trainable_sample(data, idx) for idx in range(data.count)]
+    warmup_indices = [idx for idx in range(data.count) if data.group_warmup[idx] == 1.0]
+    warmup_trainable_indices = [idx for idx in warmup_indices if trainable_mask[idx]]
 
-    ax.grid(True, linestyle="--", alpha=0.35, zorder=0)
-    ax.plot(cycles, trainable, marker="o", color="#1565C0", linewidth=2.0, label="Trainable Rate")
-    ax.plot(cycles, positive, marker="s", color="#2E7D32", linewidth=2.0, label="Positive Reward Rate")
-    ax.plot(cycles, timed_out, marker="^", color="#C62828", linewidth=2.0, label="Timeout Rate")
-    ax.set_title("Cycle Stability")
-    ax.set_xlabel("Cycle")
-    ax.set_ylabel("Rate (%)")
-    ax.set_ylim(0, 100)
-    ax.legend(loc="best", fontsize=8)
+    return {
+        "count": float(data.count),
+        "reward_min": _min_or_nan(data.reward),
+        "reward_max": _max_or_nan(data.reward),
+        "reward_mean": _mean_or_nan(data.reward),
+        "positive_reward_rate": _mean_or_nan([1.0 if value > 0.0 else 0.0 for value in data.reward]),
+        "built_ok_rate": _mean_or_nan(data.built_ok),
+        "forward_shape_ok_rate": _mean_or_nan(data.forward_shape_ok),
+        "backward_ok_rate": _mean_or_nan(data.backward_ok),
+        "loss_drop_ok_rate": _mean_or_nan(data.loss_drop_ok),
+        "timed_out_rate": _mean_or_nan(data.timed_out),
+        "train_acc_mean": _mean_or_nan(data.train_acc),
+        "frozen_test_acc_mean": _mean_or_nan(data.frozen_test_acc),
+        "reward_target_value_mean": _mean_or_nan(data.reward_target_value),
+        "seed_accuracy_baseline_mean": _mean_or_nan(data.seed_accuracy_baseline),
+        "group_train_acc_gain_mean": _mean_or_nan(data.group_train_acc_gain),
+        "group_train_acc_improved_rate": _mean_or_nan(data.group_train_acc_improved),
+        "warmup_dense_reward_mean": _mean_or_nan(data.warmup_dense_reward),
+        "estimated_total_seconds_mean": _mean_or_nan(data.estimated_total_seconds),
+        "warmup_trainable_rate": _mean_or_nan([1.0 if trainable_mask[idx] else 0.0 for idx in warmup_indices]),
+        "warmup_positive_rate": _mean_or_nan([1.0 if data.reward[idx] > 0.0 else 0.0 for idx in warmup_trainable_indices]),
+        "anti_collapse_trainable_ok_rate": _mean_or_nan(data.anti_collapse_trainable_ok),
+        "xml_tag_exact_rate": _mean_or_nan(data.xml_tag_exact),
+        "dual_backbone_ok_rate": _mean_or_nan(data.dual_backbone_ok),
+        "format_violation_rate": _mean_or_nan(data.format_violation),
+        "cpu_prevalidate_failed_rate": _mean_or_nan(data.cpu_prevalidate_failed),
+        "gpu_wait_timeout_rate": _mean_or_nan(data.gpu_wait_timeout),
+        "progress_latest_total": data.progress_generation_total[-1] if data.progress_generation_total else float("nan"),
+        "progress_latest_success_rate": data.progress_success_rate[-1] if data.progress_success_rate else float("nan"),
+        "progress_latest_timeout_count": data.progress_timeout_count[-1] if data.progress_timeout_count else float("nan"),
+        "progress_latest_improved_count": data.progress_improved_count[-1] if data.progress_improved_count else float("nan"),
+        "trimmed_stale_samples": float(data.trimmed_stale_samples),
+    }
 
 
-def _plot_component_panel(ax, cycles: list[int], grouped_samples: dict[int, list[dict[str, Any]]]) -> None:
-    component_keys = [
-        ("r_dense", "#1565C0"),
-        ("r_prev_group", "#00897B"),
-        ("r_best_group", "#5E35B1"),
-        ("r_goal_best", "#EF6C00"),
-        ("r_goal_match", "#7CB342"),
-        ("r_trainset_novelty", "#6D4C41"),
-        ("r_generalization", "#C62828"),
-        ("r_repeat_family", "#546E7A"),
-    ]
-    ax.grid(True, linestyle="--", alpha=0.35, zorder=0)
-    for key, color in component_keys:
-        values = [_mean(_metric_values(grouped_samples[cycle], key)) for cycle in cycles]
-        ax.plot(cycles, values, marker="o", linewidth=1.8, markersize=4, label=key, color=color)
-    ax.set_title("Reward Components")
-    ax.set_xlabel("Cycle")
-    ax.set_ylabel("Mean Component")
-    ax.legend(loc="best", fontsize=7, ncol=2)
+def _group_means(data: RewardLogData, values: list[float]) -> tuple[list[int], list[float]]:
+    grouped: dict[int, list[float]] = {}
+    for group_id, value in zip(data.reward_group_id, values):
+        grouped.setdefault(int(group_id), []).append(value)
+    cycles = sorted(grouped.keys())
+    means = [_mean_or_nan(grouped[cycle]) for cycle in cycles]
+    return cycles, means
 
 
-def _highlight_warmup(ax, cycles: list[int], grouped_samples: dict[int, list[dict[str, Any]]]) -> None:
-    if not cycles:
-        return
-    warmup_cycles = [
-        cycle
+def _group_progress_series(data: RewardLogData, key: str) -> tuple[list[int], list[float]]:
+    cycles = sorted(int(group_id) for group_id in data.group_progress_by_group.keys())
+    values = [
+        _float_or_nan(_coerce_float(data.group_progress_by_group[cycle].get(key)))
         for cycle in cycles
-        if any(_coerce_bool(row.get("group_warmup")) is True for row in grouped_samples.get(cycle, []))
     ]
-    for cycle in warmup_cycles:
-        ax.axvspan(cycle - 0.4, cycle + 0.4, color="#FFF3E0", alpha=0.55, zorder=0)
+    return cycles, values
 
 
-def _print_summary(cycles: list[int], grouped_samples: dict[int, list[dict[str, Any]]], progress_by_group: dict[int, dict[str, Any]]) -> None:
-    if not cycles:
-        print("No cycle data found.")
-        return
-    last_cycle = cycles[-1]
-    last_rows = grouped_samples[last_cycle]
-    frozen_test = _metric_values(last_rows, "frozen_test_acc")
-    reward_values = _metric_values(last_rows, "reward")
-    progress = progress_by_group.get(last_cycle, {})
+def _plot_dashboard(data: RewardLogData, summary: dict[str, float], *, output_path: Path, window: int) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(3, 2, figsize=(15, 12), dpi=140)
+    if not isinstance(axes, list):
+        try:
+            axes = list(axes.reshape(-1))
+        except Exception:
+            axes = [axes]
+
+    x = data.sample_index
+    reward_roll = rolling_nanmean(data.reward, window=window)
+    train_roll = rolling_nanmean(data.train_acc, window=window)
+    target_roll = rolling_nanmean(data.reward_target_value, window=window)
+    timeout_roll = [value * 100.0 for value in rolling_nanmean(data.timed_out, window=window)]
+    trainable_roll = [
+        value * 100.0
+        for value in rolling_nanmean([1.0 if _is_trainable_sample(data, idx) else 0.0 for idx in range(data.count)], window=window)
+    ]
+
+    axes[0].plot(x, data.reward, color="#1565C0", linewidth=1.2, label="Reward")
+    axes[0].plot(x, reward_roll, color="#EF6C00", linewidth=2.0, label=f"Reward MA{window}")
+    axes[0].axhline(0.0, color="#616161", linewidth=1.0)
+    axes[0].set_title("Reward")
+    axes[0].set_xlabel("Sample")
+    axes[0].set_ylabel("Reward")
+    axes[0].grid(True, linestyle="--", alpha=0.35)
+    axes[0].legend(loc="best", fontsize=8)
+
+    axes[1].plot(x, data.train_acc, color="#2E7D32", linewidth=1.2, label="Train Acc")
+    axes[1].plot(x, data.frozen_test_acc, color="#6A1B9A", linewidth=1.2, label="Frozen Test Acc")
+    axes[1].plot(x, target_roll, color="#F57C00", linewidth=2.0, label=f"Reward Target MA{window}")
+    axes[1].set_title("Accuracy / Reward Target")
+    axes[1].set_xlabel("Sample")
+    axes[1].set_ylabel("Accuracy")
+    axes[1].set_ylim(0, 1)
+    axes[1].grid(True, linestyle="--", alpha=0.35)
+    axes[1].legend(loc="best", fontsize=8)
+
+    axes[2].plot(x, trainable_roll, color="#00897B", linewidth=2.0, label=f"Trainable Rate MA{window}")
+    axes[2].plot(x, timeout_roll, color="#C62828", linewidth=2.0, label=f"Timeout Rate MA{window}")
+    axes[2].set_title("Stability")
+    axes[2].set_xlabel("Sample")
+    axes[2].set_ylabel("Rate (%)")
+    axes[2].set_ylim(0, 100)
+    axes[2].grid(True, linestyle="--", alpha=0.35)
+    axes[2].legend(loc="best", fontsize=8)
+
+    cycles, target_means = _group_means(data, data.reward_target_value)
+    progress_cycles, closed_target = _group_progress_series(data, "closed_mean_reward_target_acc")
+    axes[3].plot(cycles, target_means, color="#EF6C00", linewidth=2.0, label="Sample Mean Target")
+    if progress_cycles:
+        axes[3].plot(progress_cycles, closed_target, color="#1565C0", linewidth=1.8, label="Closed Mean Target")
+    axes[3].set_title("Cycle Reward Target")
+    axes[3].set_xlabel("Cycle")
+    axes[3].set_ylabel("Accuracy")
+    axes[3].set_ylim(0, 1)
+    axes[3].grid(True, linestyle="--", alpha=0.35)
+    axes[3].legend(loc="best", fontsize=8)
+
+    if data.progress_generation_total:
+        axes[4].plot(data.progress_generation_total, data.progress_success_rate, color="#2E7D32", linewidth=2.0, label="Success Rate")
+        axes[4].plot(data.progress_generation_total, data.progress_timeout_count, color="#C62828", linewidth=1.8, label="Timeout Count")
+        axes[4].plot(data.progress_generation_total, data.progress_improved_count, color="#6A1B9A", linewidth=1.8, label="Improved Count")
+    axes[4].set_title("Training Progress")
+    axes[4].set_xlabel("Generation")
+    axes[4].set_ylabel("Value")
+    axes[4].grid(True, linestyle="--", alpha=0.35)
+    axes[4].legend(loc="best", fontsize=8)
+
+    axes[5].plot(x, data.cpu_prevalidate_failed, color="#5D4037", linewidth=1.8, label="CPU Prevalidate Fail")
+    axes[5].plot(x, data.gpu_wait_timeout, color="#B71C1C", linewidth=1.8, label="GPU Wait Timeout")
+    axes[5].plot(x, data.format_violation, color="#455A64", linewidth=1.8, label="Format Violation")
+    axes[5].set_title("Failure Modes")
+    axes[5].set_xlabel("Sample")
+    axes[5].set_ylabel("Flag")
+    axes[5].set_ylim(0, 1.05)
+    axes[5].grid(True, linestyle="--", alpha=0.35)
+    axes[5].legend(loc="best", fontsize=8)
+
+    for idx, is_warmup in enumerate(data.group_warmup):
+        if is_warmup == 1.0:
+            for ax in axes:
+                ax.axvspan(idx + 0.5, idx + 1.5, color="#FFF3E0", alpha=0.18)
+
+    fig.suptitle("RL Reward Dashboard", fontsize=16)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _print_summary(data: RewardLogData, summary: dict[str, float], *, log_dir: Path, output_path: Path) -> None:
+    print(f"Log dir: {log_dir}")
+    print(f"Samples: {int(summary['count'])}")
     print(
-        "Last cycle summary:",
+        "Reward:",
         json.dumps(
             {
-                "cycle": last_cycle,
-                "samples": len(last_rows),
-                "frozen_test_best": _best(frozen_test) if frozen_test else None,
-                "frozen_test_mean": _mean(frozen_test) if frozen_test else None,
-                "reward_mean": _mean(reward_values) if reward_values else None,
-                "closed_mean_reward_target_acc": _coerce_float(progress.get("closed_mean_reward_target_acc")),
-                "closed_mean_train_acc": _coerce_float(progress.get("closed_mean_train_acc")),
-                "closed_mean_test_acc": _coerce_float(progress.get("closed_mean_test_acc")),
+                "min": summary["reward_min"],
+                "max": summary["reward_max"],
+                "mean": summary["reward_mean"],
+                "positive_rate": summary["positive_reward_rate"],
             },
             ensure_ascii=False,
         ),
     )
+    print(
+        "Train accuracy:",
+        json.dumps(
+            {
+                "mean": summary["train_acc_mean"],
+                "frozen_test_mean": summary["frozen_test_acc_mean"],
+                "reward_target_mean": summary["reward_target_value_mean"],
+                "seed_baseline_mean": summary["seed_accuracy_baseline_mean"],
+            },
+            ensure_ascii=False,
+        ),
+    )
+    print(
+        "Training progress:",
+        json.dumps(
+            {
+                "latest_total": summary["progress_latest_total"],
+                "latest_success_rate": summary["progress_latest_success_rate"],
+                "latest_timeout_count": summary["progress_latest_timeout_count"],
+                "latest_improved_count": summary["progress_latest_improved_count"],
+            },
+            ensure_ascii=False,
+        ),
+    )
+    print(
+        "Failure modes:",
+        json.dumps(
+            {
+                "cpu_prevalidate_failed_rate": summary["cpu_prevalidate_failed_rate"],
+                "gpu_wait_timeout_rate": summary["gpu_wait_timeout_rate"],
+                "format_violation_rate": summary["format_violation_rate"],
+                "trimmed_stale_samples": summary["trimmed_stale_samples"],
+            },
+            ensure_ascii=False,
+        ),
+    )
+    print(f"Saved dashboard to: {output_path}")
 
 
-def main() -> None:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--log-dir", required=True, help="Directory containing generation_samples.jsonl")
-    parser.add_argument("--output", default="cycle_reward_analysis.png", help="Output image path")
-    args = parser.parse_args()
+    parser.add_argument("--log-dir", required=True, help="Directory containing reward logs")
+    parser.add_argument("--output", help="Output image path. Defaults to <log-dir>/reward_dashboard.png")
+    parser.add_argument("--window", type=int, default=20, help="Rolling mean window")
+    args = parser.parse_args(argv)
 
     log_dir = Path(args.log_dir).expanduser().resolve()
-    grouped_samples = _load_generation_samples(log_dir)
-    progress_by_group = _load_group_progress(log_dir)
-    cycles = sorted(grouped_samples.keys())
-    if not cycles:
-        raise RuntimeError(f"No reward_group_id samples found under {log_dir}")
-
-    fig, axes = plt.subplots(3, 2, figsize=(15, 13), dpi=140)
-    axes = axes.flatten()
-
-    _plot_accuracy_panel(
-        axes[0],
-        cycles,
-        grouped_samples,
-        progress_by_group,
-        metric_key="frozen_test_acc",
-        progress_key="closed_mean_test_acc",
-        title="Frozen Test Accuracy by Cycle",
-    )
-    _plot_accuracy_panel(
-        axes[1],
-        cycles,
-        grouped_samples,
-        progress_by_group,
-        metric_key="frozen_train_acc",
-        progress_key="closed_mean_train_acc",
-        title="Frozen Train Accuracy by Cycle",
-    )
-    _plot_accuracy_panel(
-        axes[2],
-        cycles,
-        grouped_samples,
-        progress_by_group,
-        metric_key="unfrozen_test_acc",
-        progress_key="closed_mean_unfrozen_test_acc",
-        title="Unfrozen Test Accuracy by Cycle",
-    )
-    _plot_accuracy_panel(
-        axes[3],
-        cycles,
-        grouped_samples,
-        progress_by_group,
-        metric_key="unfrozen_train_acc",
-        progress_key="closed_mean_unfrozen_train_acc",
-        title="Unfrozen Train Accuracy by Cycle",
-    )
-    _plot_rate_panel(axes[4], cycles, grouped_samples)
-    _plot_component_panel(axes[5], cycles, grouped_samples)
-
-    for ax in axes:
-        _highlight_warmup(ax, cycles, grouped_samples)
-        ax.set_xticks(cycles)
-
-    handles, labels = axes[0].get_legend_handles_labels()
-    if handles:
-        axes[0].legend(loc="best", fontsize=8)
-
-    fig.suptitle("RL Reward Cycle Analysis", fontsize=16, y=0.98)
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
-
-    output_path = Path(args.output).expanduser().resolve()
-    fig.savefig(output_path)
-    print(f"Saved plot to {output_path}")
-    _print_summary(cycles, grouped_samples, progress_by_group)
+    data = load_reward_log(log_dir)
+    summary = compute_summary(data, window=max(1, int(args.window)))
+    output_path = Path(args.output).expanduser().resolve() if args.output else (log_dir / "reward_dashboard.png")
+    _plot_dashboard(data, summary, output_path=output_path, window=max(1, int(args.window)))
+    _print_summary(data, summary, log_dir=log_dir, output_path=output_path)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

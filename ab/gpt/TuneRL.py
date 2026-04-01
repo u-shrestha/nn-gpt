@@ -1,6 +1,7 @@
 import ast
 import csv
 from datetime import timedelta
+import inspect
 import subprocess
 import sys
 import threading
@@ -77,6 +78,7 @@ from ab.gpt.util.Reward import (
     PersistentEvalWorkerError,
     evaluate_code_and_reward,
     evaluate_code_and_reward_batch,
+    get_distributed_runtime_info,
     get_eval_worker_diagnostics,
     shutdown_eval_worker,
 )
@@ -144,6 +146,7 @@ REWARD_TARGET_METRIC = "frozen_test_acc"
 FEEDBACK_GRAPH_EXPR_MAX_CHARS = 160
 FEEDBACK_SUMMARY_MAX_CHARS = 240
 FEEDBACK_SUMMARY_LIMIT = 2
+RL_DEEPSPEED_DEFAULT_CONFIG = str(Path(__file__).resolve().parent / "conf" / "DeepSpeedSftGrpo.json")
 reward_batch_index = 0
 current_group_id = 0
 current_group_reward_target_sum = 0.0
@@ -384,7 +387,7 @@ def is_main_process() -> bool:
 
 
 def _object_sync_timeout_seconds() -> int:
-    return max(600, env_int("NNGPT_RL_OBJECT_SYNC_TIMEOUT_SECONDS", 7200))
+    return max(600, env_int("NNGPT_RL_OBJECT_SYNC_TIMEOUT_SECONDS", 3600))
 
 
 def _default_process_group_backend() -> str:
@@ -505,6 +508,110 @@ def env_float(name: str, default: float) -> float:
     if value is None or value == "":
         return default
     return float(value)
+
+
+def resolve_generation_plan(
+    runtime: Dict[str, Any],
+    *,
+    env_name: str,
+    default: int,
+) -> Dict[str, int]:
+    world_size = max(1, int(runtime.get("world_size", 1)))
+    global_num_generations = max(1, env_int(env_name, default))
+    if world_size <= 1:
+        trainer_num_generations = global_num_generations
+    else:
+        if global_num_generations < world_size or (global_num_generations % world_size) != 0:
+            raise ValueError(
+                f"{env_name}={global_num_generations} must be divisible by WORLD_SIZE={world_size} "
+                "to preserve true global distributed generation semantics"
+            )
+        trainer_num_generations = max(1, global_num_generations // world_size)
+    return {
+        "world_size": world_size,
+        "global_num_generations": global_num_generations,
+        "trainer_num_generations": trainer_num_generations,
+        "effective_global_num_generations": trainer_num_generations * world_size,
+    }
+
+
+def resolve_rl_runtime_settings(runtime: Dict[str, Any]) -> Dict[str, int]:
+    generation_plan = resolve_generation_plan(
+        runtime,
+        env_name="NNGPT_RL_NUM_GENERATIONS",
+        default=8,
+    )
+    return {
+        "dataset_limit": env_int("NNGPT_RL_DATASET_LIMIT", 500),
+        "grad_accum": env_int("NNGPT_RL_GRAD_ACCUM", 16),
+        "max_completion_length": env_int("NNGPT_RL_MAX_COMPLETION_LENGTH", 1024),
+        "global_num_generations": generation_plan["global_num_generations"],
+        "trainer_num_generations": generation_plan["trainer_num_generations"],
+        "effective_global_num_generations": generation_plan["effective_global_num_generations"],
+    }
+
+
+def _resolve_rl_deepspeed_enabled(runtime: Dict[str, Any]) -> bool:
+    raw = os.getenv("NNGPT_RL_USE_DEEPSPEED")
+    if raw is None or raw == "":
+        return int(runtime.get("world_size", 1)) > 1
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_rl_deepspeed_config_path() -> str:
+    config_path = Path(os.getenv("NNGPT_RL_DEEPSPEED_CONFIG", RL_DEEPSPEED_DEFAULT_CONFIG)).expanduser()
+    if not config_path.exists():
+        raise FileNotFoundError(f"RL DeepSpeed config not found: {config_path}")
+    return str(config_path)
+
+
+def _maybe_init_hf_deepspeed_config(config_path: str) -> Any:
+    last_error: Optional[Exception] = None
+    for module_name in ("transformers.integrations", "transformers.deepspeed"):
+        try:
+            module = __import__(module_name, fromlist=["HfDeepSpeedConfig"])
+            config_cls = getattr(module, "HfDeepSpeedConfig", None)
+            if config_cls is not None:
+                return config_cls(config_path)
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(
+        "DeepSpeed ZeRO-3 requested for RL GRPO, but HfDeepSpeedConfig could not be imported"
+    ) from last_error
+
+
+def _build_rl_grpo_config(
+    *,
+    precision: Dict[str, Any],
+    use_deepspeed: bool,
+    deepspeed_config_path: Optional[str],
+    runtime_settings: Dict[str, int],
+) -> Any:
+    config_signature = inspect.signature(GRPOConfig.__init__)
+    config_kwargs: Dict[str, Any] = {
+        "temperature": env_float("NNGPT_RL_TEMPERATURE", 1.0),
+        "learning_rate": env_float("NNGPT_RL_LR", 5e-5),
+        "max_completion_length": runtime_settings["max_completion_length"],
+        "per_device_train_batch_size": 1,
+        "gradient_accumulation_steps": runtime_settings["grad_accum"],
+        "lr_scheduler_type": "cosine",
+        "num_train_epochs": env_int("NNGPT_RL_NUM_EPOCHS", 5),
+        "remove_unused_columns": False,
+        "logging_steps": 1,
+        "output_dir": os.getenv("NNGPT_RL_TRAINER_OUT", "./grpo_backbone_outputs"),
+        "eval_strategy": "no",
+        "bf16": precision["bf16"],
+        "fp16": precision["fp16"],
+        "gradient_checkpointing": True,
+        "num_generations": runtime_settings["trainer_num_generations"],
+    }
+    if use_deepspeed:
+        if "deepspeed" not in config_signature.parameters:
+            raise RuntimeError("Installed GRPOConfig does not support the `deepspeed` argument")
+        config_kwargs["deepspeed"] = deepspeed_config_path
+        if "ds3_gather_for_generation" in config_signature.parameters:
+            config_kwargs["ds3_gather_for_generation"] = False
+    return GRPOConfig(**config_kwargs)
 
 
 def best_mixed_precision() -> Dict[str, Any]:
@@ -2742,6 +2849,49 @@ def _prepare_local_reward_entries(
     return local_entries
 
 
+def _build_global_reward_entries(gathered_entries: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    global_entries: List[Dict[str, Any]] = []
+    for global_index, entry in enumerate(
+        entry
+        for rank_entries in gathered_entries
+        for entry in list(rank_entries or [])
+    ):
+        merged_entry = dict(entry)
+        merged_entry["global_index"] = global_index
+        global_entries.append(merged_entry)
+    return global_entries
+
+
+def _select_global_reward_entries_for_rank(
+    entries: List[Dict[str, Any]],
+    *,
+    rank: int,
+    world_size: int,
+) -> List[Dict[str, Any]]:
+    total_entries = len(entries)
+    start = (total_entries * int(rank)) // max(1, int(world_size))
+    end = (total_entries * (int(rank) + 1)) // max(1, int(world_size))
+    return [dict(entry) for entry in entries[start:end]]
+
+
+def _merge_gathered_reward_entries(
+    gathered_entries: List[List[Dict[str, Any]]],
+    *,
+    expected_count: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    merged_entries = [
+        dict(entry)
+        for rank_entries in gathered_entries
+        for entry in list(rank_entries or [])
+    ]
+    merged_entries.sort(key=lambda entry: int(entry.get("global_index", -1)))
+    if expected_count is not None and len(merged_entries) != int(expected_count):
+        raise RuntimeError(
+            f"Distributed reward merge expected {expected_count} entries, but received {len(merged_entries)}"
+        )
+    return merged_entries
+
+
 def _build_batched_eval_specs(
     entries: List[Dict[str, Any]],
     *,
@@ -2783,7 +2933,7 @@ def _build_batched_eval_specs(
             "device": "cuda" if torch.cuda.is_available() else "cpu",
             "seed_accuracy_baseline": entry["seed_accuracy_baseline"],
             "reward_batch_index": group_context["reward_batch_index"],
-            "completion_index": int(entry["local_index"]),
+            "completion_index": int(entry.get("global_index", entry["local_index"])),
             "batch_last_item": False,
         }
         if callable(eval_cfg_builder):
@@ -2941,6 +3091,7 @@ def _score_reward_entries(
 
     for position, entry in enumerate(entries):
         index = int(entry["local_index"])
+        completion_index = int(entry.get("global_index", index))
         code_logger.log_to_file("=" * 50)
         try:
             res = reward_fn(
@@ -2957,7 +3108,7 @@ def _score_reward_entries(
                 reward_batch_index=group_context["reward_batch_index"],
                 reward_group_id=group_context["reward_group_id"],
                 group_warmup=group_context["group_warmup"],
-                completion_index=index,
+                completion_index=completion_index,
                 batch_last_item=position == (len(entries) - 1),
             )
             res = _attach_group_context(
@@ -3134,12 +3285,20 @@ def compute_reward(prompts, completions, **kwargs):
             )
 
         rank = _distributed_rank()
+        precompute_eval = not distributed_mode
+        if not precompute_eval:
+            print(
+                "[Reward Precompute Local] skip "
+                f"rank={rank} "
+                f"reward_batch_index={group_context.get('reward_batch_index')} "
+                "reason='distributed_global_sharded_gpu_eval'"
+            )
         local_entries = _prepare_local_reward_entries(
             prompts,
             completions,
             seed_accuracy_baselines=seed_accuracy_baselines,
             group_context=group_context,
-            precompute_eval=True,
+            precompute_eval=precompute_eval,
         )
         archive_snapshot_family_counts = dict(family_hash_archive_counts)
 
@@ -3172,18 +3331,45 @@ def compute_reward(prompts, completions, **kwargs):
             f"total_entries={total_entries}"
         )
 
+        global_entries = _build_global_reward_entries(gathered_entries)
+        assigned_entries = _select_global_reward_entries_for_rank(
+            global_entries,
+            rank=rank,
+            world_size=len(gathered_entries),
+        )
+        print(
+            "[Reward Shard] start "
+            f"rank={rank} "
+            f"reward_batch_index={group_context.get('reward_batch_index')} "
+            f"global_entries={len(global_entries)} "
+            f"assigned_entries={len(assigned_entries)}"
+        )
+        _precompute_eval_results(
+            assigned_entries,
+            group_context=group_context,
+        )
+        print(
+            "[Reward Shard] end "
+            f"rank={rank} "
+            f"reward_batch_index={group_context.get('reward_batch_index')} "
+            f"assigned_entries={len(assigned_entries)}"
+        )
+
+        gathered_precomputed_entries = _all_gather_object(assigned_entries)
+        merged_precomputed_entries = _merge_gathered_reward_entries(
+            gathered_precomputed_entries,
+            expected_count=len(global_entries),
+        )
+
         if is_main_process():
-            global_entries: List[Dict[str, Any]] = []
-            for rank_entries in gathered_entries:
-                global_entries.extend(list(rank_entries or []))
             print(
                 "[Reward Score] start "
                 f"rank={rank} "
                 f"reward_batch_index={group_context.get('reward_batch_index')} "
-                f"entries={len(global_entries)}"
+                f"entries={len(merged_precomputed_entries)}"
             )
             scored_results = _score_reward_entries(
-                global_entries,
+                merged_precomputed_entries,
                 group_context=group_context,
                 archive_snapshot_family_counts=archive_snapshot_family_counts,
             )
@@ -3281,16 +3467,48 @@ def main():
     torch.cuda.empty_cache()  
     reset_reward_runtime_state()
     precision = best_mixed_precision()
+    runtime = get_distributed_runtime_info()
+    runtime_settings = resolve_rl_runtime_settings(runtime)
+    rank = int(runtime.get("rank", 0))
+    local_rank = int(runtime.get("local_rank", 0))
+    raw_local_rank = int(runtime.get("raw_local_rank", 0))
+    world_size = int(runtime.get("world_size", 1))
+    use_deepspeed = _resolve_rl_deepspeed_enabled(runtime)
+    deepspeed_config_path = _resolve_rl_deepspeed_config_path() if use_deepspeed else None
+    os.environ["NNGPT_SFT_USE_DEEPSPEED"] = "1" if use_deepspeed else "0"
+    if deepspeed_config_path is not None:
+        os.environ["NNGPT_SFT_DEEPSPEED_CONFIG"] = deepspeed_config_path
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+    train_device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
+    hf_deepspeed_config = _maybe_init_hf_deepspeed_config(deepspeed_config_path) if use_deepspeed else None
 
     print(f"Using RL base model: {base_model}")
+    print(
+        "[RL] Distributed Runtime: "
+        f"rank={rank} local_rank={local_rank} raw_local_rank={raw_local_rank} world_size={world_size}"
+    )
+    print(f"[RL] DeepSpeed Enabled: {use_deepspeed}")
+    if deepspeed_config_path is not None:
+        print(f"[RL] DeepSpeed Config: {deepspeed_config_path}")
+    print(f"[RL] Fixed training device: {train_device}")
     print(f"[RL] Mixed precision: {precision['label']} (torch_dtype={precision['torch_dtype']})")
+    print(
+        "[RL] Runtime limits: "
+        f"dataset_limit={runtime_settings['dataset_limit']} "
+        f"max_completion_length={runtime_settings['max_completion_length']} "
+        f"grad_accum={runtime_settings['grad_accum']} "
+        f"global_num_generations={runtime_settings['global_num_generations']} "
+        f"trainer_num_generations_per_rank={runtime_settings['trainer_num_generations']} "
+        f"effective_global_num_generations={runtime_settings['effective_global_num_generations']}"
+    )
     tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     # Load RL dataset (limit for training speed)
     rl_dataset = load_rl_dataset(tokenizer)
-    dataset_limit = env_int("NNGPT_RL_DATASET_LIMIT", 500)
+    dataset_limit = runtime_settings["dataset_limit"]
     if len(rl_dataset) > dataset_limit:
         rl_dataset = rl_dataset.select(range(dataset_limit))
 
@@ -3303,13 +3521,18 @@ def main():
     )
 
     # Load model (merged SFT) with 4-bit quantization
+    model_load_kwargs: Dict[str, Any] = {
+        "trust_remote_code": True,
+        "quantization_config": bnb_config,
+        "dtype": precision["torch_dtype"],
+    }
+    if not use_deepspeed:
+        model_load_kwargs["device_map"] = {"": train_device}
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
-        trust_remote_code=True,
-        quantization_config=bnb_config,
-        device_map="auto",
-        dtype=precision["torch_dtype"],
+        **model_load_kwargs,
     )
+    _ = hf_deepspeed_config
 
     if LOAD_EXISTING_MODEL and os.path.exists(SAVED_MODEL_PATH):
         print(f"Loading extra SFT adapter from {SAVED_MODEL_PATH}...")
@@ -3337,22 +3560,11 @@ def main():
 
     model.print_trainable_parameters()
 
-    grpo_config = GRPOConfig(
-        temperature=env_float("NNGPT_RL_TEMPERATURE", 1.0),  # Lowered from 1.3 to reduce gibberish while maintaining diversity
-        learning_rate=env_float("NNGPT_RL_LR", 5e-5),
-        max_completion_length=env_int("NNGPT_RL_MAX_COMPLETION_LENGTH", 1024), # Optimized to fit valid code and reduce trailing trash
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=env_int("NNGPT_RL_GRAD_ACCUM", 16),
-        lr_scheduler_type="cosine",
-        num_train_epochs=env_int("NNGPT_RL_NUM_EPOCHS", 5), # Increased from 1 to 5 to allow extensive exploration across curriculum phases
-        remove_unused_columns=False,
-        logging_steps=1,
-        output_dir=os.getenv("NNGPT_RL_TRAINER_OUT", "./grpo_backbone_outputs"),
-        eval_strategy="no",
-        bf16=precision["bf16"],
-        fp16=precision["fp16"],
-        gradient_checkpointing=True,
-        num_generations=env_int("NNGPT_RL_NUM_GENERATIONS", 8),
+    grpo_config = _build_rl_grpo_config(
+        precision=precision,
+        use_deepspeed=use_deepspeed,
+        deepspeed_config_path=deepspeed_config_path,
+        runtime_settings=runtime_settings,
     )
 
     trainer = GRPOTrainer(

@@ -1,6 +1,7 @@
 from typing import Optional, Dict, Tuple, Callable, Any
 from dataclasses import dataclass, asdict, replace
 import atexit
+import ast
 import time
 import gc
 import multiprocessing as mp
@@ -307,6 +308,8 @@ def get_reward_worker_plan() -> Dict[str, Any]:
         mode: str,
         reason: str,
         gpu_memory_snapshots: Optional[list[Dict[str, Any]]] = None,
+        worker_budget_gib: Optional[float] = None,
+        reserved_headroom_gib: Optional[float] = None,
     ) -> Dict[str, Any]:
         return {
             "mode": mode,
@@ -326,8 +329,8 @@ def get_reward_worker_plan() -> Dict[str, Any]:
             "world_size": int(runtime["world_size"]),
             "dynamic_scaling": False,
             "gpu_memory_snapshots": list(gpu_memory_snapshots or []),
-            "worker_budget_gib": None,
-            "reserved_headroom_gib": None,
+            "worker_budget_gib": worker_budget_gib,
+            "reserved_headroom_gib": reserved_headroom_gib,
         }
 
     def _build_reward_worker_plan(
@@ -370,6 +373,25 @@ def get_reward_worker_plan() -> Dict[str, Any]:
             "worker_budget_gib": worker_budget_gib,
             "reserved_headroom_gib": reserved_headroom_gib,
         }
+
+    def _select_best_snapshot_for_single_worker(
+        gpu_memory_snapshots: list[Dict[str, Any]],
+        *,
+        reserved_headroom_gib: float,
+        worker_budget_gib: float,
+    ) -> Optional[Dict[str, Any]]:
+        required_free_gib = float(reserved_headroom_gib) + float(worker_budget_gib)
+        eligible = [
+            snapshot
+            for snapshot in gpu_memory_snapshots
+            if snapshot.get("free_gib") is not None and float(snapshot.get("free_gib") or 0.0) >= required_free_gib
+        ]
+        if not eligible:
+            return None
+        return max(
+            eligible,
+            key=lambda snapshot: float(snapshot.get("free_gib") or -1.0),
+        )
 
     def _dynamic_reward_workers_for_gpu(
         snapshot: Dict[str, Any],
@@ -480,8 +502,10 @@ def get_reward_worker_plan() -> Dict[str, Any]:
             reason="dynamic_scaling_disabled",
         )
 
-    reserved_headroom_gib = max(0.0, _safe_float_env("NNGPT_REWARD_RESERVED_HEADROOM_GIB", 4.0))
-    worker_budget_gib = max(1.0, _safe_float_env("NNGPT_REWARD_WORKER_BUDGET_GIB", 8.0))
+    reserved_headroom_default = 6.0 if runtime["distributed"] else 4.0
+    worker_budget_default = 18.0 if runtime["distributed"] else 8.0
+    reserved_headroom_gib = max(0.0, _safe_float_env("NNGPT_REWARD_RESERVED_HEADROOM_GIB", reserved_headroom_default))
+    worker_budget_gib = max(1.0, _safe_float_env("NNGPT_REWARD_WORKER_BUDGET_GIB", worker_budget_default))
     default_min_workers = 1 if visible_gpu_count == 1 and not runtime["distributed"] else 0
     min_workers_per_gpu = max(0, _safe_int_env("NNGPT_REWARD_MIN_WORKERS_PER_GPU", default_min_workers))
     max_workers_per_gpu = max(
@@ -503,25 +527,30 @@ def get_reward_worker_plan() -> Dict[str, Any]:
                 mode="distributed_cpu_fallback",
                 reason="distributed_local_reward_gpu_unavailable",
                 gpu_memory_snapshots=gpu_memory_snapshots,
+                worker_budget_gib=worker_budget_gib,
+                reserved_headroom_gib=reserved_headroom_gib,
             )
         per_gpu_worker_counts = [0] * visible_gpu_count
-        for snapshot in gpu_memory_snapshots:
-            per_gpu_worker_counts[int(snapshot["device_index"])] = _dynamic_reward_workers_for_gpu(
+        local_worker_counts = [
+            _dynamic_reward_workers_for_gpu(
                 snapshot,
                 reserved_headroom_gib=reserved_headroom_gib,
                 worker_budget_gib=worker_budget_gib,
                 min_workers_per_gpu=min_workers_per_gpu,
                 max_workers_per_gpu=max_workers_per_gpu,
             )
-        if sum(per_gpu_worker_counts) <= 0 and gpu_memory_snapshots:
-            best_snapshot = max(
-                gpu_memory_snapshots,
-                key=lambda snapshot: float(snapshot.get("free_gib") or -1.0),
+            for snapshot in gpu_memory_snapshots
+        ]
+        for reward_gpu_index, worker_count in zip(reward_gpu_indices, local_worker_counts):
+            per_gpu_worker_counts[int(reward_gpu_index)] = int(worker_count)
+        if sum(per_gpu_worker_counts) <= 0:
+            return _cpu_reward_worker_plan(
+                mode="distributed_gpu_wait",
+                reason="awaiting_gpu_headroom",
+                gpu_memory_snapshots=gpu_memory_snapshots,
+                worker_budget_gib=worker_budget_gib,
+                reserved_headroom_gib=reserved_headroom_gib,
             )
-            best_device_index = int(best_snapshot["device_index"])
-            best_free_gib = best_snapshot.get("free_gib")
-            if best_free_gib is None or float(best_free_gib) >= reserved_headroom_gib + (worker_budget_gib * 0.75):
-                per_gpu_worker_counts[best_device_index] = 1
         mode = "distributed_local_dynamic_pool"
     else:
         gpu_memory_snapshots = [_cuda_device_memory_snapshot_gib(index) for index in range(visible_gpu_count)]
@@ -1130,6 +1159,98 @@ def _formal_eval_code_trace(code: str) -> Dict[str, Any]:
     }
 
 
+def _ast_call_target_name(node: ast.Call) -> Optional[str]:
+    func = getattr(node, "func", None)
+    if isinstance(func, ast.Attribute):
+        return str(func.attr)
+    if isinstance(func, ast.Name):
+        return str(func.id)
+    return None
+
+
+def _cpu_prevalidate_reward_code(
+    code: str,
+    *,
+    seed_accuracy_baseline: Optional[float],
+    effective_cfg: "EvalConfig",
+    backbone_model_names: Optional[list[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    text = str(code or "")
+    code_trace = _formal_eval_code_trace(text)
+    error_message: Optional[str] = None
+    error_type = None
+
+    try:
+        tree = ast.parse(text or "")
+    except SyntaxError as exc:
+        error_type = "SyntaxError"
+        error_message = f"SyntaxError: {exc}"
+    else:
+        infer_dimensions_calls = 0
+        infer_dimensions_dynamically_calls = 0
+        bad_dynamic_arg_count = None
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            target_name = _ast_call_target_name(node)
+            if target_name == "infer_dimensions":
+                infer_dimensions_calls += 1
+            elif target_name == "infer_dimensions_dynamically":
+                infer_dimensions_dynamically_calls += 1
+                explicit_arg_count = len(getattr(node, "args", [])) + len(getattr(node, "keywords", []))
+                if explicit_arg_count != 1 and bad_dynamic_arg_count is None:
+                    bad_dynamic_arg_count = explicit_arg_count
+
+        if infer_dimensions_calls > 0:
+            error_type = "AttributeError"
+            error_message = "AttributeError: 'Net' object has no attribute 'infer_dimensions'"
+        elif bad_dynamic_arg_count is not None:
+            error_type = "TypeError"
+            error_message = (
+                "TypeError: Net.infer_dimensions_dynamically() takes 2 positional arguments "
+                f"but {bad_dynamic_arg_count + 1} were given"
+            )
+        elif infer_dimensions_dynamically_calls <= 0:
+            error_type = "RuntimeError"
+            error_message = "RuntimeError: Net.__init__ must call self.infer_dimensions_dynamically(out_shape[0])"
+        elif not bool(code_trace.get("assigns_input_spec")):
+            error_type = "AttributeError"
+            error_message = "AttributeError: 'Net' object has no attribute '_input_spec'"
+
+    if error_message is None:
+        return None
+
+    result = _empty_eval_result(
+        reward=-1.0,
+        error=error_message,
+        seed_accuracy_baseline=seed_accuracy_baseline,
+        eval_limit_seconds=_effective_eval_limit_seconds(effective_cfg),
+        backbone_model_names=backbone_model_names,
+    )
+    _apply_error_trace(
+        result,
+        error_type=error_type,
+        error_stage="cpu_prevalidate",
+        error_context={"code_trace": code_trace},
+        error_hint=_infer_error_hint(
+            error_message=error_message,
+            context={"code_trace": code_trace},
+        ),
+    )
+    result["frozen_eval"] = _nested_eval_payload(
+        result,
+        eval_mode="frozen",
+        backbone_frozen=True,
+    )
+    if bool(getattr(effective_cfg, "run_unfrozen_backbone_eval", False)):
+        result["unfrozen_eval"] = _nested_eval_payload(
+            result,
+            eval_mode="unfrozen",
+            backbone_frozen=False,
+        )
+    return result
+
+
 def _infer_error_hint(
     *,
     error_message: Optional[str],
@@ -1321,6 +1442,41 @@ def _request_timeout_seconds(cfg: "EvalConfig") -> float:
     eval_runs = 2 if bool(getattr(cfg, "run_unfrozen_backbone_eval", False)) else 1
     base_timeout = float(_effective_eval_limit_seconds(cfg))
     return max(360.0, (base_timeout * eval_runs) + 120.0)
+
+
+def _preview_eval_request(
+    *,
+    code: str,
+    in_shape: Tuple[int, int, int, int],
+    out_shape: Tuple[int, ...],
+    prm: Optional[Dict[str, Any]],
+    device: str,
+    seed_accuracy_baseline: Optional[float],
+    cfg: Optional["EvalConfig"],
+) -> Dict[str, Any]:
+    requested_device = str(device or "cpu")
+    effective_cfg = _build_effective_eval_cfg(
+        cfg=cfg,
+        prm=prm,
+        device=requested_device,
+        in_shape=in_shape,
+        out_shape=out_shape,
+    )
+    backbone_model_names = _extract_backbone_model_names_from_code(code)
+    prevalidated_result = _cpu_prevalidate_reward_code(
+        code,
+        seed_accuracy_baseline=seed_accuracy_baseline,
+        effective_cfg=effective_cfg,
+        backbone_model_names=backbone_model_names,
+    )
+    return {
+        "requested_device": requested_device,
+        "effective_cfg": effective_cfg,
+        "request_timeout": _request_timeout_seconds(effective_cfg),
+        "requires_gpu": bool(torch.cuda.is_available() and requested_device.startswith("cuda")),
+        "backbone_model_names": backbone_model_names,
+        "prevalidated_result": prevalidated_result,
+    }
 
 def compute_cv_reward_simple(
     *,
@@ -2798,6 +2954,54 @@ def _get_or_create_eval_worker_pool() -> _EvalWorkerPool:
     return _EVAL_WORKER_POOL
 
 
+def _await_eval_worker_pool(*, require_gpu: bool, timeout: float) -> Optional[_EvalWorkerPool]:
+    if not require_gpu:
+        return _get_or_create_eval_worker_pool()
+    if not torch.cuda.is_available():
+        return None
+
+    deadline = time.time() + max(0.0, float(timeout))
+    logged_wait = False
+    while True:
+        pool = _get_or_create_eval_worker_pool()
+        diagnostics = pool.diagnostics()
+        has_gpu_worker = any(worker.get("assigned_gpu") is not None for worker in diagnostics.get("workers", []))
+        if has_gpu_worker:
+            return pool
+
+        remaining = max(0.0, deadline - time.time())
+        if remaining <= 0.0:
+            return None
+        if not logged_wait:
+            print(
+                "[Reward Worker Pool] Waiting "
+                f"mode={diagnostics.get('mode')} "
+                f"reason={diagnostics.get('reason', '')!r} "
+                f"timeout_seconds={timeout:.0f}"
+            )
+            logged_wait = True
+        shutdown_eval_worker()
+        time.sleep(min(5.0, remaining))
+
+
+def _timeout_waiting_for_gpu_result(
+    *,
+    error: str,
+    preview: Dict[str, Any],
+    seed_accuracy_baseline: Optional[float],
+) -> Dict[str, Any]:
+    effective_cfg = preview["effective_cfg"]
+    return _timeout_eval_result(
+        error=error,
+        estimated_total_seconds=float(preview["request_timeout"]),
+        eval_limit_seconds=_effective_eval_limit_seconds(effective_cfg),
+        seed_accuracy_baseline=seed_accuracy_baseline,
+        backbone_model_names=preview["backbone_model_names"],
+        kl_div=effective_cfg.kl_div,
+        weights=effective_cfg.weights,
+    )
+
+
 def shutdown_eval_worker() -> None:
     global _EVAL_WORKER_POOL
     if _EVAL_WORKER_POOL is None:
@@ -2935,7 +3139,29 @@ def evaluate_code_and_reward(
     completion_index: Optional[int] = None,
     batch_last_item: bool = False,
 ) -> Dict[str, Any]:
-    worker_pool = _get_or_create_eval_worker_pool()
+    preview = _preview_eval_request(
+        code=code,
+        in_shape=in_shape,
+        out_shape=out_shape,
+        prm=prm,
+        device=device,
+        seed_accuracy_baseline=seed_accuracy_baseline,
+        cfg=cfg,
+    )
+    prevalidated_result = preview.get("prevalidated_result")
+    if prevalidated_result is not None:
+        return prevalidated_result
+
+    worker_pool = _await_eval_worker_pool(
+        require_gpu=bool(preview["requires_gpu"]),
+        timeout=float(preview["request_timeout"]),
+    )
+    if worker_pool is None:
+        return _timeout_waiting_for_gpu_result(
+            error="PersistentEvalWorkerError: timed out waiting for available GPU reward worker",
+            preview=preview,
+            seed_accuracy_baseline=seed_accuracy_baseline,
+        )
     entry = _prepare_eval_request_entry(
         code=code,
         in_shape=in_shape,
@@ -3004,7 +3230,56 @@ def evaluate_code_and_reward_batch(
 ) -> list[Dict[str, Any]]:
     if not request_specs:
         return []
-    worker_pool = _get_or_create_eval_worker_pool()
+    indexed_previews = []
+    indexed_specs = []
+    indexed_results: list[Optional[Dict[str, Any]]] = [None] * len(request_specs)
+    require_gpu = False
+    max_timeout = 0.0
+
+    for index, spec in enumerate(request_specs):
+        preview = _preview_eval_request(
+            code=str(spec["code"]),
+            in_shape=tuple(spec.get("in_shape", (8, 3, 32, 32))),
+            out_shape=tuple(spec.get("out_shape", (10,))),
+            prm=spec.get("prm"),
+            device=str(spec.get("device", "cpu")),
+            seed_accuracy_baseline=spec.get("seed_accuracy_baseline"),
+            cfg=spec.get("cfg"),
+        )
+        if preview.get("prevalidated_result") is not None:
+            indexed_results[index] = preview["prevalidated_result"]
+            continue
+        indexed_previews.append((index, preview))
+        indexed_specs.append((index, spec))
+        require_gpu = require_gpu or bool(preview["requires_gpu"])
+        max_timeout = max(max_timeout, float(preview["request_timeout"]))
+
+    if not indexed_specs:
+        return [
+            result
+            if result is not None
+            else _empty_eval_result(error="PersistentEvalWorkerError: missing prevalidated reward result")
+            for result in indexed_results
+        ]
+
+    worker_pool = _await_eval_worker_pool(
+        require_gpu=require_gpu,
+        timeout=max_timeout,
+    )
+    if worker_pool is None:
+        for index, preview in indexed_previews:
+            indexed_results[index] = _timeout_waiting_for_gpu_result(
+                error="PersistentEvalWorkerError: timed out waiting for available GPU reward worker",
+                preview=preview,
+                seed_accuracy_baseline=request_specs[index].get("seed_accuracy_baseline"),
+            )
+        return [
+            result
+            if result is not None
+            else _empty_eval_result(error="PersistentEvalWorkerError: missing prevalidated reward result")
+            for result in indexed_results
+        ]
+
     entries = [
         _prepare_eval_request_entry(
             code=str(spec["code"]),
@@ -3020,10 +3295,19 @@ def evaluate_code_and_reward_batch(
             batch_last_item=bool(spec.get("batch_last_item", False)),
             worker_pool=worker_pool,
         )
-        for spec in request_specs
+        for _, spec in indexed_specs
     ]
     timeout = max(float(entry["request_timeout"]) for entry in entries)
-    return worker_pool.map_entries(entries, timeout=timeout)
+    mapped_results = worker_pool.map_entries(entries, timeout=timeout)
+    for (index, _spec), result in zip(indexed_specs, mapped_results):
+        indexed_results[index] = result
+
+    return [
+        result
+        if result is not None
+        else _empty_eval_result(error="PersistentEvalWorkerError: missing prevalidated reward result")
+        for result in indexed_results
+    ]
 
 
 def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Optional[int]) -> None:
