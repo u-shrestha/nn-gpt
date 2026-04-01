@@ -383,7 +383,7 @@ class TuneRLRewardLogicTest(unittest.TestCase):
         self.assertEqual(baselines_seen, [0.73])
         self.assertAlmostEqual(rewards[0], 0.1075, places=6)
 
-    def test_resolve_generation_plan_requires_divisible_target(self):
+    def test_resolve_generation_plan_auto_adapts_to_world_size(self):
         original = os.environ.get("NNGPT_RL_NUM_GENERATIONS")
         try:
             os.environ["NNGPT_RL_NUM_GENERATIONS"] = "8"
@@ -394,13 +394,19 @@ class TuneRLRewardLogicTest(unittest.TestCase):
             )
             self.assertEqual(plan["trainer_num_generations"], 1)
             self.assertEqual(plan["effective_global_num_generations"], 8)
+            self.assertEqual(plan["requested_global_num_generations"], 8)
+            self.assertEqual(plan["global_num_generations_adapted"], 0)
 
-            with self.assertRaisesRegex(ValueError, "must be divisible by WORLD_SIZE=3"):
-                self.tunerl.resolve_generation_plan(
-                    {"world_size": 3},
-                    env_name="NNGPT_RL_NUM_GENERATIONS",
-                    default=8,
-                )
+            plan = self.tunerl.resolve_generation_plan(
+                {"world_size": 6},
+                env_name="NNGPT_RL_NUM_GENERATIONS",
+                default=8,
+            )
+            self.assertEqual(plan["trainer_num_generations"], 1)
+            self.assertEqual(plan["requested_global_num_generations"], 8)
+            self.assertEqual(plan["effective_global_num_generations"], 6)
+            self.assertEqual(plan["global_num_generations"], 6)
+            self.assertEqual(plan["global_num_generations_adapted"], 1)
         finally:
             if original is None:
                 os.environ.pop("NNGPT_RL_NUM_GENERATIONS", None)

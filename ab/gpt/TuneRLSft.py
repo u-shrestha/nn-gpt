@@ -293,9 +293,11 @@ def resolve_sft_runtime_settings(runtime: Dict[str, Any]) -> Dict[str, int]:
             "NNGPT_SFT_MAX_COMPLETION_LENGTH",
             SFT_MAX_COMPLETION_LENGTH,
         ),
+        "requested_global_num_generations": generation_plan["requested_global_num_generations"],
         "global_num_generations": generation_plan["global_num_generations"],
         "trainer_num_generations": generation_plan["trainer_num_generations"],
         "effective_global_num_generations": generation_plan["effective_global_num_generations"],
+        "global_num_generations_adapted": generation_plan["global_num_generations_adapted"],
     }
 
 
@@ -902,10 +904,18 @@ def run_sft_training():
         f"dataset_limit={runtime_settings['dataset_limit']} "
         f"max_completion_length={runtime_settings['max_completion_length']} "
         f"grad_accum={runtime_settings['grad_accum']} "
+        f"requested_global_num_generations={runtime_settings['requested_global_num_generations']} "
         f"global_num_generations={runtime_settings['global_num_generations']} "
         f"trainer_num_generations_per_rank={runtime_settings['trainer_num_generations']} "
         f"effective_global_num_generations={runtime_settings['effective_global_num_generations']}"
     )
+    if runtime_settings["global_num_generations_adapted"]:
+        print(
+            "[SFT RL] Generation plan adapted "
+            f"requested={runtime_settings['requested_global_num_generations']} "
+            f"effective={runtime_settings['effective_global_num_generations']} "
+            f"world_size={world_size}"
+        )
     reward_worker_plan = RewardUtil.get_reward_worker_plan()
     print(
         "[SFT RL] Reward Worker Plan: "

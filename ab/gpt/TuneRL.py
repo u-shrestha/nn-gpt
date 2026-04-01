@@ -517,21 +517,20 @@ def resolve_generation_plan(
     default: int,
 ) -> Dict[str, int]:
     world_size = max(1, int(runtime.get("world_size", 1)))
-    global_num_generations = max(1, env_int(env_name, default))
+    requested_global_num_generations = max(1, env_int(env_name, default))
     if world_size <= 1:
-        trainer_num_generations = global_num_generations
+        trainer_num_generations = requested_global_num_generations
+        effective_global_num_generations = requested_global_num_generations
     else:
-        if global_num_generations < world_size or (global_num_generations % world_size) != 0:
-            raise ValueError(
-                f"{env_name}={global_num_generations} must be divisible by WORLD_SIZE={world_size} "
-                "to preserve true global distributed generation semantics"
-            )
-        trainer_num_generations = max(1, global_num_generations // world_size)
+        trainer_num_generations = max(1, requested_global_num_generations // world_size)
+        effective_global_num_generations = trainer_num_generations * world_size
     return {
         "world_size": world_size,
-        "global_num_generations": global_num_generations,
+        "requested_global_num_generations": requested_global_num_generations,
+        "global_num_generations": effective_global_num_generations,
         "trainer_num_generations": trainer_num_generations,
-        "effective_global_num_generations": trainer_num_generations * world_size,
+        "effective_global_num_generations": effective_global_num_generations,
+        "global_num_generations_adapted": int(effective_global_num_generations != requested_global_num_generations),
     }
 
 
@@ -545,9 +544,11 @@ def resolve_rl_runtime_settings(runtime: Dict[str, Any]) -> Dict[str, int]:
         "dataset_limit": env_int("NNGPT_RL_DATASET_LIMIT", 500),
         "grad_accum": env_int("NNGPT_RL_GRAD_ACCUM", 16),
         "max_completion_length": env_int("NNGPT_RL_MAX_COMPLETION_LENGTH", 1024),
+        "requested_global_num_generations": generation_plan["requested_global_num_generations"],
         "global_num_generations": generation_plan["global_num_generations"],
         "trainer_num_generations": generation_plan["trainer_num_generations"],
         "effective_global_num_generations": generation_plan["effective_global_num_generations"],
+        "global_num_generations_adapted": generation_plan["global_num_generations_adapted"],
     }
 
 
@@ -3498,10 +3499,18 @@ def main():
         f"dataset_limit={runtime_settings['dataset_limit']} "
         f"max_completion_length={runtime_settings['max_completion_length']} "
         f"grad_accum={runtime_settings['grad_accum']} "
+        f"requested_global_num_generations={runtime_settings['requested_global_num_generations']} "
         f"global_num_generations={runtime_settings['global_num_generations']} "
         f"trainer_num_generations_per_rank={runtime_settings['trainer_num_generations']} "
         f"effective_global_num_generations={runtime_settings['effective_global_num_generations']}"
     )
+    if runtime_settings["global_num_generations_adapted"]:
+        print(
+            "[RL] Generation plan adapted "
+            f"requested={runtime_settings['requested_global_num_generations']} "
+            f"effective={runtime_settings['effective_global_num_generations']} "
+            f"world_size={world_size}"
+        )
     tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
