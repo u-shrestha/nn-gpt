@@ -1482,20 +1482,6 @@ def log_memory_snapshot(
             f"proc_reserved_gib={_format_mem_value(snapshot['reserved_gib'])} "
             f"other_used_gib={_format_mem_value(snapshot['other_used_gib'])}"
         )
-    if worker_info:
-        print(
-            "[Memory Workers] "
-            f"stage={stage} "
-            f"mode={worker_info.get('mode')} "
-            f"pool_size={worker_info.get('pool_size')} "
-            f"shared_train_gpu={worker_info.get('shared_train_gpu')} "
-            f"reward_gpu_indices={worker_info.get('reward_gpu_indices')} "
-            f"per_gpu_worker_counts={worker_info.get('per_gpu_worker_counts')} "
-            f"worker_pids={worker_info.get('worker_pids')} "
-            f"total_worker_rss_gib={_format_mem_value(worker_info.get('total_rss_gib'))}"
-        )
-
-
 def update_current_group_metrics(results: List[Dict[str, Any]]) -> None:
     for res in results:
         _increment_optional_metric(

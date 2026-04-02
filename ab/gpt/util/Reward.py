@@ -662,6 +662,53 @@ def _is_fatal_cuda_worker_error(error: Optional[str]) -> bool:
     return any(pattern in normalized for pattern in fatal_patterns)
 
 
+def _gpu_memory_for_log(device_index: Optional[int]) -> Dict[str, Any]:
+    info = {
+        "gpu_index": device_index,
+        "gpu_name": "",
+        "free_gib": None,
+        "used_gib": None,
+        "total_gib": None,
+    }
+    if device_index is None:
+        return info
+
+    try:
+        normalized_index = int(device_index)
+    except (TypeError, ValueError):
+        return info
+
+    gpu_rows = _query_nvidia_smi_rows("gpu", ["index", "memory.free", "memory.used", "memory.total", "name"])
+    matched_row = next(
+        (row for row in gpu_rows if str(row.get("index") or "").strip() == str(normalized_index)),
+        None,
+    )
+    if matched_row is not None:
+        try:
+            info["free_gib"] = float(matched_row["memory.free"]) / 1024.0
+            info["used_gib"] = float(matched_row["memory.used"]) / 1024.0
+            info["total_gib"] = float(matched_row["memory.total"]) / 1024.0
+        except (TypeError, ValueError):
+            pass
+        info["gpu_name"] = str(matched_row.get("name") or "")
+        return info
+
+    if not torch.cuda.is_available():
+        return info
+    try:
+        free_bytes, total_bytes = torch.cuda.mem_get_info(normalized_index)
+        info["free_gib"] = float(free_bytes) / float(1024 ** 3)
+        info["total_gib"] = float(total_bytes) / float(1024 ** 3)
+        info["used_gib"] = float(total_bytes - free_bytes) / float(1024 ** 3)
+    except Exception:
+        pass
+    try:
+        info["gpu_name"] = str(torch.cuda.get_device_name(normalized_index))
+    except Exception:
+        pass
+    return info
+
+
 class _PersistentEvalWorkerSession:
     def __init__(
         self,
@@ -1075,22 +1122,27 @@ class _EvalWorkerPool:
         worker_device = str(session_info.get("worker_device", "cpu"))
         worker_slot = int(session_info.get("slot", slot))
         physical_gpu_index = session_info.get("physical_gpu_index")
-        physical_gpu_bus_id = str(session_info.get("physical_gpu_bus_id") or "")
         entry["payload"]["worker_slot"] = worker_slot
         reward_batch_index = entry["payload"].get("reward_batch_index")
         completion_index = entry["payload"].get("completion_index")
+        reward_batch_size = max(1, int(entry["payload"].get("reward_batch_size", 1) or 1))
+        reward_batch_position = max(1, int(entry["payload"].get("reward_batch_position", 1) or 1))
+        gpu_log_index = physical_gpu_index if physical_gpu_index is not None else assigned_gpu
+        gpu_memory = _gpu_memory_for_log(gpu_log_index)
         request_started_at = time.time()
         print(
-            "[Reward Eval Item] start "
-            f"rank={self._plan['rank']} "
-            f"local_rank={self._plan['local_rank']} "
+            "[Reward Assign] "
             f"reward_batch_index={reward_batch_index} "
+            f"batch_item={reward_batch_position}/{reward_batch_size} "
             f"completion_index={completion_index} "
             f"worker_slot={worker_slot} "
             f"assigned_gpu={assigned_gpu} "
-            f"physical_gpu_index={physical_gpu_index} "
-            f"physical_gpu_bus_id={physical_gpu_bus_id!r} "
+            f"physical_gpu={physical_gpu_index} "
             f"worker_device={worker_device} "
+            f"gpu_name={gpu_memory['gpu_name']!r} "
+            f"gpu_free_gib={_format_mem_value(gpu_memory['free_gib'])} "
+            f"gpu_used_gib={_format_mem_value(gpu_memory['used_gib'])} "
+            f"gpu_total_gib={_format_mem_value(gpu_memory['total_gib'])} "
             f"timeout_seconds={timeout:.0f}"
         )
         try:
@@ -1098,15 +1150,13 @@ class _EvalWorkerPool:
         except PersistentEvalWorkerError as exc:
             elapsed_seconds = max(0.0, time.time() - request_started_at)
             print(
-                "[Reward Eval Item] error "
-                f"rank={self._plan['rank']} "
-                f"local_rank={self._plan['local_rank']} "
+                "[Reward Assign] error "
                 f"reward_batch_index={reward_batch_index} "
+                f"batch_item={reward_batch_position}/{reward_batch_size} "
                 f"completion_index={completion_index} "
                 f"worker_slot={worker_slot} "
                 f"assigned_gpu={assigned_gpu} "
-                f"physical_gpu_index={physical_gpu_index} "
-                f"physical_gpu_bus_id={physical_gpu_bus_id!r} "
+                f"physical_gpu={physical_gpu_index} "
                 f"worker_device={worker_device} "
                 f"elapsed_seconds={elapsed_seconds:.2f} "
                 f"error={type(exc).__name__}: {exc}"
@@ -1123,26 +1173,6 @@ class _EvalWorkerPool:
         result["assigned_gpu"] = assigned_gpu
         result["worker_device"] = worker_device
         result["worker_slot"] = worker_slot
-        elapsed_seconds = max(0.0, time.time() - request_started_at)
-        normalized_error = None if not result.get("error") else " ".join(str(result["error"]).split())
-        message = (
-            "[Reward Eval Item] end "
-            f"rank={self._plan['rank']} "
-            f"local_rank={self._plan['local_rank']} "
-            f"reward_batch_index={reward_batch_index} "
-            f"completion_index={completion_index} "
-            f"worker_slot={worker_slot} "
-            f"assigned_gpu={assigned_gpu} "
-            f"physical_gpu_index={physical_gpu_index} "
-            f"physical_gpu_bus_id={physical_gpu_bus_id!r} "
-            f"worker_device={worker_device} "
-            f"elapsed_seconds={elapsed_seconds:.2f} "
-            f"built_ok={result.get('built_ok')} "
-            f"timed_out={result.get('timed_out', False)}"
-        )
-        if normalized_error:
-            message += f" error={normalized_error!r}"
-        print(message)
         if bool(result.get("worker_restart_requested", False)):
             print(
                 "[Reward Worker Pool] Restart "
@@ -1157,17 +1187,29 @@ class _EvalWorkerPool:
     def request_entry(self, entry: Dict[str, Any], *, timeout: float) -> Dict[str, Any]:
         entry["payload"]["worker_batch_first_item"] = True
         entry["payload"]["worker_batch_last_item"] = True
+        entry["payload"]["reward_batch_size"] = 1
+        entry["payload"]["reward_batch_position"] = 1
         return self._request_entry(0, entry, timeout=timeout)
 
     def map_entries(self, entries: list[Dict[str, Any]], *, timeout: float) -> list[Dict[str, Any]]:
         if not entries:
             return []
         if self.worker_count() <= 1:
-            return [self.request_entry(entry, timeout=timeout) for entry in entries]
+            results = []
+            batch_size = len(entries)
+            for index, entry in enumerate(entries):
+                entry["payload"]["worker_batch_first_item"] = index == 0
+                entry["payload"]["worker_batch_last_item"] = index == (batch_size - 1)
+                entry["payload"]["reward_batch_size"] = batch_size
+                entry["payload"]["reward_batch_position"] = index + 1
+                results.append(self._request_entry(0, entry, timeout=timeout))
+            return results
 
         indexed_results: list[Optional[Dict[str, Any]]] = [None] * len(entries)
         assignments: list[list[tuple[int, Dict[str, Any]]]] = [[] for _ in self._sessions]
         for index, entry in enumerate(entries):
+            entry["payload"]["reward_batch_size"] = len(entries)
+            entry["payload"]["reward_batch_position"] = index + 1
             slot = index % self.worker_count()
             assignments[slot].append((index, entry))
 
@@ -3742,16 +3784,6 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
             completion_index = request.get("completion_index")
             last_reward_batch_index = reward_batch_index
             last_completion_index = completion_index
-            if bool(request.get("worker_batch_first_item")):
-                _log_reward_worker_memory(
-                    "batch_start",
-                    request=request,
-                    assigned_gpu=assigned_gpu,
-                    worker_device=worker_device,
-                    reward_batch_index=reward_batch_index,
-                    completion_index=completion_index,
-                )
-
             try:
                 if worker_device.startswith("cuda") and torch.cuda.is_available():
                     _clear_reward_cuda_state()
@@ -3790,30 +3822,10 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
             result["worker_device"] = worker_device
             result["worker_slot"] = request.get("worker_slot", None)
             result["worker_restart_requested"] = worker_restart_requested
-            if bool(request.get("worker_batch_last_item")):
-                if worker_device.startswith("cuda") and torch.cuda.is_available():
-                    _clear_reward_cuda_state()
-                _log_reward_worker_memory(
-                    "batch_end",
-                    request=request,
-                    assigned_gpu=assigned_gpu,
-                    worker_device=worker_device,
-                    reward_batch_index=reward_batch_index,
-                    completion_index=completion_index,
-                )
-
             conn.send(result)
             if worker_restart_requested:
                 break
     finally:
-        _log_reward_worker_memory(
-            "shutdown",
-            request=request if 'request' in locals() and isinstance(request, dict) else None,
-            assigned_gpu=assigned_gpu,
-            worker_device=worker_device,
-            reward_batch_index=last_reward_batch_index,
-            completion_index=last_completion_index,
-        )
         loader_cache.clear()
         _clear_reward_cuda_state()
         try:
