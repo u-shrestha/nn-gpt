@@ -2,7 +2,6 @@ import os
 import shutil
 import random
 import inspect
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -32,6 +31,7 @@ SFT_LORA_R = 16
 SFT_LORA_ALPHA = 32
 SFT_LORA_DROPOUT = 0.05
 SFT_DEEPSPEED_DEFAULT_CONFIG = str(conf_dir / "DeepSpeedSftGrpo.json")
+SFT_MODE_DEFAULT = "auto"
 
 # CIFAR-10 reward evaluation via nn-dataset / NNEval-aligned formal acc.
 SFT_EVAL_IMAGE_SIZE = 256
@@ -124,7 +124,7 @@ def resolve_sft_model_sources() -> tuple[str, str, str]:
     if _has_tokenizer_files(repo_tokenizer_dir):
         return SFT_BASE_MODEL_ID, str(repo_tokenizer_dir), "model-id+out/tokenizer"
 
-    return SFT_BASE_MODEL_ID, SFT_BASE_MODEL_ID, "model-id"
+    return SFT_BASE_MODEL_ID, SFT_BASE_MODEL_ID, "model-id-download"
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -157,10 +157,35 @@ def _resolved_visible_cuda_device_tokens(visible_cuda_devices: int) -> List[str]
     return [str(index) for index in range(max(0, int(visible_cuda_devices)))]
 
 
-def _configure_sft_gpu_role_env(visible_cuda_devices: int) -> Dict[str, List[str]]:
+def _resolve_sft_mode(visible_gpu_tokens: List[str]) -> Dict[str, str]:
+    requested_mode = os.getenv("NNGPT_SFT_MODE", SFT_MODE_DEFAULT).strip().lower()
+    if requested_mode == "":
+        requested_mode = SFT_MODE_DEFAULT
+    if requested_mode not in {"auto", "split", "single"}:
+        raise ValueError(
+            f"Invalid NNGPT_SFT_MODE={requested_mode!r}. Expected one of: auto, split, single."
+        )
+    if not visible_gpu_tokens:
+        raise RuntimeError("SFT RL requires at least one visible CUDA device.")
+    if requested_mode == "auto":
+        resolved_mode = "split" if len(visible_gpu_tokens) >= 2 else "single"
+    else:
+        resolved_mode = requested_mode
+    return {
+        "requested_mode": requested_mode,
+        "resolved_mode": resolved_mode,
+    }
+
+
+def _configure_sft_gpu_role_env(visible_cuda_devices: int) -> Dict[str, List[str] | str]:
     visible_gpu_tokens = _resolved_visible_cuda_device_tokens(visible_cuda_devices)
+    mode_info = _resolve_sft_mode(visible_gpu_tokens)
+    resolved_mode = str(mode_info["resolved_mode"])
     train_gpu_tokens = visible_gpu_tokens[:1]
-    reward_gpu_tokens = list(visible_gpu_tokens)
+    if resolved_mode == "split":
+        reward_gpu_tokens = list(visible_gpu_tokens)
+    else:
+        reward_gpu_tokens = list(train_gpu_tokens)
     if train_gpu_tokens:
         os.environ[_TRAIN_GPU_TOKENS_ENV] = ",".join(train_gpu_tokens)
     else:
@@ -170,6 +195,8 @@ def _configure_sft_gpu_role_env(visible_cuda_devices: int) -> Dict[str, List[str
     else:
         os.environ.pop(_REWARD_GPU_TOKENS_ENV, None)
     return {
+        "requested_mode": str(mode_info["requested_mode"]),
+        "resolved_mode": resolved_mode,
         "visible_gpu_tokens": list(visible_gpu_tokens),
         "train_gpu_tokens": list(train_gpu_tokens),
         "reward_gpu_tokens": list(reward_gpu_tokens),
@@ -183,21 +210,19 @@ def _suggested_sft_worker_count(runtime: Dict[str, Any]) -> int:
 
 def _validate_sft_visible_worker_count(runtime: Dict[str, Any]) -> None:
     world_size = int(runtime.get("world_size", 1))
-    suggested_worker_count = _suggested_sft_worker_count(runtime)
-    if world_size == suggested_worker_count:
+    if world_size == 1:
         return
     raise RuntimeError(
-        "SFT RL now runs with a single training rank so the reward pool can use the visible GPUs: "
+        "SFT RL runs with a single training rank so reward workers can use assigned GPUs: "
         f"world_size={world_size}, "
         f"visible_cuda_devices={int(runtime.get('visible_gpu_count', 0))}, "
-        f"suggested_nproc_per_node={suggested_worker_count}. "
+        f"suggested_nproc_per_node={_suggested_sft_worker_count(runtime)}. "
         "Launch without torchrun or use --nproc_per_node=1."
     )
 
 
 def _resolve_sft_local_rank(runtime: Dict[str, Any]) -> Dict[str, Any]:
     visible_cuda_devices = int(runtime.get("visible_gpu_count", 0))
-    raw_local_rank = int(runtime.get("raw_local_rank", 0))
     rank = int(runtime.get("rank", 0))
     world_size = int(runtime.get("world_size", 1))
 
@@ -205,79 +230,16 @@ def _resolve_sft_local_rank(runtime: Dict[str, Any]) -> Dict[str, Any]:
         raise RuntimeError(
             f"SFT RL requires at least one visible CUDA device, got {visible_cuda_devices}"
         )
-
     local_rank = 0
-    resolution = "single_visible_gpu"
-
-    if visible_cuda_devices == 1:
-        local_rank = 0
-    elif 0 <= raw_local_rank < visible_cuda_devices:
-        local_rank = raw_local_rank
-        resolution = "direct"
-    else:
-        raise RuntimeError(
-            "SFT RL detected an invalid distributed CUDA mapping: "
-            f"rank={rank}, raw_local_rank={raw_local_rank}, world_size={world_size}, "
-            f"visible_cuda_devices={visible_cuda_devices}, "
-            f"suggested_nproc_per_node={_suggested_sft_worker_count(runtime)}. "
-            "Launch torchrun with as many workers as visible training GPUs."
-        )
-
-    if not (0 <= local_rank < visible_cuda_devices):
-        raise RuntimeError(
-            "SFT RL resolved an invalid local CUDA rank: "
-            f"local_rank={local_rank}, raw_local_rank={raw_local_rank}, visible_cuda_devices={visible_cuda_devices}"
-        )
 
     return {
         "rank": rank,
         "world_size": world_size,
-        "raw_local_rank": raw_local_rank,
+        "raw_local_rank": int(runtime.get("raw_local_rank", 0)),
         "local_rank": local_rank,
         "visible_cuda_devices": visible_cuda_devices,
-        "resolution": resolution,
+        "resolution": "single_process_training",
     }
-
-
-def _maybe_relaunch_sft_with_visible_gpu_workers() -> None:
-    if os.getenv("NNGPT_SFT_AUTO_TORCHRUN_DONE", "") == "1":
-        return
-    if os.getenv("WORLD_SIZE") not in (None, "", "1"):
-        return
-    if os.getenv("LOCAL_RANK") not in (None, ""):
-        return
-
-    import torch
-
-    if not torch.cuda.is_available():
-        return
-    visible_cuda_devices = int(torch.cuda.device_count())
-    gpu_role_plan = _configure_sft_gpu_role_env(visible_cuda_devices)
-    if visible_cuda_devices <= 1:
-        return
-
-    os.environ["NNGPT_SFT_AUTO_TORCHRUN_DONE"] = "1"
-    print(
-        "[SFT RL] GPU role plan: "
-        f"train_gpu_tokens={gpu_role_plan['train_gpu_tokens']} "
-        f"reward_gpu_tokens={gpu_role_plan['reward_gpu_tokens']}"
-    )
-    print(
-        "[SFT RL] Relaunching with single training worker: "
-        "nproc_per_node=1"
-    )
-    os.execvpe(
-        sys.executable,
-        [
-            sys.executable,
-            "-m",
-            "torch.distributed.run",
-            "--nproc_per_node=1",
-            "-m",
-            "ab.gpt.TuneRLSft",
-        ],
-        os.environ,
-    )
 
 
 def _maybe_init_single_process_deepspeed_group(
@@ -477,6 +439,67 @@ def _print_runtime_cache_roots() -> None:
     print(f"[SFT RL] HF_HOME={os.environ.get('HF_HOME', '')!r}")
     print(f"[SFT RL] TORCH_HOME={os.environ.get('TORCH_HOME', '')!r}")
     print(f"[SFT RL] Torch hub checkpoints dir: {_torch_hub_checkpoints_dir()}")
+
+
+def _configured_device_tokens(env_name: str) -> List[str]:
+    raw = os.getenv(env_name, "")
+    return [token.strip() for token in raw.split(",") if token.strip()]
+
+
+def _validate_configured_gpu_role_tokens(runtime: Dict[str, Any]) -> Dict[str, Any]:
+    visible_tokens = _resolved_visible_cuda_device_tokens(int(runtime.get("visible_gpu_count", 0)))
+    mode_info = _resolve_sft_mode(visible_tokens)
+    resolved_mode = str(mode_info["resolved_mode"])
+    train_tokens = _configured_device_tokens(_TRAIN_GPU_TOKENS_ENV)
+    reward_tokens = _configured_device_tokens(_REWARD_GPU_TOKENS_ENV)
+    expected_train_tokens = visible_tokens[:1]
+    expected_reward_tokens = list(visible_tokens) if resolved_mode == "split" else list(expected_train_tokens)
+    if train_tokens != expected_train_tokens:
+        raise RuntimeError(
+            "Invalid configured training GPU tokens for SFT mode: "
+            f"resolved_mode={resolved_mode} train_tokens={train_tokens} expected={expected_train_tokens}"
+        )
+    if reward_tokens != expected_reward_tokens:
+        raise RuntimeError(
+            "Invalid configured reward GPU tokens for SFT mode: "
+            f"resolved_mode={resolved_mode} reward_tokens={reward_tokens} expected={expected_reward_tokens}"
+        )
+    return {
+        "requested_mode": str(mode_info["requested_mode"]),
+        "resolved_mode": resolved_mode,
+        "visible_tokens": visible_tokens,
+        "train_tokens": train_tokens,
+        "reward_tokens": reward_tokens,
+    }
+
+
+def _validate_gpu_reward_worker_bindings(warmup_diagnostics: Dict[str, Any]) -> None:
+    workers = list(warmup_diagnostics.get("workers", []) or [])
+    failures: List[str] = []
+    for worker in workers:
+        if worker.get("assigned_gpu") is None:
+            continue
+        cuda_visible_devices = str(worker.get("cuda_visible_devices", "")).strip()
+        if int(worker.get("cuda_device_count", 0) or 0) != 1:
+            failures.append(
+                f"slot={worker.get('slot')} expected cuda_device_count=1 got {worker.get('cuda_device_count')!r}"
+            )
+        if str(worker.get("worker_device", "")) != "cuda:0":
+            failures.append(
+                f"slot={worker.get('slot')} expected worker_device='cuda:0' got {worker.get('worker_device')!r}"
+            )
+        if not cuda_visible_devices:
+            failures.append(
+                f"slot={worker.get('slot')} expected non-empty CUDA_VISIBLE_DEVICES in worker handshake"
+            )
+        if not bool(worker.get("physical_binding_verified", False)):
+            failures.append(
+                f"slot={worker.get('slot')} physical_binding_verified=False"
+            )
+    if failures:
+        raise RuntimeError(
+            "SFT reward worker GPU binding hard validation failed: " + "; ".join(failures)
+        )
 
 
 def evaluate_code_and_reward_cifar(
@@ -964,6 +987,7 @@ def run_sft_training():
             f"world_size={world_size}"
         )
     reward_worker_plan = RewardUtil.get_reward_worker_plan()
+    mode_validation = _validate_configured_gpu_role_tokens(runtime)
     print(
         "[SFT RL] Reward Worker Plan: "
         f"mode={reward_worker_plan['mode']} "
@@ -976,6 +1000,13 @@ def run_sft_training():
         f"reward_gpu_indices={reward_worker_plan['reward_gpu_indices']} "
         f"reward_gpu_tokens={reward_worker_plan.get('reward_gpu_tokens', [])} "
         f"reason={reward_worker_plan.get('reason', '')!r}"
+    )
+    print(
+        "[SFT RL] GPU role validation: "
+        f"requested_mode={mode_validation['requested_mode']} "
+        f"resolved_mode={mode_validation['resolved_mode']} "
+        f"train_tokens={mode_validation['train_tokens']} "
+        f"reward_tokens={mode_validation['reward_tokens']}"
     )
     _print_runtime_cache_roots()
     tokenizer_source = getattr(TuneRL, "tokenizer_source", TuneRL.base_model)
@@ -1046,7 +1077,8 @@ def run_sft_training():
         args=grpo_config,
     )
     TuneRL.log_memory_snapshot("sft/grpo_trainer_initialized")
-    RewardUtil.prewarm_eval_workers(timeout_seconds=60.0, require_gpu=True)
+    warmup_diagnostics = RewardUtil.prewarm_eval_workers(timeout_seconds=60.0, require_gpu=True)
+    _validate_gpu_reward_worker_bindings(warmup_diagnostics)
     TuneRL.log_memory_snapshot("sft/reward_workers_prewarmed")
 
     print("Starting GRPO training for Backbone Search...")
@@ -1133,9 +1165,23 @@ def bootstrap_sft_runtime() -> None:
 def main() -> None:
     import torch
 
+    gpu_role_plan: Dict[str, List[str] | str] = {
+        "requested_mode": "auto",
+        "resolved_mode": "single",
+        "visible_gpu_tokens": [],
+        "train_gpu_tokens": [],
+        "reward_gpu_tokens": [],
+    }
     if torch.cuda.is_available():
-        _configure_sft_gpu_role_env(int(torch.cuda.device_count()))
-    _maybe_relaunch_sft_with_visible_gpu_workers()
+        gpu_role_plan = _configure_sft_gpu_role_env(int(torch.cuda.device_count()))
+        print(
+            "[SFT RL] GPU mode plan: "
+            f"requested_mode={gpu_role_plan['requested_mode']} "
+            f"resolved_mode={gpu_role_plan['resolved_mode']} "
+            f"visible_gpu_tokens={gpu_role_plan['visible_gpu_tokens']} "
+            f"train_gpu_tokens={gpu_role_plan['train_gpu_tokens']} "
+            f"reward_gpu_tokens={gpu_role_plan['reward_gpu_tokens']}"
+        )
     _validate_sft_visible_worker_count(RewardUtil.get_distributed_runtime_info())
     model_source, tokenizer_source, source_mode = patch_sft_runtime()
     bootstrap_sft_runtime()
