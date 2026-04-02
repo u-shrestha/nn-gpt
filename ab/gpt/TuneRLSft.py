@@ -637,14 +637,19 @@ def evaluate_code_and_reward_cifar(
 
 def build_sft_reward_eval_cfg(
     *,
+    stage_name=None,
     in_shape=(1, 3, 256, 256),
     out_shape=(10,),
     prm=None,
     cfg=None,
+    device=None,
+    **_unused_kwargs,
 ):
     import torch
 
-    eval_device = "cuda" if torch.cuda.is_available() else "cpu"
+    del stage_name, _unused_kwargs
+
+    eval_device = str(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     if prm is None:
         prm = {"lr": 1e-2, "momentum": 0.9, "dropout": 0.3}
     defaults = {"lr": 1e-2, "momentum": 0.9, "batch": SFT_EVAL_BATCH_SIZE, "epoch": 1}

@@ -2958,6 +2958,29 @@ def build_stage_eval_cfg(
     )
 
 
+def _invoke_eval_cfg_builder(eval_cfg_builder, **kwargs) -> EvalConfig:
+    if not callable(eval_cfg_builder):
+        raise TypeError("eval_cfg_builder must be callable")
+
+    try:
+        signature = inspect.signature(eval_cfg_builder)
+    except (TypeError, ValueError):
+        return eval_cfg_builder(**kwargs)
+
+    parameters = signature.parameters.values()
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters):
+        return eval_cfg_builder(**kwargs)
+
+    supported_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if key in signature.parameters
+        and signature.parameters[key].kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    return eval_cfg_builder(**supported_kwargs)
+
+
 def _setdefault_many(target: Dict[str, Any], defaults: Dict[str, Any]) -> None:
     for key, value in defaults.items():
         target.setdefault(key, value)
@@ -3789,7 +3812,8 @@ def _build_batched_eval_specs(
             "batch_last_item": False,
         }
         if callable(eval_cfg_builder):
-            spec["cfg"] = eval_cfg_builder(
+            spec["cfg"] = _invoke_eval_cfg_builder(
+                eval_cfg_builder,
                 stage_name=str(group_context.get("current_stage_name") or current_stage_name),
                 in_shape=(1, 3, 224, 224),
                 out_shape=(10,),
