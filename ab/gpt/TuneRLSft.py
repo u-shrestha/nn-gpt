@@ -539,6 +539,7 @@ def _validate_gpu_reward_worker_bindings(warmup_diagnostics: Dict[str, Any]) -> 
 def evaluate_code_and_reward_cifar(
     code: str,
     *,
+    stage_name=None,
     in_shape=(1, 3, 256, 256),
     out_shape=(10,),
     prm=None,
@@ -558,65 +559,14 @@ def evaluate_code_and_reward_cifar(
             prm = {"lr": 1e-2, "momentum": 0.9, "dropout": 0.3}
         defaults = {"lr": 1e-2, "momentum": 0.9, "batch": SFT_EVAL_BATCH_SIZE, "epoch": 1}
         prm = {**defaults, **prm}
-
-        if cfg is None:
-            cfg = RewardUtil.EvalConfig(
-                device=eval_device,
-                input_shape=in_shape,
-                n_classes=int(out_shape[0]),
-                train_epochs=int(prm.get("epoch", SFT_EVAL_TRAIN_EPOCHS) or SFT_EVAL_TRAIN_EPOCHS),
-                max_val_batches=SFT_EVAL_VAL_BATCHES,
-                default_batch_size=SFT_EVAL_BATCH_SIZE,
-                train_subset_size=SFT_EVAL_TRAIN_SUBSET,
-                val_subset_size=SFT_EVAL_VAL_SUBSET,
-                data_root=SFT_EVAL_DATA_ROOT,
-                download=SFT_EVAL_DOWNLOAD,
-                measure_latency=True,
-                kl_div=None,
-                critic_fn=None,
-                weights=None,
-                eval_limit_seconds=SFT_EVAL_LIMIT_SECONDS,
-                run_unfrozen_backbone_eval=False,
-                full_test_acc=SFT_EVAL_FULL_TEST_ACC,
-                reward_target_metric="frozen_test_acc",
-                formal_nn_eval=True,
-                formal_task="img-classification",
-                formal_dataset="cifar-10",
-                formal_metric="acc",
-                formal_epoch_limit_minutes=SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES,
-            )
-        else:
-            cfg = RewardUtil.EvalConfig(
-                device=eval_device,
-                input_shape=cfg.input_shape,
-                n_classes=cfg.n_classes,
-                train_epochs=int(prm.get("epoch", getattr(cfg, "train_epochs", SFT_EVAL_TRAIN_EPOCHS)) or SFT_EVAL_TRAIN_EPOCHS),
-                train_steps=cfg.train_steps,
-                max_val_batches=cfg.max_val_batches,
-                default_batch_size=cfg.default_batch_size,
-                train_subset_size=cfg.train_subset_size,
-                val_subset_size=cfg.val_subset_size,
-                data_root=cfg.data_root,
-                download=cfg.download,
-                measure_latency=cfg.measure_latency,
-                kl_div=cfg.kl_div,
-                critic_fn=cfg.critic_fn,
-                weights=cfg.weights,
-                eval_limit_seconds=cfg.eval_limit_seconds,
-                budget_probe_batches=cfg.budget_probe_batches,
-                run_unfrozen_backbone_eval=False,
-                full_test_acc=cfg.full_test_acc,
-                reward_target_metric=cfg.reward_target_metric,
-                formal_nn_eval=getattr(cfg, "formal_nn_eval", True),
-                formal_task=getattr(cfg, "formal_task", "img-classification"),
-                formal_dataset=getattr(cfg, "formal_dataset", "cifar-10"),
-                formal_metric=getattr(cfg, "formal_metric", "acc"),
-                formal_epoch_limit_minutes=getattr(
-                    cfg,
-                    "formal_epoch_limit_minutes",
-                    SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES,
-                ),
-            )
+        cfg = build_sft_reward_eval_cfg(
+            stage_name=stage_name,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            prm=prm,
+            cfg=cfg,
+            device=eval_device,
+        )
 
         return RewardUtil.evaluate_code_and_reward(
             code,
@@ -647,63 +597,47 @@ def build_sft_reward_eval_cfg(
 ):
     import torch
 
-    del stage_name, _unused_kwargs
+    del _unused_kwargs
 
     eval_device = str(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     if prm is None:
         prm = {"lr": 1e-2, "momentum": 0.9, "dropout": 0.3}
     defaults = {"lr": 1e-2, "momentum": 0.9, "batch": SFT_EVAL_BATCH_SIZE, "epoch": 1}
     prm = {**defaults, **prm}
+    effective_stage_name = str(stage_name or TuneRL.current_stage_name)
 
     if cfg is None:
-        return RewardUtil.EvalConfig(
+        cfg = TuneRL.build_stage_eval_cfg(
+            stage_name=effective_stage_name,
+            in_shape=tuple(in_shape),
+            out_shape=tuple(out_shape),
+            prm=prm,
             device=eval_device,
-            input_shape=in_shape,
-            n_classes=int(out_shape[0]),
-            train_epochs=int(prm.get("epoch", SFT_EVAL_TRAIN_EPOCHS) or SFT_EVAL_TRAIN_EPOCHS),
-            max_val_batches=SFT_EVAL_VAL_BATCHES,
-            default_batch_size=SFT_EVAL_BATCH_SIZE,
-            train_subset_size=SFT_EVAL_TRAIN_SUBSET,
-            val_subset_size=SFT_EVAL_VAL_SUBSET,
-            data_root=SFT_EVAL_DATA_ROOT,
-            download=SFT_EVAL_DOWNLOAD,
-            measure_latency=True,
-            kl_div=None,
-            critic_fn=None,
-            weights=None,
-            eval_limit_seconds=SFT_EVAL_LIMIT_SECONDS,
-            run_unfrozen_backbone_eval=False,
-            full_test_acc=SFT_EVAL_FULL_TEST_ACC,
-            reward_target_metric="frozen_test_acc",
-            formal_nn_eval=True,
-            formal_task="img-classification",
-            formal_dataset="cifar-10",
-            formal_metric="acc",
-            formal_epoch_limit_minutes=SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES,
         )
 
     return RewardUtil.EvalConfig(
         device=eval_device,
-        input_shape=cfg.input_shape,
-        n_classes=cfg.n_classes,
+        input_shape=tuple(getattr(cfg, "input_shape", in_shape)),
+        n_classes=int(getattr(cfg, "n_classes", out_shape[0])),
         train_epochs=int(prm.get("epoch", getattr(cfg, "train_epochs", SFT_EVAL_TRAIN_EPOCHS)) or SFT_EVAL_TRAIN_EPOCHS),
-        train_steps=cfg.train_steps,
-        max_val_batches=cfg.max_val_batches,
-        default_batch_size=cfg.default_batch_size,
-        train_subset_size=cfg.train_subset_size,
-        val_subset_size=cfg.val_subset_size,
-        data_root=cfg.data_root,
-        download=cfg.download,
-        measure_latency=cfg.measure_latency,
-        kl_div=cfg.kl_div,
-        critic_fn=cfg.critic_fn,
-        weights=cfg.weights,
-        eval_limit_seconds=cfg.eval_limit_seconds,
-        budget_probe_batches=cfg.budget_probe_batches,
+        train_steps=getattr(cfg, "train_steps", None),
+        max_val_batches=SFT_EVAL_VAL_BATCHES,
+        default_batch_size=SFT_EVAL_BATCH_SIZE,
+        train_subset_size=SFT_EVAL_TRAIN_SUBSET,
+        val_subset_size=SFT_EVAL_VAL_SUBSET,
+        data_root=SFT_EVAL_DATA_ROOT,
+        download=SFT_EVAL_DOWNLOAD,
+        measure_latency=getattr(cfg, "measure_latency", True),
+        kl_div=getattr(cfg, "kl_div", None),
+        critic_fn=getattr(cfg, "critic_fn", None),
+        weights=getattr(cfg, "weights", None),
+        eval_limit_seconds=getattr(cfg, "eval_limit_seconds", SFT_EVAL_LIMIT_SECONDS),
+        budget_probe_batches=getattr(cfg, "budget_probe_batches", None),
         run_unfrozen_backbone_eval=False,
-        full_test_acc=cfg.full_test_acc,
-        reward_target_metric=cfg.reward_target_metric,
-        formal_nn_eval=getattr(cfg, "formal_nn_eval", True),
+        full_test_acc=SFT_EVAL_FULL_TEST_ACC,
+        reward_target_metric=getattr(cfg, "reward_target_metric", "frozen_test_acc"),
+        formal_nn_eval=getattr(cfg, "formal_nn_eval", False),
+        static_only=getattr(cfg, "static_only", False),
         formal_task=getattr(cfg, "formal_task", "img-classification"),
         formal_dataset=getattr(cfg, "formal_dataset", "cifar-10"),
         formal_metric=getattr(cfg, "formal_metric", "acc"),
@@ -1235,10 +1169,10 @@ def main() -> None:
         print(f"[SFT RL] Init adapter path: {SFT_INIT_ADAPTER}")
     print(f"[SFT RL] Temperature: {SFT_TEMPERATURE}")
     print(
-        f"[SFT RL] CIFAR-10 eval: backend=nn-dataset-formal, resize={SFT_EVAL_IMAGE_SIZE}, batch={SFT_EVAL_BATCH_SIZE}, "
-        f"train_set=full, test_set=full, "
-        f"train_epochs={SFT_EVAL_TRAIN_EPOCHS}, freeze_only_backbone_eval=True, "
-        f"formal_epoch_limit_minutes={SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES}, "
+        f"[SFT RL] Eval plan: stage1=static_only(no-check_nn), stage2/3=nn-dataset-formal(cifar-10), "
+        f"resize={SFT_EVAL_IMAGE_SIZE}, batch={SFT_EVAL_BATCH_SIZE}, "
+        f"train_set=full, test_set=full, train_epochs={SFT_EVAL_TRAIN_EPOCHS}, "
+        f"freeze_only_backbone_eval=True, formal_epoch_limit_minutes={SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES}, "
         f"worker_eval_limit_seconds={SFT_EVAL_LIMIT_SECONDS}, "
         f"baseline={SFT_VAL_METRIC_BASELINE:.2f}"
     )
