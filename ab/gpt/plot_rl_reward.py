@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import math
 import re
@@ -11,6 +12,11 @@ import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
+
+
+_PLACEHOLDER_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9sW2KI4AAAAASUVORK5CYII="
+)
 
 
 def _coerce_float(value: Any) -> Optional[float]:
@@ -134,6 +140,13 @@ class RewardLogData:
     progress_warmup_positive_count: list[float] = field(default_factory=list)
     progress_timeout_count: list[float] = field(default_factory=list)
     progress_improved_count: list[float] = field(default_factory=list)
+    stage_name: list[str] = field(default_factory=list)
+    stage_index: list[int] = field(default_factory=list)
+    stage_uses_formal_eval: list[float] = field(default_factory=list)
+    stage_uses_static_only: list[float] = field(default_factory=list)
+    executable_candidate: list[float] = field(default_factory=list)
+    discovery_candidate: list[float] = field(default_factory=list)
+    formal_success_candidate: list[float] = field(default_factory=list)
     group_progress_by_group: dict[int, dict[str, Any]] = field(default_factory=dict)
     total_file_samples: int = 0
     current_run_sample_count: int = 0
@@ -371,6 +384,13 @@ def load_reward_log(log_dir: Path | str) -> RewardLogData:
         data.estimated_total_seconds.append(_float_or_nan(_coerce_float(api_result.get("estimated_total_seconds"))))
         data.eval_limit_seconds.append(_float_or_nan(_coerce_float(api_result.get("eval_limit_seconds"))))
         data.warmup_dense_reward.append(_float_or_nan(_coerce_float(api_result.get("warmup_dense_reward"))))
+        data.stage_name.append(str(api_result.get("current_stage_name") or api_result.get("stage_name") or "unknown"))
+        data.stage_index.append(int(_coerce_float(api_result.get("current_stage_index")) or 0.0))
+        data.stage_uses_formal_eval.append(_bool_or_nan(_coerce_bool(api_result.get("stage_uses_formal_eval"))))
+        data.stage_uses_static_only.append(_bool_or_nan(_coerce_bool(api_result.get("stage_uses_static_only"))))
+        data.executable_candidate.append(_bool_or_nan(_coerce_bool(api_result.get("executable_candidate"))))
+        data.discovery_candidate.append(_bool_or_nan(_coerce_bool(api_result.get("discovery_candidate"))))
+        data.formal_success_candidate.append(_bool_or_nan(_coerce_bool(api_result.get("formal_success_candidate"))))
         data.anti_collapse_trainable_ok.append(
             _bool_or_nan(_coerce_bool(anti_collapse.get("trainable_ok"))) if isinstance(anti_collapse, dict) else float("nan")
         )
@@ -418,6 +438,9 @@ def compute_summary(data: RewardLogData, window: int = 20) -> dict[str, float]:
         "estimated_total_seconds_mean": _mean_or_nan(data.estimated_total_seconds),
         "warmup_trainable_rate": _mean_or_nan([1.0 if trainable_mask[idx] else 0.0 for idx in warmup_indices]),
         "warmup_positive_rate": _mean_or_nan([1.0 if data.reward[idx] > 0.0 else 0.0 for idx in warmup_trainable_indices]),
+        "executable_candidate_rate": _mean_or_nan(data.executable_candidate),
+        "discovery_candidate_rate": _mean_or_nan(data.discovery_candidate),
+        "formal_success_candidate_rate": _mean_or_nan(data.formal_success_candidate),
         "anti_collapse_trainable_ok_rate": _mean_or_nan(data.anti_collapse_trainable_ok),
         "xml_tag_exact_rate": _mean_or_nan(data.xml_tag_exact),
         "dual_backbone_ok_rate": _mean_or_nan(data.dual_backbone_ok),
@@ -450,6 +473,68 @@ def _group_progress_series(data: RewardLogData, key: str) -> tuple[list[int], li
     return cycles, values
 
 
+def _stage_segments(data: RewardLogData) -> list[tuple[int, int, str]]:
+    if not data.stage_name:
+        return []
+    segments: list[tuple[int, int, str]] = []
+    start = 1
+    current = data.stage_name[0]
+    for sample_index, stage_name in zip(data.sample_index[1:], data.stage_name[1:]):
+        if stage_name == current:
+            continue
+        segments.append((start, sample_index - 1, current))
+        start = sample_index
+        current = stage_name
+    segments.append((start, data.sample_index[-1], current))
+    return segments
+
+
+def _stage_palette(stage_name: str) -> tuple[str, str]:
+    palette = {
+        "stage1_structure_explore": ("#FFF3E0", "#EF6C00"),
+        "stage2_formal_explore": ("#E8F5E9", "#2E7D32"),
+        "stage3_formal_optimize": ("#E3F2FD", "#1565C0"),
+    }
+    return palette.get(str(stage_name), ("#F5F5F5", "#616161"))
+
+
+def _apply_stage_overlays(axes: list[Any], data: RewardLogData) -> None:
+    segments = _stage_segments(data)
+    if not segments:
+        for idx, is_warmup in enumerate(data.group_warmup):
+            if is_warmup == 1.0:
+                for ax in axes:
+                    ax.axvspan(idx + 0.5, idx + 1.5, color="#FFF3E0", alpha=0.18)
+        return
+    for start, end, stage_name in segments:
+        fill_color, line_color = _stage_palette(stage_name)
+        for ax in axes:
+            ax.axvspan(start - 0.5, end + 0.5, color=fill_color, alpha=0.18)
+        if start > 1:
+            for ax in axes:
+                ax.axvline(start - 0.5, color=line_color, linestyle="--", linewidth=1.2, alpha=0.9)
+
+
+def compute_stage_summary(data: RewardLogData) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    grouped_stage_groups: dict[str, int] = {}
+    for payload in data.group_progress_by_group.values():
+        stage_name = str(payload.get("stage_name") or "unknown")
+        grouped_stage_groups[stage_name] = grouped_stage_groups.get(stage_name, 0) + 1
+    for stage_name in sorted(set(data.stage_name) | set(grouped_stage_groups.keys())):
+        indices = [idx for idx, current in enumerate(data.stage_name) if current == stage_name]
+        summary[stage_name] = {
+            "sample_count": len(indices),
+            "group_count": int(grouped_stage_groups.get(stage_name, 0)),
+            "reward_mean": _mean_or_nan([data.reward[idx] for idx in indices]),
+            "reward_target_mean": _mean_or_nan([data.reward_target_value[idx] for idx in indices]),
+            "executable_count": float(sum(1 for idx in indices if data.executable_candidate[idx] == 1.0)),
+            "discovery_count": float(sum(1 for idx in indices if data.discovery_candidate[idx] == 1.0)),
+            "formal_success_count": float(sum(1 for idx in indices if data.formal_success_candidate[idx] == 1.0)),
+        }
+    return summary
+
+
 def _plot_dashboard(data: RewardLogData, summary: dict[str, float], *, output_path: Path, window: int) -> None:
     import matplotlib
 
@@ -465,13 +550,15 @@ def _plot_dashboard(data: RewardLogData, summary: dict[str, float], *, output_pa
 
     x = data.sample_index
     reward_roll = rolling_nanmean(data.reward, window=window)
-    train_roll = rolling_nanmean(data.train_acc, window=window)
     target_roll = rolling_nanmean(data.reward_target_value, window=window)
     timeout_roll = [value * 100.0 for value in rolling_nanmean(data.timed_out, window=window)]
     trainable_roll = [
         value * 100.0
         for value in rolling_nanmean([1.0 if _is_trainable_sample(data, idx) else 0.0 for idx in range(data.count)], window=window)
     ]
+    executable_roll = [value * 100.0 for value in rolling_nanmean(data.executable_candidate, window=window)]
+    discovery_roll = [value * 100.0 for value in rolling_nanmean(data.discovery_candidate, window=window)]
+    formal_roll = [value * 100.0 for value in rolling_nanmean(data.formal_success_candidate, window=window)]
 
     axes[0].plot(x, data.reward, color="#1565C0", linewidth=1.2, label="Reward")
     axes[0].plot(x, reward_roll, color="#EF6C00", linewidth=2.0, label=f"Reward MA{window}")
@@ -493,6 +580,9 @@ def _plot_dashboard(data: RewardLogData, summary: dict[str, float], *, output_pa
     axes[1].legend(loc="best", fontsize=8)
 
     axes[2].plot(x, trainable_roll, color="#00897B", linewidth=2.0, label=f"Trainable Rate MA{window}")
+    axes[2].plot(x, executable_roll, color="#1565C0", linewidth=1.8, label=f"Executable Rate MA{window}")
+    axes[2].plot(x, discovery_roll, color="#EF6C00", linewidth=1.8, label=f"Discovery Rate MA{window}")
+    axes[2].plot(x, formal_roll, color="#6A1B9A", linewidth=1.8, label=f"Formal Success Rate MA{window}")
     axes[2].plot(x, timeout_roll, color="#C62828", linewidth=2.0, label=f"Timeout Rate MA{window}")
     axes[2].set_title("Stability")
     axes[2].set_xlabel("Sample")
@@ -533,10 +623,7 @@ def _plot_dashboard(data: RewardLogData, summary: dict[str, float], *, output_pa
     axes[5].grid(True, linestyle="--", alpha=0.35)
     axes[5].legend(loc="best", fontsize=8)
 
-    for idx, is_warmup in enumerate(data.group_warmup):
-        if is_warmup == 1.0:
-            for ax in axes:
-                ax.axvspan(idx + 0.5, idx + 1.5, color="#FFF3E0", alpha=0.18)
+    _apply_stage_overlays(axes, data)
 
     fig.suptitle("RL Reward Dashboard", fontsize=16)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
@@ -544,7 +631,23 @@ def _plot_dashboard(data: RewardLogData, summary: dict[str, float], *, output_pa
     plt.close(fig)
 
 
-def _print_summary(data: RewardLogData, summary: dict[str, float], *, log_dir: Path, output_path: Path) -> None:
+def _write_stage_summary(path: Path, stage_summary: dict[str, Any]) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(stage_summary, handle, indent=2, ensure_ascii=False)
+
+
+def _write_placeholder_png(path: Path) -> None:
+    path.write_bytes(base64.b64decode(_PLACEHOLDER_PNG_BASE64))
+
+
+def _print_summary(
+    data: RewardLogData,
+    summary: dict[str, float],
+    *,
+    log_dir: Path,
+    output_path: Path,
+    stage_summary: dict[str, Any],
+) -> None:
     print(f"Log dir: {log_dir}")
     print(f"Samples: {int(summary['count'])}")
     print(
@@ -595,6 +698,7 @@ def _print_summary(data: RewardLogData, summary: dict[str, float], *, log_dir: P
             ensure_ascii=False,
         ),
     )
+    print("Stages:", json.dumps(stage_summary, ensure_ascii=False))
     print(f"Saved dashboard to: {output_path}")
 
 
@@ -608,9 +712,22 @@ def main(argv: Optional[list[str]] = None) -> int:
     log_dir = Path(args.log_dir).expanduser().resolve()
     data = load_reward_log(log_dir)
     summary = compute_summary(data, window=max(1, int(args.window)))
+    stage_summary = compute_stage_summary(data)
     output_path = Path(args.output).expanduser().resolve() if args.output else (log_dir / "reward_dashboard.png")
-    _plot_dashboard(data, summary, output_path=output_path, window=max(1, int(args.window)))
-    _print_summary(data, summary, log_dir=log_dir, output_path=output_path)
+    stage_overlay_path = log_dir / "reward_dashboard_stage_overlay.png"
+    try:
+        _plot_dashboard(data, summary, output_path=output_path, window=max(1, int(args.window)))
+        if stage_overlay_path != output_path:
+            _plot_dashboard(data, summary, output_path=stage_overlay_path, window=max(1, int(args.window)))
+    except ModuleNotFoundError as exc:
+        if str(exc.name) != "matplotlib":
+            raise
+        _write_placeholder_png(output_path)
+        if stage_overlay_path != output_path:
+            _write_placeholder_png(stage_overlay_path)
+        print("matplotlib not available; wrote placeholder PNG outputs instead")
+    _write_stage_summary(log_dir / "stage_summary.json", stage_summary)
+    _print_summary(data, summary, log_dir=log_dir, output_path=output_path, stage_summary=stage_summary)
     return 0
 
 

@@ -75,6 +75,7 @@ from ab.gpt.util.Util import extract_str
 from ab.gpt.util.Const import conf_train_dir, conf_test_dir, epoch_dir, new_nn_file, synth_dir, new_out_file
 from ab.nn.util.Util import create_file
 from ab.gpt.util.Reward import (
+    EvalConfig,
     PersistentEvalWorkerError,
     evaluate_code_and_reward,
     evaluate_code_and_reward_batch,
@@ -95,7 +96,7 @@ from dataclasses import dataclass, asdict
 
 from ab.gpt.util.simple_logger import SimpleCodeLogger
 from typing import Tuple, Any, List, Dict, Optional, Set
-from collections import Counter
+from collections import Counter, deque
 
 # Open-architecture archives are keyed by canonical graph structure, not prompt labels.
 graph_archive_counts = Counter()
@@ -148,6 +149,66 @@ FEEDBACK_GRAPH_EXPR_MAX_CHARS = 160
 FEEDBACK_SUMMARY_MAX_CHARS = 240
 FEEDBACK_SUMMARY_LIMIT = 2
 RL_DEEPSPEED_DEFAULT_CONFIG = str(Path(__file__).resolve().parent / "conf" / "DeepSpeedSftGrpo.json")
+STAGE1_STRUCTURE_EXPLORE = "stage1_structure_explore"
+STAGE2_FORMAL_EXPLORE = "stage2_formal_explore"
+STAGE3_FORMAL_OPTIMIZE = "stage3_formal_optimize"
+RL_STAGE_ORDER = (
+    STAGE1_STRUCTURE_EXPLORE,
+    STAGE2_FORMAL_EXPLORE,
+    STAGE3_FORMAL_OPTIMIZE,
+)
+RL_STAGE_TO_INDEX = {
+    stage_name: index
+    for index, stage_name in enumerate(RL_STAGE_ORDER, start=1)
+}
+STAGE_REFERENCE_MIN_GROUPS = {
+    STAGE1_STRUCTURE_EXPLORE: 10,
+    STAGE2_FORMAL_EXPLORE: 5,
+    STAGE3_FORMAL_OPTIMIZE: 0,
+}
+STAGE1_GATE_WINDOW_GENERATIONS = 4000
+STAGE2_GATE_WINDOW_GENERATIONS = 4000
+RECOVERY_GATE_WINDOW_GENERATIONS = 2000
+STAGE1_GATE_EXECUTABLE_MIN = 64
+STAGE1_GATE_DISCOVERY_MIN = 24
+STAGE1_GATE_UNIQUE_DISCOVERY_FAMILIES_MIN = 8
+STAGE2_GATE_FORMAL_SUCCESS_MIN = 16
+STAGE2_GATE_UNIQUE_FORMAL_FAMILIES_MIN = 6
+STAGE2_GATE_IMPROVING_GROUPS_REQUIRED = 2
+STAGE_RECOVERY_DOMINANT_SHARE_THRESHOLD = 0.55
+STAGE_RECOVERY_NEW_DISCOVERY_FAMILIES_MAX = 1
+STAGE_RECOVERY_RELEASE_GENERATIONS = 2000
+STAGE_RECOVERY_RELEASE_DISCOVERY_FAMILIES = 4
+MAX_STAGE_SAMPLE_HISTORY = 24000
+MAX_STAGE_GROUP_HISTORY = 512
+STATIC_STAGE_REWARD_TARGET_METRIC = "stage1_static_score"
+FORMAL_STAGE_REWARD_TARGET_METRIC = "frozen_test_acc"
+STAGE1_EXECUTABLE_BONUS = 0.12
+STAGE1_DISCOVERY_FAMILY_BONUS = 0.16
+STAGE1_DISCOVERY_GRAPH_BONUS = 0.08
+STAGE1_DOMINANT_FAMILY_PENALTY = -0.08
+STAGE1_PLAIN_PARALLEL_PENALTY = -0.10
+STAGE2_DENSE_SCALE = 0.75
+STAGE2_PREV_GROUP_SCALE = 0.70
+STAGE2_BEST_GROUP_SCALE = 0.70
+STAGE2_GOAL_BEST_SCALE = 0.70
+STAGE2_GOAL_MATCH_SCALE = 0.85
+STAGE2_STRUCTURE_SCALE = 1.40
+STAGE2_REPEAT_FAMILY_SCALE = 1.10
+STAGE2_PLAIN_FUSE_SCALE = 1.10
+STAGE2_NO_PROGRESS_SCALE = 0.50
+STAGE2_NON_IMPROVING_CAP = 0.10
+STAGE3_DENSE_SCALE = 1.20
+STAGE3_PREV_GROUP_SCALE = 1.10
+STAGE3_BEST_GROUP_SCALE = 1.10
+STAGE3_GOAL_BEST_SCALE = 1.00
+STAGE3_GOAL_MATCH_SCALE = 1.00
+STAGE3_STRUCTURE_SCALE = 0.85
+STAGE3_REPEAT_FAMILY_SCALE = 1.00
+STAGE3_PLAIN_FUSE_SCALE = 1.00
+STAGE3_NO_PROGRESS_SCALE = 1.15
+STAGE3_NON_IMPROVING_CAP = NON_IMPROVING_REWARD_CAP
+RL_STAGE_KL_COEF = 0.005
 reward_batch_index = 0
 current_group_id = 0
 current_group_reward_target_sum = 0.0
@@ -174,6 +235,18 @@ prev_group_feedback: List["GroupFeedbackSummary"] = []
 best_group_feedback: List["GroupFeedbackSummary"] = []
 current_group_top_feedback: List["GroupFeedbackSummary"] = []
 current_group_goal_best_candidates: Dict[str, float] = {}
+current_stage_name = STAGE1_STRUCTURE_EXPLORE
+stage_closed_group_counts = Counter()
+stage_best_group_mean_reward_target: Dict[str, float] = {}
+stage_entry_generation_totals: Dict[str, int] = {}
+stage_entry_reward_batches: Dict[str, int] = {}
+generation_history: List[Dict[str, Any]] = []
+closed_group_history: List[Dict[str, Any]] = []
+stage_event_history: List[Dict[str, Any]] = []
+discovery_family_hashes_seen: Set[str] = set()
+recovery_active = False
+recovery_start_generation_total = 0
+recovery_start_discovery_family_count = 0
 # ==================================
 
 
@@ -189,6 +262,8 @@ class NullCodeLogger:
 
 
 code_logger: Any = NullCodeLogger()
+active_rl_model: Any = None
+active_rl_tokenizer: Any = None
 
 SHALLOW_COLLAPSE_FAMILIES = {
     "ParallelTriple_Shallow",
@@ -244,6 +319,17 @@ def _feedback_summaries_from_payload(items: Optional[List[Dict[str, Any]]]) -> L
     return [GroupFeedbackSummary(**dict(item)) for item in (items or [])]
 
 
+def _copy_history_items(items: Optional[List[Dict[str, Any]]], *, limit: int) -> List[Dict[str, Any]]:
+    copied = [dict(item) for item in list(items or [])]
+    if limit > 0 and len(copied) > limit:
+        copied = copied[-limit:]
+    return copied
+
+
+def _current_generation_total() -> int:
+    return len(generation_history)
+
+
 def capture_reward_runtime_state() -> Dict[str, Any]:
     return {
         "B_index": B_index,
@@ -292,6 +378,27 @@ def capture_reward_runtime_state() -> Dict[str, Any]:
             str(key): float(value)
             for key, value in current_group_goal_best_candidates.items()
         },
+        "current_stage_name": current_stage_name,
+        "stage_closed_group_counts": _counter_payload(stage_closed_group_counts),
+        "stage_best_group_mean_reward_target": {
+            str(key): float(value)
+            for key, value in stage_best_group_mean_reward_target.items()
+        },
+        "stage_entry_generation_totals": {
+            str(key): int(value)
+            for key, value in stage_entry_generation_totals.items()
+        },
+        "stage_entry_reward_batches": {
+            str(key): int(value)
+            for key, value in stage_entry_reward_batches.items()
+        },
+        "generation_history": _copy_history_items(generation_history, limit=MAX_STAGE_SAMPLE_HISTORY),
+        "closed_group_history": _copy_history_items(closed_group_history, limit=MAX_STAGE_GROUP_HISTORY),
+        "stage_event_history": _copy_history_items(stage_event_history, limit=MAX_STAGE_GROUP_HISTORY),
+        "discovery_family_hashes_seen": sorted(str(item) for item in discovery_family_hashes_seen),
+        "recovery_active": bool(recovery_active),
+        "recovery_start_generation_total": int(recovery_start_generation_total),
+        "recovery_start_discovery_family_count": int(recovery_start_discovery_family_count),
     }
 
 
@@ -321,6 +428,10 @@ def restore_reward_runtime_state(state: Optional[Dict[str, Any]]) -> None:
         "best_closed_group_id": None,
         "dominant_family_hash": None,
         "dominant_family_share": 0.0,
+        "current_stage_name": STAGE1_STRUCTURE_EXPLORE,
+        "recovery_active": False,
+        "recovery_start_generation_total": 0,
+        "recovery_start_discovery_family_count": 0,
     }
     for name, default_value in scalar_defaults.items():
         globals()[name] = state.get(name, default_value)
@@ -360,6 +471,33 @@ def restore_reward_runtime_state(state: Optional[Dict[str, Any]]) -> None:
             for key, value in (state.get("current_group_goal_best_candidates") or {}).items()
         }
     )
+    _restore_counter(stage_closed_group_counts, state.get("stage_closed_group_counts"))
+    stage_best_group_mean_reward_target.clear()
+    stage_best_group_mean_reward_target.update(
+        {
+            str(key): float(value)
+            for key, value in (state.get("stage_best_group_mean_reward_target") or {}).items()
+        }
+    )
+    stage_entry_generation_totals.clear()
+    stage_entry_generation_totals.update(
+        {
+            str(key): int(value)
+            for key, value in (state.get("stage_entry_generation_totals") or {}).items()
+        }
+    )
+    stage_entry_reward_batches.clear()
+    stage_entry_reward_batches.update(
+        {
+            str(key): int(value)
+            for key, value in (state.get("stage_entry_reward_batches") or {}).items()
+        }
+    )
+    generation_history[:] = _copy_history_items(state.get("generation_history"), limit=MAX_STAGE_SAMPLE_HISTORY)
+    closed_group_history[:] = _copy_history_items(state.get("closed_group_history"), limit=MAX_STAGE_GROUP_HISTORY)
+    stage_event_history[:] = _copy_history_items(state.get("stage_event_history"), limit=MAX_STAGE_GROUP_HISTORY)
+    discovery_family_hashes_seen.clear()
+    discovery_family_hashes_seen.update(str(item) for item in (state.get("discovery_family_hashes_seen") or []))
 
 
 def _distributed_initialized() -> bool:
@@ -560,10 +698,12 @@ def resolve_generation_plan(
 
 def resolve_rl_runtime_settings(runtime: Dict[str, Any]) -> Dict[str, int]:
     grad_accum = env_int("NNGPT_RL_GRAD_ACCUM", 16)
+    fixed_num_generations = 8
+    os.environ["NNGPT_RL_NUM_GENERATIONS"] = str(fixed_num_generations)
     generation_plan = resolve_generation_plan(
         runtime,
         env_name="NNGPT_RL_NUM_GENERATIONS",
-        default=8,
+        default=fixed_num_generations,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=grad_accum,
     )
@@ -634,6 +774,13 @@ def _build_rl_grpo_config(
         "gradient_checkpointing": True,
         "num_generations": runtime_settings["global_num_generations"],
     }
+    explicit_kl_coef = env_float("NNGPT_RL_KL_COEF", RL_STAGE_KL_COEF)
+    if "beta" in config_signature.parameters:
+        config_kwargs["beta"] = explicit_kl_coef
+    elif "kl_coef" in config_signature.parameters:
+        config_kwargs["kl_coef"] = explicit_kl_coef
+    else:
+        raise RuntimeError("Installed GRPOConfig does not expose `beta` or `kl_coef`; cannot set explicit KL control")
     if use_deepspeed:
         if "deepspeed" not in config_signature.parameters:
             raise RuntimeError("Installed GRPOConfig does not support the `deepspeed` argument")
@@ -953,15 +1100,17 @@ def _format_target_metric(base_value: Optional[float], delta: float) -> str:
 
 def render_prompt_feedback_text(*, feedback_char_budget: int = 1200) -> str:
     state = get_prompt_feedback_state()
+    current_metric = _stage_reward_target_metric(current_stage_name)
     header_lines = [
-        f"- Reward Target Metric: {REWARD_TARGET_METRIC}",
+        f"- Current Stage: {current_stage_name}",
+        f"- Reward Target Metric: {current_metric}",
         f"- Previous Closed Group Mean Target Acc: {_format_optional_metric(state['prev_closed_group_mean_reward_target_acc'])}",
         f"- Current Best Closed Group Mean Target Acc: {_format_optional_metric(state['best_closed_group_mean_reward_target_acc'])}",
         f"- Previous Closed Group Mean Frozen Train Acc: {_format_optional_metric(state['prev_closed_group_mean_train_acc'])}",
         f"- Previous Closed Group Mean Frozen Test Acc: {_format_optional_metric(state['prev_closed_group_mean_test_acc'])}",
         f"- Meaningful Reward Target: >= {_format_target_metric(state['prev_closed_group_mean_reward_target_acc'], GROUP_IMPROVEMENT_DELTA)}",
         f"- Stretch Target To Refresh Best: >= {_format_target_metric(state['best_closed_group_mean_reward_target_acc'], BEST_GROUP_REFRESH_DELTA)}",
-        f"- Target Rule: beat previous closed group mean {REWARD_TARGET_METRIC} by at least {GROUP_IMPROVEMENT_DELTA:.4f}",
+        f"- Target Rule: beat previous closed group mean {current_metric} by at least {GROUP_IMPROVEMENT_DELTA:.4f}",
         "- Rule: prioritize higher frozen test accuracy, not just easier train accuracy",
         "- Rule: overfit patterns with large frozen-train minus frozen-test gaps are penalized",
         "- Rule: dominant-family reuse or plain classifier-only fuse below target is penalized",
@@ -1036,6 +1185,10 @@ def reset_reward_runtime_state() -> None:
     global best_closed_group_id
     global dominant_family_hash
     global dominant_family_share
+    global current_stage_name
+    global recovery_active
+    global recovery_start_generation_total
+    global recovery_start_discovery_family_count
 
     graph_archive_counts.clear()
     family_archive_counts.clear()
@@ -1047,6 +1200,14 @@ def reset_reward_runtime_state() -> None:
     goal_graph_archive_counts.clear()
     goal_family_hash_archive_counts.clear()
     saved_goal_family_hash_counts.clear()
+    stage_closed_group_counts.clear()
+    stage_best_group_mean_reward_target.clear()
+    stage_entry_generation_totals.clear()
+    stage_entry_reward_batches.clear()
+    generation_history.clear()
+    closed_group_history.clear()
+    stage_event_history.clear()
+    discovery_family_hashes_seen.clear()
 
     B_index = 0
     reward_batch_index = 0
@@ -1071,6 +1232,10 @@ def reset_reward_runtime_state() -> None:
     best_reward_target_by_goal.clear()
     dominant_family_hash = None
     dominant_family_share = 0.0
+    current_stage_name = STAGE1_STRUCTURE_EXPLORE
+    recovery_active = False
+    recovery_start_generation_total = 0
+    recovery_start_discovery_family_count = 0
     prev_group_feedback.clear()
     best_group_feedback.clear()
     _reset_current_group_feedback_state()
@@ -1090,6 +1255,11 @@ def current_reward_group_context() -> Dict[str, Any]:
         "best_closed_group_id": best_closed_group_id,
         "dominant_family_hash": dominant_family_hash,
         "dominant_family_share": dominant_family_share,
+        "current_stage_name": current_stage_name,
+        "current_stage_index": RL_STAGE_TO_INDEX.get(current_stage_name, 0),
+        "generation_total": _current_generation_total(),
+        "stage_group_count": len(_recent_stage_group_window(current_stage_name, MAX_STAGE_GROUP_HISTORY)),
+        "recovery_active": bool(recovery_active),
     }
 
 
@@ -1511,6 +1681,339 @@ def update_current_group_metrics(results: List[Dict[str, Any]]) -> None:
         )
 
 
+def _reset_stage_comparison_state() -> None:
+    global prev_closed_group_mean_reward_target_acc
+    global best_closed_group_mean_reward_target_acc
+    global prev_closed_group_train_acc_mean
+    global best_closed_group_mean_train_acc
+    global prev_closed_group_mean_test_acc
+    global best_closed_group_mean_test_acc
+    global best_closed_group_id
+
+    prev_closed_group_mean_reward_target_acc = None
+    best_closed_group_mean_reward_target_acc = None
+    prev_closed_group_train_acc_mean = None
+    best_closed_group_mean_train_acc = None
+    prev_closed_group_mean_test_acc = None
+    best_closed_group_mean_test_acc = None
+    best_closed_group_id = None
+    best_reward_target_by_goal.clear()
+    prev_group_feedback.clear()
+    best_group_feedback.clear()
+    _reset_current_group_feedback_state()
+
+
+def _stage_checkpoint_root() -> Path:
+    root = Path(run_model_out()).expanduser().resolve()
+    return root / "checkpoints"
+
+
+def _stage_checkpoint_dir(stage_name: str) -> Path:
+    return _stage_checkpoint_root() / str(stage_name)
+
+
+def _stage_group_snapshot_payload(current_group_payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return {
+        "current_stage_name": current_stage_name,
+        "current_stage_index": _current_stage_index(),
+        "generation_total": _current_generation_total(),
+        "reward_batch_index": reward_batch_index,
+        "current_group_id": current_group_id,
+        "stage_group_count": len(_recent_stage_group_window(current_stage_name, MAX_STAGE_GROUP_HISTORY)),
+        "recovery_active": bool(recovery_active),
+        "recovery_start_generation_total": int(recovery_start_generation_total),
+        "recovery_start_discovery_family_count": int(recovery_start_discovery_family_count),
+        "latest_closed_group": dict(current_group_payload or {}),
+        "recent_stage_groups": _recent_stage_group_window(current_stage_name, 12),
+        "recent_stage_generations": _recent_stage_generation_window(current_stage_name, 64),
+    }
+
+
+def _save_stage_plot_snapshot(output_path: Path) -> None:
+    try:
+        completed = subprocess.run(
+            [
+                "python3",
+                str(Path(__file__).resolve().parent / "plot_rl_reward.py"),
+                "--log-dir",
+                str(Path(run_log_dir()).expanduser().resolve()),
+                "--output",
+                str(output_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        if completed.returncode != 0:
+            code_logger.log_to_file(
+                f"[Stage Checkpoint] plot snapshot failed rc={completed.returncode}: {completed.stderr.strip()}"
+            )
+    except Exception as exc:
+        code_logger.log_to_file(f"[Stage Checkpoint] plot snapshot error: {type(exc).__name__}: {exc}")
+
+
+def _save_stage_checkpoint(
+    event: str,
+    *,
+    stage_name: Optional[str] = None,
+    group_progress_payload: Optional[Dict[str, Any]] = None,
+    reason: Optional[str] = None,
+) -> Optional[Path]:
+    if not is_main_process():
+        return None
+    resolved_stage = str(stage_name or current_stage_name)
+    checkpoint_dir = _stage_checkpoint_dir(resolved_stage)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    adapter_dir = checkpoint_dir / "adapter"
+    tokenizer_dir = checkpoint_dir / "tokenizer"
+    reward_state_path = checkpoint_dir / "reward_state.json"
+    manifest_path = checkpoint_dir / "stage_manifest.json"
+    snapshot_path = checkpoint_dir / "group_progress_snapshot.json"
+    plot_path = checkpoint_dir / "plot_snapshot.png"
+
+    if active_rl_model is not None:
+        adapter_dir.mkdir(parents=True, exist_ok=True)
+        active_rl_model.save_pretrained(str(adapter_dir))
+    if active_rl_tokenizer is not None:
+        tokenizer_dir.mkdir(parents=True, exist_ok=True)
+        active_rl_tokenizer.save_pretrained(str(tokenizer_dir))
+
+    reward_state = capture_reward_runtime_state()
+    _write_json(reward_state_path, reward_state)
+    _write_json(snapshot_path, _stage_group_snapshot_payload(group_progress_payload))
+    manifest = {
+        "event": str(event),
+        "reason": reason,
+        "stage_name": resolved_stage,
+        "stage_index": RL_STAGE_TO_INDEX.get(resolved_stage, 0),
+        "generation_total": _current_generation_total(),
+        "reward_batch_index": reward_batch_index,
+        "current_group_id": current_group_id,
+        "stage_group_count": len(_recent_stage_group_window(resolved_stage, MAX_STAGE_GROUP_HISTORY)),
+        "reward_target_metric": _stage_reward_target_metric(resolved_stage),
+        "recovery_active": bool(recovery_active),
+        "stage_best_group_mean_reward_target": stage_best_group_mean_reward_target.get(resolved_stage),
+        "latest_group_progress": dict(group_progress_payload or {}),
+        "checkpoint_dir": str(checkpoint_dir),
+        "adapter_dir": str(adapter_dir),
+        "tokenizer_dir": str(tokenizer_dir),
+        "reward_state_path": str(reward_state_path),
+        "plot_snapshot_path": str(plot_path),
+    }
+    _write_json(manifest_path, manifest)
+    _save_stage_plot_snapshot(plot_path)
+    return checkpoint_dir
+
+
+def _stage1_gate_ready() -> bool:
+    if bool(recovery_active):
+        generations_since_recovery = _current_generation_total() - int(recovery_start_generation_total)
+        new_families_since_recovery = max(
+            0,
+            len(discovery_family_hashes_seen) - int(recovery_start_discovery_family_count),
+        )
+        if generations_since_recovery < STAGE_RECOVERY_RELEASE_GENERATIONS and new_families_since_recovery < STAGE_RECOVERY_RELEASE_DISCOVERY_FAMILIES:
+            return False
+    recent_generations = _recent_stage_generation_window(STAGE1_STRUCTURE_EXPLORE, STAGE1_GATE_WINDOW_GENERATIONS)
+    recent_groups = _recent_stage_group_window(STAGE1_STRUCTURE_EXPLORE, 5)
+    current_entry_group_count = len(_recent_stage_group_window(STAGE1_STRUCTURE_EXPLORE, MAX_STAGE_GROUP_HISTORY))
+    if len(recent_generations) < STAGE1_GATE_WINDOW_GENERATIONS:
+        return False
+    if current_entry_group_count < STAGE_REFERENCE_MIN_GROUPS[STAGE1_STRUCTURE_EXPLORE]:
+        return False
+    executable_count = sum(1 for item in recent_generations if bool(item.get("executable_candidate")))
+    discovery_rows = [item for item in recent_generations if bool(item.get("discovery_candidate"))]
+    unique_discovery_families = len(_family_hash_set(discovery_rows, key="family_hash"))
+    mean_dominant_share = _mean_dominant_share(recent_groups)
+    return bool(
+        executable_count >= STAGE1_GATE_EXECUTABLE_MIN
+        and len(discovery_rows) >= STAGE1_GATE_DISCOVERY_MIN
+        and unique_discovery_families >= STAGE1_GATE_UNIQUE_DISCOVERY_FAMILIES_MIN
+        and mean_dominant_share is not None
+        and mean_dominant_share <= 0.60
+    )
+
+
+def _stage2_gate_ready() -> bool:
+    recent_generations = _recent_stage_generation_window(STAGE2_FORMAL_EXPLORE, STAGE2_GATE_WINDOW_GENERATIONS)
+    recent_groups = _recent_stage_group_window(STAGE2_FORMAL_EXPLORE, 5)
+    recent_improvement_groups = _recent_stage_group_window(STAGE2_FORMAL_EXPLORE, 4)
+    current_entry_group_count = len(_recent_stage_group_window(STAGE2_FORMAL_EXPLORE, MAX_STAGE_GROUP_HISTORY))
+    if len(recent_generations) < STAGE2_GATE_WINDOW_GENERATIONS:
+        return False
+    if current_entry_group_count < STAGE_REFERENCE_MIN_GROUPS[STAGE2_FORMAL_EXPLORE]:
+        return False
+    formal_rows = [item for item in recent_generations if bool(item.get("formal_success_candidate"))]
+    unique_formal_families = len(_family_hash_set(formal_rows, key="family_hash"))
+    mean_dominant_share = _mean_dominant_share(recent_groups)
+    improving_groups = _count_group_improvements(recent_improvement_groups)
+    return bool(
+        len(formal_rows) >= STAGE2_GATE_FORMAL_SUCCESS_MIN
+        and unique_formal_families >= STAGE2_GATE_UNIQUE_FORMAL_FAMILIES_MIN
+        and improving_groups >= STAGE2_GATE_IMPROVING_GROUPS_REQUIRED
+        and mean_dominant_share is not None
+        and mean_dominant_share <= 0.45
+    )
+
+
+def _stage_recovery_needed(stage_name: str) -> bool:
+    if stage_name not in {STAGE2_FORMAL_EXPLORE, STAGE3_FORMAL_OPTIMIZE}:
+        return False
+    recent_groups = _recent_stage_group_window(stage_name, 5)
+    recent_generations = _recent_stage_generation_window(stage_name, RECOVERY_GATE_WINDOW_GENERATIONS)
+    if len(recent_groups) < 5 or len(recent_generations) < RECOVERY_GATE_WINDOW_GENERATIONS:
+        return False
+    mean_dominant_share = _mean_dominant_share(recent_groups)
+    discovery_rows = [item for item in recent_generations if bool(item.get("discovery_candidate"))]
+    unique_discovery_families = len(_family_hash_set(discovery_rows, key="family_hash"))
+    return bool(
+        mean_dominant_share is not None
+        and mean_dominant_share > STAGE_RECOVERY_DOMINANT_SHARE_THRESHOLD
+        and unique_discovery_families <= STAGE_RECOVERY_NEW_DISCOVERY_FAMILIES_MAX
+    )
+
+
+def _stage_gate_snapshot() -> Dict[str, Any]:
+    stage_name = str(current_stage_name)
+    recent_generations = _recent_stage_generation_window(
+        stage_name,
+        STAGE1_GATE_WINDOW_GENERATIONS if stage_name == STAGE1_STRUCTURE_EXPLORE else STAGE2_GATE_WINDOW_GENERATIONS,
+    )
+    recent_groups = _recent_stage_group_window(stage_name, 5)
+    discovery_rows = [item for item in recent_generations if bool(item.get("discovery_candidate"))]
+    formal_rows = [item for item in recent_generations if bool(item.get("formal_success_candidate"))]
+    return {
+        "stage_name": stage_name,
+        "stage_index": RL_STAGE_TO_INDEX.get(stage_name, 0),
+        "recent_generation_count": len(recent_generations),
+        "recent_executable_count": sum(1 for item in recent_generations if bool(item.get("executable_candidate"))),
+        "recent_discovery_count": len(discovery_rows),
+        "recent_unique_discovery_families": len(_family_hash_set(discovery_rows, key="family_hash")),
+        "recent_formal_success_count": len(formal_rows),
+        "recent_unique_formal_families": len(_family_hash_set(formal_rows, key="family_hash")),
+        "recent_mean_dominant_family_share": _mean_dominant_share(recent_groups),
+        "recent_improving_groups": _count_group_improvements(_recent_stage_group_window(stage_name, 4)),
+        "recovery_active": bool(recovery_active),
+    }
+
+
+def _transition_to_stage(
+    next_stage_name: str,
+    *,
+    event: str,
+    reason: str,
+    group_progress_payload: Optional[Dict[str, Any]] = None,
+) -> None:
+    global current_stage_name
+    global recovery_active
+    global recovery_start_generation_total
+    global recovery_start_discovery_family_count
+
+    previous_stage = str(current_stage_name)
+    if previous_stage == next_stage_name and event == "entered":
+        return
+    if previous_stage != next_stage_name and event != "recovery_entered":
+        _save_stage_checkpoint(
+            "completed",
+            stage_name=previous_stage,
+            group_progress_payload=group_progress_payload,
+            reason=reason,
+        )
+        current_stage_name = str(next_stage_name)
+        stage_entry_generation_totals[current_stage_name] = _current_generation_total()
+        stage_entry_reward_batches[current_stage_name] = reward_batch_index
+        _reset_stage_comparison_state()
+    if event == "recovery_entered":
+        recovery_active = True
+        recovery_start_generation_total = _current_generation_total()
+        recovery_start_discovery_family_count = len(discovery_family_hashes_seen)
+    elif previous_stage != next_stage_name:
+        recovery_active = False
+        recovery_start_generation_total = 0
+        recovery_start_discovery_family_count = 0
+    _append_stage_event(
+        {
+            "event": event,
+            "reason": reason,
+            "previous_stage_name": previous_stage,
+            "next_stage_name": current_stage_name,
+        }
+    )
+    _save_stage_checkpoint(
+        event,
+        stage_name=current_stage_name,
+        group_progress_payload=group_progress_payload,
+        reason=reason,
+    )
+
+
+def _maybe_update_stage_best_checkpoint(group_progress_payload: Dict[str, Any]) -> None:
+    stage_name = str(group_progress_payload.get("stage_name") or current_stage_name)
+    closed_mean = _optional_float(group_progress_payload.get("closed_mean_reward_target_acc"))
+    if closed_mean is None:
+        return
+    previous_best = _optional_float(stage_best_group_mean_reward_target.get(stage_name))
+    if previous_best is None or closed_mean > previous_best:
+        stage_best_group_mean_reward_target[stage_name] = float(closed_mean)
+        _save_stage_checkpoint(
+            "best",
+            stage_name=stage_name,
+            group_progress_payload=group_progress_payload,
+            reason=f"stage_local_best_improved_to_{closed_mean:.6f}",
+        )
+
+
+def _evaluate_stage_transitions(group_progress_payload: Dict[str, Any]) -> None:
+    global recovery_active
+    global recovery_start_generation_total
+    global recovery_start_discovery_family_count
+
+    stage_name = str(group_progress_payload.get("stage_name") or current_stage_name)
+    if recovery_active and stage_name == STAGE1_STRUCTURE_EXPLORE:
+        generations_since_recovery = _current_generation_total() - int(recovery_start_generation_total)
+        new_families_since_recovery = max(
+            0,
+            len(discovery_family_hashes_seen) - int(recovery_start_discovery_family_count),
+        )
+        if generations_since_recovery >= STAGE_RECOVERY_RELEASE_GENERATIONS or new_families_since_recovery >= STAGE_RECOVERY_RELEASE_DISCOVERY_FAMILIES:
+            recovery_active = False
+            recovery_start_generation_total = 0
+            recovery_start_discovery_family_count = 0
+            _append_stage_event(
+                {
+                    "event": "recovery_released",
+                    "reason": f"generations_since_recovery={generations_since_recovery}, new_families_since_recovery={new_families_since_recovery}",
+                }
+            )
+
+    if _stage_recovery_needed(stage_name):
+        _transition_to_stage(
+            STAGE1_STRUCTURE_EXPLORE,
+            event="recovery_entered",
+            reason="collapse_recovery_triggered",
+            group_progress_payload=group_progress_payload,
+        )
+        return
+
+    if stage_name == STAGE1_STRUCTURE_EXPLORE and _stage1_gate_ready():
+        _transition_to_stage(
+            STAGE2_FORMAL_EXPLORE,
+            event="entered",
+            reason="stage1_gate_satisfied",
+            group_progress_payload=group_progress_payload,
+        )
+        return
+
+    if stage_name == STAGE2_FORMAL_EXPLORE and _stage2_gate_ready():
+        _transition_to_stage(
+            STAGE3_FORMAL_OPTIMIZE,
+            event="entered",
+            reason="stage2_gate_satisfied",
+            group_progress_payload=group_progress_payload,
+        )
+
+
 def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
     global reward_batch_index
     global current_group_id
@@ -1533,6 +2036,7 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
     global best_closed_group_id
     global dominant_family_hash
     global dominant_family_share
+    global stage_closed_group_counts
 
     reward_batch_index += 1
     if reward_batch_index % GROUP_BATCH_SIZE != 0:
@@ -1542,6 +2046,9 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
     previous_best_reward_target_mean = best_closed_group_mean_reward_target_acc
     previous_closed_train_mean = prev_closed_group_train_acc_mean
     previous_closed_test_mean = prev_closed_group_mean_test_acc
+    stage_name = str(current_stage_name)
+    stage_closed_group_counts[stage_name] += 1
+    stage_group_index = int(stage_closed_group_counts[stage_name])
     closed_mean_reward_target = _mean_from_accumulator(
         current_group_reward_target_sum,
         current_group_reward_target_count,
@@ -1607,7 +2114,13 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
     group_progress_payload = {
         "group_id": current_group_id,
         "group_warmup": current_group_id == 0,
+        "generation_total": _current_generation_total(),
         "reward_batch_index": reward_batch_index,
+        "stage_name": stage_name,
+        "stage_index": RL_STAGE_TO_INDEX.get(stage_name, 0),
+        "stage_group_index": stage_group_index,
+        "stage_reference_min_groups": int(STAGE_REFERENCE_MIN_GROUPS.get(stage_name, 0)),
+        "reward_target_metric": _stage_reward_target_metric(stage_name),
         "closed_mean_reward_target_acc": closed_mean_reward_target,
         "prev_closed_group_mean_reward_target_acc": previous_closed_reward_target_mean,
         "best_closed_group_mean_reward_target_acc": best_closed_group_mean_reward_target_acc,
@@ -1630,6 +2143,8 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
         "prev_group_feedback": _feedback_summary_payload(prev_group_feedback),
         "best_group_feedback": _feedback_summary_payload(best_group_feedback),
     }
+    _record_closed_group_event(group_progress_payload)
+    group_progress_payload.update(_stage_gate_snapshot())
     _append_jsonl(progress_path, group_progress_payload)
 
     for summary in prev_group_feedback:
@@ -1679,6 +2194,8 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
     current_group_unfrozen_test_acc_sum = 0.0
     current_group_unfrozen_test_acc_count = 0
     _reset_current_group_feedback_state()
+    _maybe_update_stage_best_checkpoint(group_progress_payload)
+    _evaluate_stage_transitions(group_progress_payload)
     return group_progress_payload
 
 
@@ -1726,6 +2243,132 @@ def run_log_dir() -> str:
 
 def run_model_out() -> str:
     return os.getenv("NNGPT_RL_MODEL_OUT", SAVED_MODEL_PATH)
+
+
+def _resolve_resume_checkpoint_dir() -> Optional[Path]:
+    explicit_dir = os.getenv("NNGPT_RL_RESUME_CHECKPOINT_DIR", "").strip()
+    resume_stage = os.getenv("NNGPT_RL_RESUME_STAGE", "").strip()
+    if explicit_dir:
+        return Path(explicit_dir).expanduser().resolve()
+    if resume_stage:
+        return _stage_checkpoint_dir(resume_stage)
+    return None
+
+
+def _load_json_if_exists(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _current_stage_index() -> int:
+    return int(RL_STAGE_TO_INDEX.get(current_stage_name, 0))
+
+
+def _history_trim_in_place(items: List[Dict[str, Any]], *, limit: int) -> None:
+    if limit > 0 and len(items) > limit:
+        del items[: len(items) - limit]
+
+
+def _append_stage_event(payload: Dict[str, Any]) -> Dict[str, Any]:
+    event_payload = {
+        "generation_total": _current_generation_total(),
+        "reward_batch_index": reward_batch_index,
+        "reward_group_id": current_group_id,
+        "stage_name": current_stage_name,
+        "stage_index": _current_stage_index(),
+        **dict(payload),
+    }
+    stage_event_history.append(event_payload)
+    _history_trim_in_place(stage_event_history, limit=MAX_STAGE_GROUP_HISTORY)
+    return event_payload
+
+
+def _record_generation_event(payload: Dict[str, Any]) -> Dict[str, Any]:
+    generation_history.append(dict(payload))
+    _history_trim_in_place(generation_history, limit=MAX_STAGE_SAMPLE_HISTORY)
+    return generation_history[-1]
+
+
+def _record_closed_group_event(payload: Dict[str, Any]) -> Dict[str, Any]:
+    closed_group_history.append(dict(payload))
+    _history_trim_in_place(closed_group_history, limit=MAX_STAGE_GROUP_HISTORY)
+    return closed_group_history[-1]
+
+
+def _recent_stage_generation_window(stage_name: str, max_items: int) -> List[Dict[str, Any]]:
+    if max_items <= 0:
+        return []
+    stage_entry_generation_total = int(stage_entry_generation_totals.get(stage_name, 0) or 0)
+    filtered = [
+        dict(item)
+        for item in generation_history
+        if str(item.get("stage_name")) == str(stage_name)
+        and int(item.get("generation_total", 0) or 0) >= stage_entry_generation_total
+    ]
+    if len(filtered) > max_items:
+        filtered = filtered[-max_items:]
+    return filtered
+
+
+def _recent_stage_group_window(stage_name: str, max_items: int) -> List[Dict[str, Any]]:
+    if max_items <= 0:
+        return []
+    stage_entry_generation_total = int(stage_entry_generation_totals.get(stage_name, 0) or 0)
+    filtered = [
+        dict(item)
+        for item in closed_group_history
+        if str(item.get("stage_name")) == str(stage_name)
+        and int(item.get("generation_total", 0) or 0) >= stage_entry_generation_total
+    ]
+    if len(filtered) > max_items:
+        filtered = filtered[-max_items:]
+    return filtered
+
+
+def _family_hash_set(items: List[Dict[str, Any]], *, key: str) -> Set[str]:
+    return {
+        str(item.get(key))
+        for item in items
+        if item.get(key)
+    }
+
+
+def _mean_dominant_share(items: List[Dict[str, Any]]) -> Optional[float]:
+    shares = [
+        float(item.get("dominant_family_share"))
+        for item in items
+        if item.get("dominant_family_share") is not None
+    ]
+    if not shares:
+        return None
+    return float(sum(shares) / len(shares))
+
+
+def _count_group_improvements(items: List[Dict[str, Any]]) -> int:
+    count = 0
+    for item in items:
+        improvement_vs_prev = item.get("improvement_vs_prev")
+        if improvement_vs_prev is None:
+            continue
+        if float(improvement_vs_prev) >= GROUP_IMPROVEMENT_DELTA:
+            count += 1
+    return count
+
+
+def _stage_reward_target_metric(stage_name: str) -> str:
+    if str(stage_name) == STAGE1_STRUCTURE_EXPLORE:
+        return STATIC_STAGE_REWARD_TARGET_METRIC
+    return FORMAL_STAGE_REWARD_TARGET_METRIC
+
+
+def _stage_uses_formal_eval(stage_name: str) -> bool:
+    return str(stage_name) in {STAGE2_FORMAL_EXPLORE, STAGE3_FORMAL_OPTIMIZE}
+
+
+def _stage_uses_static_only(stage_name: str) -> bool:
+    return str(stage_name) == STAGE1_STRUCTURE_EXPLORE
 
 
 def _iter_text_candidates(value: Any) -> List[str]:
@@ -2060,7 +2703,7 @@ def _discovery_failure_result(
         "eval_limit_seconds": None,
         "warmup_dense_reward": None,
         "backbone_model_names": list(backbone_model_names or []),
-        "reward_target_metric": REWARD_TARGET_METRIC,
+        "reward_target_metric": _stage_reward_target_metric(current_stage_name),
         "reward_target_value": None,
         "best_closed_group_mean_reward_target_acc": best_closed_group_mean_reward_target_acc,
         "best_closed_group_mean_train_acc": best_closed_group_mean_train_acc,
@@ -2110,13 +2753,17 @@ def _discovery_failure_result(
             "novel_vs_trainset_graph": False,
             "archive_snapshot_family_freq": 0,
             "batch_same_family_count": 0,
-            "reward_target_metric": REWARD_TARGET_METRIC,
+            "reward_target_metric": _stage_reward_target_metric(current_stage_name),
             "reward_target_value": None,
             "goal_tag_hit_count": 0,
             "goal_tag_total_count": 0,
             "goal_tag_hit_rate": 0.0,
         },
         "error": error,
+        "current_stage_name": current_stage_name,
+        "current_stage_index": _current_stage_index(),
+        "stage_uses_formal_eval": _stage_uses_formal_eval(current_stage_name),
+        "stage_uses_static_only": _stage_uses_static_only(current_stage_name),
     }
 
 
@@ -2128,6 +2775,15 @@ def _is_trainable_candidate(res: Dict[str, Any], graph_info) -> bool:
         and res.get("forward_shape_ok")
         and res.get("backward_ok")
         and res.get("loss_drop_ok")
+    )
+
+
+def _is_executable_candidate(res: Dict[str, Any], graph_info) -> bool:
+    return bool(
+        graph_info
+        and graph_info.parse_ok
+        and res.get("built_ok")
+        and res.get("forward_shape_ok")
     )
 
 
@@ -2145,6 +2801,46 @@ def _apply_trainability_clamp(res: Dict[str, Any], reward_value: float, graph_in
     if not res.get("loss_drop_ok"):
         return min(reward_value, 0.0)
     return reward_value
+
+
+def _apply_executability_clamp(res: Dict[str, Any], reward_value: float, graph_info) -> float:
+    parse_ok = bool(graph_info and graph_info.parse_ok)
+    if not parse_ok:
+        return min(reward_value, -0.25)
+    if not res.get("built_ok"):
+        build_partial = float(res.get("r_build_partial", 0.0))
+        return min(reward_value, -0.8 + build_partial)
+    if not res.get("forward_shape_ok"):
+        return min(reward_value, -0.25)
+    return reward_value
+
+
+def _stage_reward_profile(stage_name: str) -> Dict[str, float]:
+    if stage_name == STAGE2_FORMAL_EXPLORE:
+        return {
+            "dense_scale": STAGE2_DENSE_SCALE,
+            "prev_group_scale": STAGE2_PREV_GROUP_SCALE,
+            "best_group_scale": STAGE2_BEST_GROUP_SCALE,
+            "goal_best_scale": STAGE2_GOAL_BEST_SCALE,
+            "goal_match_scale": STAGE2_GOAL_MATCH_SCALE,
+            "structure_scale": STAGE2_STRUCTURE_SCALE,
+            "repeat_family_scale": STAGE2_REPEAT_FAMILY_SCALE,
+            "plain_fuse_scale": STAGE2_PLAIN_FUSE_SCALE,
+            "no_progress_scale": STAGE2_NO_PROGRESS_SCALE,
+            "non_improving_cap": STAGE2_NON_IMPROVING_CAP,
+        }
+    return {
+        "dense_scale": STAGE3_DENSE_SCALE,
+        "prev_group_scale": STAGE3_PREV_GROUP_SCALE,
+        "best_group_scale": STAGE3_BEST_GROUP_SCALE,
+        "goal_best_scale": STAGE3_GOAL_BEST_SCALE,
+        "goal_match_scale": STAGE3_GOAL_MATCH_SCALE,
+        "structure_scale": STAGE3_STRUCTURE_SCALE,
+        "repeat_family_scale": STAGE3_REPEAT_FAMILY_SCALE,
+        "plain_fuse_scale": STAGE3_PLAIN_FUSE_SCALE,
+        "no_progress_scale": STAGE3_NO_PROGRESS_SCALE,
+        "non_improving_cap": STAGE3_NON_IMPROVING_CAP,
+    }
 
 
 def _archive_rarity_bonus(archive_snapshot_family_freq: int) -> float:
@@ -2203,6 +2899,7 @@ def _recompute_discovery_reward(
     res: Dict[str, Any],
     graph_info,
 ) -> Tuple[float, float, float]:
+    stage_name = str(res.get("current_stage_name") or current_stage_name)
     r_primary = (
         float(res.get("r_dense", 0.0) or 0.0)
         + float(res.get("r_prev_group", 0.0) or 0.0)
@@ -2218,8 +2915,47 @@ def _recompute_discovery_reward(
     )
     r_tiebreak = float(res.get("r_goal_match", 0.0) or 0.0)
     total_reward = _clip(r_primary + r_tiebreak, -2.0, 2.0)
-    total_reward = _apply_trainability_clamp(res, total_reward, graph_info)
+    if stage_name in {STAGE1_STRUCTURE_EXPLORE, STAGE2_FORMAL_EXPLORE}:
+        total_reward = _apply_executability_clamp(res, total_reward, graph_info)
+    else:
+        total_reward = _apply_trainability_clamp(res, total_reward, graph_info)
     return total_reward, r_primary, r_tiebreak
+
+
+def build_stage_eval_cfg(
+    *,
+    stage_name: Optional[str] = None,
+    in_shape: Tuple[int, int, int, int] = (1, 3, 224, 224),
+    out_shape: Tuple[int, ...] = (10,),
+    prm: Optional[Dict[str, Any]] = None,
+    device: Optional[str] = None,
+    cfg: Optional[EvalConfig] = None,
+) -> EvalConfig:
+    del cfg
+    requested_stage = str(stage_name or current_stage_name)
+    resolved_device = str(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    if requested_stage == STAGE1_STRUCTURE_EXPLORE:
+        eval_limit_seconds = env_int("NNGPT_RL_STAGE1_EVAL_LIMIT_SECONDS", 120)
+        formal_epoch_limit_minutes = None
+    else:
+        eval_limit_seconds = env_int("NNGPT_RL_FORMAL_EVAL_LIMIT_SECONDS", 1800)
+        configured_epoch_limit = env_float("NNGPT_RL_FORMAL_EPOCH_LIMIT_MINUTES", 0.0)
+        formal_epoch_limit_minutes = configured_epoch_limit if configured_epoch_limit > 0.0 else None
+    return EvalConfig(
+        device=resolved_device,
+        input_shape=tuple(in_shape),
+        n_classes=int(out_shape[0]),
+        train_epochs=int((prm or {}).get("epoch", 1) or 1),
+        default_batch_size=int((prm or {}).get("batch", 32) or 32),
+        eval_limit_seconds=eval_limit_seconds,
+        reward_target_metric=_stage_reward_target_metric(requested_stage),
+        formal_nn_eval=_stage_uses_formal_eval(requested_stage),
+        static_only=_stage_uses_static_only(requested_stage),
+        formal_task=os.getenv("NNGPT_RL_FORMAL_TASK", "img-classification"),
+        formal_dataset=os.getenv("NNGPT_RL_FORMAL_DATASET", "cifar-10"),
+        formal_metric=os.getenv("NNGPT_RL_FORMAL_METRIC", "acc"),
+        formal_epoch_limit_minutes=formal_epoch_limit_minutes,
+    )
 
 
 def _setdefault_many(target: Dict[str, Any], defaults: Dict[str, Any]) -> None:
@@ -2254,7 +2990,7 @@ def _attach_group_context(
             "group_baseline_train_acc": group_context["group_baseline_train_acc"],
             "group_train_acc_gain": None,
             "group_train_acc_improved": False,
-            "reward_target_metric": REWARD_TARGET_METRIC,
+            "reward_target_metric": _stage_reward_target_metric(group_context.get("current_stage_name", current_stage_name)),
             "reward_target_value": _result_reward_target_value(res),
             "group_baseline_reward_target_acc": group_context["group_baseline_reward_target_acc"],
             "group_reward_target_gain": None,
@@ -2332,7 +3068,7 @@ def _attach_group_context(
             "best_target_train_acc": res.get("best_target_train_acc"),
             "group_train_acc_gain": res.get("group_train_acc_gain"),
             "group_train_acc_improved": res.get("group_train_acc_improved", False),
-            "reward_target_metric": res.get("reward_target_metric", REWARD_TARGET_METRIC),
+            "reward_target_metric": res.get("reward_target_metric", _stage_reward_target_metric(current_stage_name)),
             "reward_target_value": res.get("reward_target_value"),
             "group_reward_target_gain": res.get("group_reward_target_gain"),
             "group_reward_target_improved": res.get("group_reward_target_improved", False),
@@ -2344,6 +3080,10 @@ def _attach_group_context(
             "reward_batch_index": group_context["reward_batch_index"],
             "reward_group_id": group_context["reward_group_id"],
             "group_warmup": group_context["group_warmup"],
+            "current_stage_name": group_context.get("current_stage_name", current_stage_name),
+            "current_stage_index": group_context.get("current_stage_index", _current_stage_index()),
+            "stage_uses_formal_eval": _stage_uses_formal_eval(group_context.get("current_stage_name", current_stage_name)),
+            "stage_uses_static_only": _stage_uses_static_only(group_context.get("current_stage_name", current_stage_name)),
         },
     )
     return res
@@ -2367,6 +3107,17 @@ def base_discovery_reward_fn(
     completion_index: Optional[int] = None,
     batch_last_item: bool = False,
 ) -> Dict[str, Any]:
+    stage_name = str(current_stage_name)
+    stage_profile = _stage_reward_profile(stage_name)
+    stage_reward_metric = _stage_reward_target_metric(stage_name)
+    prm = {
+        'lr': 0.01,
+        'batch': 64,
+        'dropout': 0.3,
+        'momentum': 0.9,
+        'transform': 'norm_256_flip',
+        'epoch': 1,
+    }
     block_code, init_code, forward_code = extract_completion_blocks(completion)
     backbone_model_names = _extract_backbone_model_names(init_code)
     if not block_code or not init_code or not forward_code:
@@ -2411,17 +3162,23 @@ def base_discovery_reward_fn(
             final_code,
             in_shape=(1, 3, 224, 224),
             out_shape=(10,),
-            prm={'lr': 0.01, 'batch': 64, 'dropout': 0.3, 'momentum': 0.9,
-                 'transform': 'norm_256_flip', 'epoch': 1},
+            prm=prm,
             device="cuda" if torch.cuda.is_available() else "cpu",
             seed_accuracy_baseline=seed_accuracy_baseline,
+            cfg=build_stage_eval_cfg(
+                stage_name=stage_name,
+                in_shape=(1, 3, 224, 224),
+                out_shape=(10,),
+                prm=prm,
+                device="cuda" if torch.cuda.is_available() else "cpu",
+            ),
             reward_batch_index=reward_batch_index,
             completion_index=completion_index,
             batch_last_item=batch_last_item,
         )
 
-    if not res.get('built_ok'):
-        res['r_build_partial'] = _compute_build_partial_reward(res)
+    if not res.get("built_ok"):
+        res["r_build_partial"] = _compute_build_partial_reward(res)
     res.setdefault("backbone_model_names", backbone_model_names)
 
     shallow_one_shot = is_shallow_one_shot_fuse(graph_info)
@@ -2458,7 +3215,9 @@ def base_discovery_reward_fn(
     r_repeat_family = 0.0
     r_plain_fuse_penalty = 0.0
     r_no_progress_penalty = 0.0
-    trainable_candidate = _is_trainable_candidate(res, graph_info)
+    executable_candidate = _is_executable_candidate(res, graph_info)
+    formal_success_candidate = _is_trainable_candidate(res, graph_info)
+    discovery_candidate = False
     goal_tag_hit_count, goal_tag_total_count, goal_tag_hit_rate = _goal_tag_match_stats(graph_info, prompt_goal_tags)
     effective_group_baseline_reward_target_acc = (
         group_baseline_reward_target_acc
@@ -2472,77 +3231,10 @@ def base_discovery_reward_fn(
     beat_prev_target = False
     beat_best_target = False
 
-    if (train_acc is not None) and (group_baseline_train_acc is not None) and (not group_warmup):
-        group_train_acc_gain = float(train_acc - group_baseline_train_acc)
-        group_train_acc_improved = bool(group_train_acc_gain >= GROUP_IMPROVEMENT_DELTA)
-    if (reward_target_value is not None) and (effective_group_baseline_reward_target_acc is not None) and (not group_warmup):
-        group_reward_target_gain = float(reward_target_value - effective_group_baseline_reward_target_acc)
-        group_reward_target_improved = bool(group_reward_target_gain >= GROUP_IMPROVEMENT_DELTA)
-
-    if trainable_candidate and reward_target_value is not None:
-        train_acc_value = float(train_acc or 0.0)
-        reward_target_float = float(reward_target_value)
-        r_dense = _clip(
-            0.03 + 0.20 * reward_target_float + 0.04 * max(0.0, train_acc_value - 0.50),
-            0.02,
-            0.22,
-        )
-        if (not group_warmup) and (group_baseline_train_acc is not None):
-            prev_target_train_acc = float(group_baseline_train_acc) + GROUP_IMPROVEMENT_DELTA
-        if (not group_warmup) and (best_closed_group_mean_train_acc is not None):
-            best_target_train_acc = float(best_closed_group_mean_train_acc) + BEST_GROUP_REFRESH_DELTA
-        if (not group_warmup) and (effective_group_baseline_reward_target_acc is not None):
-            prev_target_reward_target_acc = float(effective_group_baseline_reward_target_acc) + GROUP_IMPROVEMENT_DELTA
-            beat_prev_target = reward_target_float >= prev_target_reward_target_acc
-            r_prev_group = _clip(
-                10.0 * (reward_target_float - prev_target_reward_target_acc),
-                -1.8,
-                1.8,
-            )
-        if (not group_warmup) and (best_closed_group_mean_reward_target_acc is not None):
-            best_target_reward_target_acc = float(best_closed_group_mean_reward_target_acc) + BEST_GROUP_REFRESH_DELTA
-            beat_best_target = reward_target_float >= best_target_reward_target_acc
-            r_best_group = _clip(
-                12.0 * (reward_target_float - best_target_reward_target_acc),
-                -1.2,
-                1.2,
-            )
-        if (
-            (not group_warmup)
-            and (best_reward_target_for_goal is not None)
-            and reward_target_float >= float(best_reward_target_for_goal) + GOAL_REFRESH_DELTA
-        ):
-            r_goal_best = GOAL_REFRESH_BONUS
-        r_goal_match = GOAL_MATCH_REWARD_SCALE * goal_tag_hit_rate
-        if (
-            (not group_warmup)
-            and prev_target_reward_target_acc is not None
-            and not beat_prev_target
-        ):
-            r_no_progress_penalty = NO_PROGRESS_PENALTY
-        if (
-            (not group_warmup)
-            and dominant_family_hash
-            and graph_info.parse_ok
-            and graph_info.family_hash == dominant_family_hash
-            and (
-                best_target_reward_target_acc is None
-                or not beat_best_target
-            )
-        ):
-            r_repeat_family = REPEAT_FAMILY_PENALTY
-        if (
-            (not group_warmup)
-            and graph_info.is_plain_parallel_triple
-            and (
-                prev_target_reward_target_acc is None
-                or not beat_prev_target
-            )
-        ):
-            r_plain_fuse_penalty = PLAIN_FUSE_PENALTY
-
+    if executable_candidate:
         novel_vs_trainset_family = graph_info.family_hash not in train_family_hashes
         novel_vs_trainset_graph = graph_info.graph_hash not in train_graph_hashes
+        discovery_candidate = bool(graph_info.parse_ok and archive_snapshot_family_freq <= 0)
         if novel_vs_trainset_family:
             r_trainset_novelty = TRAINSET_NOVEL_FAMILY_BONUS
         elif novel_vs_trainset_graph:
@@ -2555,38 +3247,151 @@ def base_discovery_reward_fn(
             novel_vs_trainset_graph=novel_vs_trainset_graph,
             shallow_one_shot=shallow_one_shot,
         )
-        if (frozen_train_acc is not None) and (frozen_test_acc is not None):
-            overfit_gap = max(0.0, float(frozen_train_acc) - float(frozen_test_acc) - GENERALIZATION_GAP_TOLERANCE)
-            r_generalization = _clip(
-                -GENERALIZATION_PENALTY_SCALE * overfit_gap,
-                GENERALIZATION_PENALTY_CAP,
-                0.0,
-            )
+        if (
+            (not group_warmup)
+            and dominant_family_hash
+            and graph_info.parse_ok
+            and graph_info.family_hash == dominant_family_hash
+            and not discovery_candidate
+        ):
+            r_repeat_family = REPEAT_FAMILY_PENALTY
+        if (
+            (not group_warmup)
+            and graph_info.is_plain_parallel_triple
+            and not discovery_candidate
+        ):
+            r_plain_fuse_penalty = PLAIN_FUSE_PENALTY
 
-    r_primary = (
-        r_dense
-        + r_prev_group
-        + r_best_group
-        + r_goal_best
-        + r_generalization
-        + r_structure_group
-        + r_structure_archive
-        + r_batch_elite
-        + r_repeat_family
-        + r_plain_fuse_penalty
-        + r_no_progress_penalty
-    )
-    r_tiebreak = r_goal_match
+    if stage_name == STAGE1_STRUCTURE_EXPLORE:
+        reward_target_value = None
+        if executable_candidate:
+            r_dense = STAGE1_EXECUTABLE_BONUS
+            if discovery_candidate:
+                r_goal_best = STAGE1_DISCOVERY_FAMILY_BONUS
+            elif novel_vs_trainset_graph:
+                r_goal_best = STAGE1_DISCOVERY_GRAPH_BONUS
+            r_goal_match = 0.06 * goal_tag_hit_rate
+            r_repeat_family = _clip(r_repeat_family, STAGE1_DOMINANT_FAMILY_PENALTY, 0.0)
+            r_plain_fuse_penalty = _clip(r_plain_fuse_penalty, STAGE1_PLAIN_PARALLEL_PENALTY, 0.0)
+            reward_target_value = _clip(
+                0.10
+                + max(0.0, r_dense)
+                + max(0.0, r_goal_best)
+                + max(0.0, r_structure_group)
+                + max(0.0, r_structure_archive),
+                0.0,
+                1.0,
+            )
+        if (reward_target_value is not None) and (effective_group_baseline_reward_target_acc is not None) and (not group_warmup):
+            group_reward_target_gain = float(reward_target_value - effective_group_baseline_reward_target_acc)
+            group_reward_target_improved = bool(group_reward_target_gain >= GROUP_IMPROVEMENT_DELTA)
+        r_primary = (
+            r_dense
+            + r_goal_best
+            + r_structure_group
+            + r_structure_archive
+            + r_repeat_family
+            + r_plain_fuse_penalty
+        )
+        r_tiebreak = r_goal_match
+        total_reward = _clip(r_primary + r_tiebreak, -2.0, 2.0)
+        total_reward = _apply_executability_clamp(res, total_reward, graph_info)
+    else:
+        reward_target_value = frozen_test_acc
+        if (train_acc is not None) and (group_baseline_train_acc is not None) and (not group_warmup):
+            group_train_acc_gain = float(train_acc - group_baseline_train_acc)
+            group_train_acc_improved = bool(group_train_acc_gain >= GROUP_IMPROVEMENT_DELTA)
+        if (reward_target_value is not None) and (effective_group_baseline_reward_target_acc is not None) and (not group_warmup):
+            group_reward_target_gain = float(reward_target_value - effective_group_baseline_reward_target_acc)
+            group_reward_target_improved = bool(group_reward_target_gain >= GROUP_IMPROVEMENT_DELTA)
+
+        if formal_success_candidate and reward_target_value is not None:
+            train_acc_value = float(train_acc or 0.0)
+            reward_target_float = float(reward_target_value)
+            r_dense = stage_profile["dense_scale"] * _clip(
+                0.03 + 0.20 * reward_target_float + 0.04 * max(0.0, train_acc_value - 0.50),
+                0.02,
+                0.22,
+            )
+            if (not group_warmup) and (group_baseline_train_acc is not None):
+                prev_target_train_acc = float(group_baseline_train_acc) + GROUP_IMPROVEMENT_DELTA
+            if (not group_warmup) and (best_closed_group_mean_train_acc is not None):
+                best_target_train_acc = float(best_closed_group_mean_train_acc) + BEST_GROUP_REFRESH_DELTA
+            if (not group_warmup) and (effective_group_baseline_reward_target_acc is not None):
+                prev_target_reward_target_acc = float(effective_group_baseline_reward_target_acc) + GROUP_IMPROVEMENT_DELTA
+                beat_prev_target = reward_target_float >= prev_target_reward_target_acc
+                r_prev_group = stage_profile["prev_group_scale"] * _clip(
+                    10.0 * (reward_target_float - prev_target_reward_target_acc),
+                    -1.8,
+                    1.8,
+                )
+            if (not group_warmup) and (best_closed_group_mean_reward_target_acc is not None):
+                best_target_reward_target_acc = float(best_closed_group_mean_reward_target_acc) + BEST_GROUP_REFRESH_DELTA
+                beat_best_target = reward_target_float >= best_target_reward_target_acc
+                r_best_group = stage_profile["best_group_scale"] * _clip(
+                    12.0 * (reward_target_float - best_target_reward_target_acc),
+                    -1.2,
+                    1.2,
+                )
+            if (
+                (not group_warmup)
+                and (best_reward_target_for_goal is not None)
+                and reward_target_float >= float(best_reward_target_for_goal) + GOAL_REFRESH_DELTA
+            ):
+                r_goal_best = stage_profile["goal_best_scale"] * GOAL_REFRESH_BONUS
+            if (
+                (not group_warmup)
+                and prev_target_reward_target_acc is not None
+                and not beat_prev_target
+            ):
+                r_no_progress_penalty = stage_profile["no_progress_scale"] * NO_PROGRESS_PENALTY
+            if (frozen_train_acc is not None) and (frozen_test_acc is not None):
+                overfit_gap = max(0.0, float(frozen_train_acc) - float(frozen_test_acc) - GENERALIZATION_GAP_TOLERANCE)
+                r_generalization = _clip(
+                    -GENERALIZATION_PENALTY_SCALE * overfit_gap,
+                    GENERALIZATION_PENALTY_CAP,
+                    0.0,
+                )
+
+        r_goal_match = stage_profile["goal_match_scale"] * GOAL_MATCH_REWARD_SCALE * goal_tag_hit_rate
+        r_structure_group *= stage_profile["structure_scale"]
+        r_structure_archive *= stage_profile["structure_scale"]
+        r_repeat_family *= stage_profile["repeat_family_scale"]
+        r_plain_fuse_penalty *= stage_profile["plain_fuse_scale"]
+
+        r_primary = (
+            r_dense
+            + r_prev_group
+            + r_best_group
+            + r_goal_best
+            + r_generalization
+            + r_structure_group
+            + r_structure_archive
+            + r_batch_elite
+            + r_repeat_family
+            + r_plain_fuse_penalty
+            + r_no_progress_penalty
+        )
+        r_tiebreak = r_goal_match
+        total_reward = _clip(r_primary + r_tiebreak, -2.0, 2.0)
+        if formal_success_candidate and prev_target_reward_target_acc is not None and not beat_prev_target:
+            total_reward = min(total_reward, stage_profile["non_improving_cap"])
+        if stage_name == STAGE2_FORMAL_EXPLORE:
+            total_reward = _apply_executability_clamp(res, total_reward, graph_info)
+        else:
+            total_reward = _apply_trainability_clamp(res, total_reward, graph_info)
+
+    reward_target_value_for_payload = reward_target_value
+    reward_metric_for_payload = stage_reward_metric
 
     warmup_dense_reward = None
-    if group_warmup and trainable_candidate:
+    if stage_name != STAGE1_STRUCTURE_EXPLORE and group_warmup and formal_success_candidate:
         warmup_dense_reward = _compute_warmup_dense_reward(reward_target_value)
         total_reward = float(warmup_dense_reward or 0.0)
-    else:
-        total_reward = _clip(r_primary + r_tiebreak, -2.0, 2.0)
-        if trainable_candidate and prev_target_reward_target_acc is not None and not beat_prev_target:
-            total_reward = min(total_reward, NON_IMPROVING_REWARD_CAP)
-    total_reward = _apply_trainability_clamp(res, total_reward, graph_info)
+        if stage_name == STAGE2_FORMAL_EXPLORE:
+            total_reward = _apply_executability_clamp(res, total_reward, graph_info)
+        else:
+            total_reward = _apply_trainability_clamp(res, total_reward, graph_info)
 
     res['reward'] = total_reward
     res['test_acc'] = test_acc
@@ -2600,8 +3405,8 @@ def base_discovery_reward_fn(
     res['group_baseline_train_acc'] = group_baseline_train_acc
     res['group_train_acc_gain'] = group_train_acc_gain
     res['group_train_acc_improved'] = group_train_acc_improved
-    res['reward_target_metric'] = REWARD_TARGET_METRIC
-    res['reward_target_value'] = reward_target_value
+    res['reward_target_metric'] = reward_metric_for_payload
+    res['reward_target_value'] = reward_target_value_for_payload
     res['group_baseline_reward_target_acc'] = effective_group_baseline_reward_target_acc
     res['group_reward_target_gain'] = group_reward_target_gain
     res['group_reward_target_improved'] = group_reward_target_improved
@@ -2609,6 +3414,10 @@ def base_discovery_reward_fn(
     res['reward_group_id'] = reward_group_id
     res['group_warmup'] = group_warmup
     res['warmup_dense_reward'] = warmup_dense_reward
+    res['current_stage_name'] = stage_name
+    res['current_stage_index'] = RL_STAGE_TO_INDEX.get(stage_name, 0)
+    res['stage_uses_formal_eval'] = _stage_uses_formal_eval(stage_name)
+    res['stage_uses_static_only'] = _stage_uses_static_only(stage_name)
     res['best_closed_group_mean_reward_target_acc'] = best_closed_group_mean_reward_target_acc
     res['best_closed_group_mean_train_acc'] = best_closed_group_mean_train_acc
     res['best_closed_group_mean_test_acc'] = best_closed_group_mean_test_acc
@@ -2636,6 +3445,9 @@ def base_discovery_reward_fn(
     res['best_target_reward_target_acc'] = best_target_reward_target_acc
     res['prev_target_train_acc'] = prev_target_train_acc
     res['best_target_train_acc'] = best_target_train_acc
+    res['executable_candidate'] = executable_candidate
+    res['discovery_candidate'] = discovery_candidate
+    res['formal_success_candidate'] = formal_success_candidate
     res['signature'] = f"{normalize_pattern_name(effective_pattern_name)}_{graph_info.graph_hash[:6]}"
     res['graph_hash'] = graph_info.graph_hash
     res['family_id'] = graph_info.family_id
@@ -2666,8 +3478,8 @@ def base_discovery_reward_fn(
         'batch_elite_threshold_passed': False,
         'group_baseline_train_acc': group_baseline_train_acc,
         'group_baseline_reward_target_acc': effective_group_baseline_reward_target_acc,
-        'reward_target_metric': REWARD_TARGET_METRIC,
-        'reward_target_value': reward_target_value,
+        'reward_target_metric': reward_metric_for_payload,
+        'reward_target_value': reward_target_value_for_payload,
         'best_closed_group_mean_reward_target_acc': best_closed_group_mean_reward_target_acc,
         'best_closed_group_mean_train_acc': best_closed_group_mean_train_acc,
         'best_closed_group_mean_test_acc': best_closed_group_mean_test_acc,
@@ -2708,6 +3520,13 @@ def base_discovery_reward_fn(
         'novel_vs_trainset_graph': novel_vs_trainset_graph,
         'archive_snapshot_family_freq': archive_snapshot_family_freq,
         'batch_same_family_count': batch_same_family_count,
+        'stage_name': stage_name,
+        'stage_index': RL_STAGE_TO_INDEX.get(stage_name, 0),
+        'stage_uses_formal_eval': _stage_uses_formal_eval(stage_name),
+        'stage_uses_static_only': _stage_uses_static_only(stage_name),
+        'executable_candidate': executable_candidate,
+        'discovery_candidate': discovery_candidate,
+        'formal_success_candidate': formal_success_candidate,
     }
     return res
 
@@ -2751,7 +3570,7 @@ def reward_fn(
 
 
 def _apply_batch_elite_bonuses(scored_results: List[Dict[str, Any]], group_context: Dict[str, Any]) -> None:
-    if group_context["group_warmup"]:
+    if group_context["group_warmup"] or str(group_context.get("current_stage_name")) == STAGE1_STRUCTURE_EXPLORE:
         return
 
     eligible: List[Tuple[float, Dict[str, Any]]] = []
@@ -2930,7 +3749,7 @@ def _build_batched_eval_specs(
     *,
     group_context: Dict[str, Any],
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    eval_cfg_builder = getattr(evaluate_code_and_reward, "_nngpt_eval_cfg_builder", None)
+    eval_cfg_builder = getattr(evaluate_code_and_reward, "_nngpt_eval_cfg_builder", build_stage_eval_cfg)
     batched_eval_entries: List[Dict[str, Any]] = []
     batched_eval_specs: List[Dict[str, Any]] = []
 
@@ -2971,10 +3790,12 @@ def _build_batched_eval_specs(
         }
         if callable(eval_cfg_builder):
             spec["cfg"] = eval_cfg_builder(
+                stage_name=str(group_context.get("current_stage_name") or current_stage_name),
                 in_shape=(1, 3, 224, 224),
                 out_shape=(10,),
                 prm=spec["prm"],
                 cfg=None,
+                device=spec["device"],
             )
 
         batched_eval_entries.append(entry)
@@ -3200,9 +4021,12 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
         score = float(item["score"])
         sig = res.get("signature", "unknown")
 
+        is_executable = _is_executable_candidate(res, graph_info)
         is_trainable = _is_trainable_candidate(res, graph_info)
-        if is_trainable:
+        reward_target_value = _result_reward_target_value(res)
+        if reward_target_value is not None:
             current_batch_results.append(res)
+        if is_executable:
             _record_current_group_trainable_sample(goal_key, res, graph_info)
             graph_archive_counts[graph_info.graph_hash] += 1
             family_archive_counts[graph_info.family_id] += 1
@@ -3216,6 +4040,8 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
                 current_best,
                 float(gain_value if gain_value is not None else float("-inf")),
             )
+            if bool(res.get("discovery_candidate")):
+                discovery_family_hashes_seen.add(str(graph_info.family_hash))
 
         code_logger.log_to_file(
             f"Rank {item['rank']} batch index {index}, Motif: {res.get('pattern_name')}, Signature: {sig}, Result: {res}"
@@ -3256,6 +4082,25 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
             saved_family_hash_counts[graph_info.family_hash] += 1
             get_goal_counter(saved_goal_family_hash_counts, goal_key)[graph_info.family_hash] += 1
             B_index += 1
+
+        generation_total = _current_generation_total() + 1
+        _record_generation_event(
+            {
+                "generation_total": generation_total,
+                "reward_batch_index": res.get("reward_batch_index"),
+                "reward_group_id": res.get("reward_group_id"),
+                "stage_name": str(res.get("current_stage_name") or current_stage_name),
+                "stage_index": int(res.get("current_stage_index") or RL_STAGE_TO_INDEX.get(current_stage_name, 0)),
+                "family_hash": str(res.get("family_hash") or getattr(graph_info, "family_hash", "") or ""),
+                "graph_hash": str(res.get("graph_hash") or getattr(graph_info, "graph_hash", "") or ""),
+                "reward": score,
+                "reward_target_metric": str(res.get("reward_target_metric") or ""),
+                "reward_target_value": reward_target_value,
+                "executable_candidate": bool(res.get("executable_candidate", is_executable)),
+                "discovery_candidate": bool(res.get("discovery_candidate")),
+                "formal_success_candidate": bool(res.get("formal_success_candidate", is_trainable)),
+            }
+        )
 
         code_logger.log_generation(prompt, completion, score, res)
 
@@ -3497,8 +4342,38 @@ def load_rl_dataset(tokenizer):
     return rl_dataset.shuffle(seed=42)
 
 def main():
-    torch.cuda.empty_cache()  
-    reset_reward_runtime_state()
+    global active_rl_model
+    global active_rl_tokenizer
+    global current_stage_name
+
+    torch.cuda.empty_cache()
+    resume_checkpoint_dir = _resolve_resume_checkpoint_dir()
+    resume_manifest = None
+    resume_reward_state = None
+    resume_stage_override = os.getenv("NNGPT_RL_RESUME_STAGE", "").strip()
+    if resume_checkpoint_dir is not None:
+        if not resume_checkpoint_dir.exists():
+            raise FileNotFoundError(f"Resume checkpoint directory not found: {resume_checkpoint_dir}")
+        resume_manifest = _load_json_if_exists(resume_checkpoint_dir / "stage_manifest.json")
+        resume_reward_state = _load_json_if_exists(resume_checkpoint_dir / "reward_state.json")
+        if resume_reward_state is None:
+            raise FileNotFoundError(f"Missing reward_state.json under {resume_checkpoint_dir}")
+        restore_reward_runtime_state(resume_reward_state)
+        if resume_stage_override:
+            current_state_stage = str(current_stage_name)
+            if current_state_stage != resume_stage_override:
+                print(
+                    "[RL] Resume stage override "
+                    f"checkpoint_stage={current_state_stage} requested_stage={resume_stage_override}"
+                )
+                current_stage_name = resume_stage_override
+        print(
+            "[RL] Resuming from checkpoint "
+            f"dir={resume_checkpoint_dir} stage={current_stage_name} "
+            f"generation_total={_current_generation_total()} reward_batch_index={reward_batch_index}"
+        )
+    else:
+        reset_reward_runtime_state()
     precision = best_mixed_precision()
     runtime = get_distributed_runtime_info()
     runtime_settings = resolve_rl_runtime_settings(runtime)
@@ -3526,6 +4401,7 @@ def main():
         print(f"[RL] DeepSpeed Config: {deepspeed_config_path}")
     print(f"[RL] Fixed training device: {train_device}")
     print(f"[RL] Mixed precision: {precision['label']} (torch_dtype={precision['torch_dtype']})")
+    print(f"[RL] Current stage: {current_stage_name}")
     print(
         "[RL] Runtime limits: "
         f"dataset_limit={runtime_settings['dataset_limit']} "
@@ -3593,7 +4469,14 @@ def main():
         bias="none",
         task_type="CAUSAL_LM"
     )
-    model = get_peft_model(model, peft_config)
+    resume_adapter_dir = (resume_checkpoint_dir / "adapter") if resume_checkpoint_dir is not None else None
+    if resume_adapter_dir is not None and resume_adapter_dir.exists():
+        print(f"[RL] Loading RL adapter from {resume_adapter_dir}...")
+        model = PeftModel.from_pretrained(model, str(resume_adapter_dir), is_trainable=True)
+    elif resume_checkpoint_dir is not None:
+        raise FileNotFoundError(f"Missing adapter directory under resume checkpoint: {resume_adapter_dir}")
+    else:
+        model = get_peft_model(model, peft_config)
     align_generation_head_dtype(model, precision["torch_dtype"])
 
     # Enable gradient checkpointing to save memory
@@ -3601,6 +4484,25 @@ def main():
     model.enable_input_require_grads() 
 
     model.print_trainable_parameters()
+    active_rl_model = model
+    active_rl_tokenizer = tokenizer
+    evaluate_code_and_reward._nngpt_eval_cfg_builder = build_stage_eval_cfg
+    stage_entry_generation_totals.setdefault(current_stage_name, _current_generation_total())
+    stage_entry_reward_batches.setdefault(current_stage_name, reward_batch_index)
+    if resume_checkpoint_dir is None:
+        _append_stage_event(
+            {
+                "event": "entered",
+                "reason": "initial_stage_entry",
+                "previous_stage_name": None,
+                "next_stage_name": current_stage_name,
+            }
+        )
+        _save_stage_checkpoint(
+            "entered",
+            stage_name=current_stage_name,
+            reason="initial_stage_entry",
+        )
 
     grpo_config = _build_rl_grpo_config(
         precision=precision,
@@ -3635,6 +4537,15 @@ def main():
     model_out = run_model_out()
     print(f"Saving model to {model_out}...")
     model.save_pretrained(model_out)
+    _save_stage_checkpoint(
+        "completed",
+        stage_name=current_stage_name,
+        reason="trainer_completed",
+    )
+    try:
+        code_logger.save_log()
+    except Exception as exc:
+        code_logger.log_to_file(f"[RL] save_log failed: {type(exc).__name__}: {exc}")
     print("Model saved successfully!")
 
     return model
@@ -3650,7 +4561,10 @@ if __name__ == "__main__":
     code_logger = SimpleCodeLogger(log_dir)
 
     # 清空旧模型目录
-    print(f"Cleaning existing models in {run_epoch_dir()}...")
-    shutil.rmtree(run_epoch_dir(), ignore_errors=True)
+    if _resolve_resume_checkpoint_dir() is None:
+        print(f"Cleaning existing models in {run_epoch_dir()}...")
+        shutil.rmtree(run_epoch_dir(), ignore_errors=True)
+    else:
+        print(f"Resuming run: keeping existing synthesized models under {run_epoch_dir()}")
 
     main()

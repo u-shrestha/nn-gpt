@@ -12,6 +12,11 @@ class SimpleCodeLogger:
         self.log_file = os.path.join(output_dir, "generation_log.json")
         self.training_log_file = os.path.join(output_dir, "training_progress.log")
         self.success_codes_file = os.path.join(output_dir, "success_codes.py")
+        self.samples_file = os.path.join(output_dir, "generation_samples.jsonl")
+        self.resume_mode = bool(
+            os.getenv("NNGPT_RL_RESUME_CHECKPOINT_DIR", "").strip()
+            or os.getenv("NNGPT_RL_RESUME_STAGE", "").strip()
+        )
         
         self.total_count = 0
         self.success_count = 0
@@ -22,10 +27,35 @@ class SimpleCodeLogger:
         self.start_time = time.time()
         
         os.makedirs(self.output_dir, exist_ok=True)
-        
-        with open(self.training_log_file, 'w', encoding='utf-8') as f:
+
+        training_log_mode = 'a' if self.resume_mode and os.path.exists(self.training_log_file) else 'w'
+        sample_log_mode = 'a' if self.resume_mode and os.path.exists(self.samples_file) else 'w'
+
+        if self.resume_mode:
+            if os.path.exists(self.samples_file):
+                with open(self.samples_file, "r", encoding="utf-8") as f:
+                    self.total_count = sum(1 for line in f if line.strip())
+            if os.path.exists(self.log_file):
+                try:
+                    with open(self.log_file, "r", encoding="utf-8") as f:
+                        payload = json.load(f)
+                    summary = dict(payload.get("summary") or {})
+                    self.success_count = int(summary.get("success_count", self.success_count) or self.success_count)
+                    self.warmup_trainable_count = int(summary.get("warmup_trainable_count", self.warmup_trainable_count) or self.warmup_trainable_count)
+                    self.warmup_positive_count = int(summary.get("warmup_positive_count", self.warmup_positive_count) or self.warmup_positive_count)
+                    self.timeout_count = int(summary.get("timeout_count", self.timeout_count) or self.timeout_count)
+                    self.improved_count = int(summary.get("improved_count", self.improved_count) or self.improved_count)
+                    previous_start_time = summary.get("start_time")
+                    if previous_start_time is not None:
+                        self.start_time = float(previous_start_time)
+                except Exception:
+                    pass
+
+        with open(self.training_log_file, training_log_mode, encoding='utf-8') as f:
             f.write(f"=== RL Training start {datetime.now().isoformat()} ===\n")
             f.write(f"Output directory: {os.path.abspath(self.output_dir)}\n")
+        with open(self.samples_file, sample_log_mode, encoding='utf-8'):
+            pass
 
     def log_to_file(self, message: str):
         with open(self.training_log_file, 'a', encoding='utf-8') as f:
@@ -59,6 +89,15 @@ class SimpleCodeLogger:
             self.log_to_file(f"   API result: {api_result}")
         else:
             self.log_to_file(f"Fail case: Reward={reward:.4f}")
+
+        record = {
+            "prompt": prompt,
+            "completion": completion,
+            "reward": reward,
+            "api_result": api_result,
+        }
+        with open(self.samples_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
         
         if self.total_count % 10 == 0:
             current_success_rate = (self.success_count / self.total_count * 100)

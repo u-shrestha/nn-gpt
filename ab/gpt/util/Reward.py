@@ -2171,6 +2171,7 @@ class EvalConfig:
     full_test_acc: bool = False
     reward_target_metric: str = "frozen_test_acc"
     formal_nn_eval: bool = False
+    static_only: bool = False
     formal_task: str = "img-classification"
     formal_dataset: str = "cifar-10"
     formal_metric: str = "acc"
@@ -2227,9 +2228,13 @@ def _build_effective_eval_cfg(
         ),
         run_unfrozen_backbone_eval=False,
         reward_target_metric=(
-            "frozen_train_acc"
-            if str(getattr(base_cfg, "reward_target_metric", "frozen_test_acc") or "frozen_test_acc") == "frozen_train_acc"
-            else "frozen_test_acc"
+            str(getattr(base_cfg, "reward_target_metric", "frozen_test_acc") or "frozen_test_acc")
+            if bool(getattr(base_cfg, "static_only", False))
+            else (
+                "frozen_train_acc"
+                if str(getattr(base_cfg, "reward_target_metric", "frozen_test_acc") or "frozen_test_acc") == "frozen_train_acc"
+                else "frozen_test_acc"
+            )
         ),
     )
 
@@ -2265,6 +2270,10 @@ def _effective_eval_limit_seconds(cfg: "EvalConfig") -> int:
 
 def _is_formal_nn_eval_enabled(cfg: Optional["EvalConfig"]) -> bool:
     return bool(cfg is not None and getattr(cfg, "formal_nn_eval", False))
+
+
+def _is_static_only_eval_enabled(cfg: Optional["EvalConfig"]) -> bool:
+    return bool(cfg is not None and getattr(cfg, "static_only", False))
 
 
 def _ensure_nn_dataset_importable() -> None:
@@ -3091,6 +3100,106 @@ def evaluate_and_reward(
         _clear_reward_cuda_state()
 
 
+def evaluate_static_build_and_forward(
+    *,
+    model: Optional[nn.Module] = None,
+    build_fn: Optional[Callable[[], nn.Module]] = None,
+    cfg: EvalConfig = EvalConfig(),
+    seed_accuracy_baseline: Optional[float] = None,
+    backbone_model_names: Optional[list[str]] = None,
+) -> Dict[str, Any]:
+    device = str(cfg.device)
+    mdl = model
+    built_ok = False
+    forward_ok = False
+    forward_shape_ok = False
+    latency_ms = None
+    params_m = None
+    estimated_total_seconds = 0.0
+    started_at = time.time()
+    try:
+        if mdl is None and build_fn is not None:
+            mdl = build_fn()
+        if mdl is None or not isinstance(mdl, nn.Module):
+            components = compute_cv_reward_simple(
+                built_ok=False,
+                forward_shape_ok=False,
+                backward_ok=False,
+                loss_drop_ok=False,
+                val_metric=None,
+                val_metric_baseline=None,
+                latency_ms=None,
+                params_m=None,
+                flops_g=None,
+                critic_score=None,
+                kl_div=cfg.kl_div,
+                weights=cfg.weights,
+            )
+            return {
+                "reward": components["reward"],
+                "components": components,
+                **_base_eval_result(
+                    seed_accuracy_baseline=seed_accuracy_baseline,
+                    eval_limit_seconds=cfg.eval_limit_seconds,
+                    backbone_model_names=backbone_model_names,
+                ),
+                "static_only": True,
+            }
+
+        mdl.to(device)
+        params_m = _count_params_m(mdl)
+        built_ok = True
+        forward_result = _quick_forward(
+            mdl,
+            cfg.input_shape,
+            device=device,
+            n_classes=cfg.n_classes,
+        )
+        forward_ok = bool(forward_result.get("forward_ok"))
+        forward_shape_ok = bool(forward_result.get("forward_shape_ok"))
+        if cfg.measure_latency:
+            latency_ms = forward_result.get("latency_ms")
+        estimated_total_seconds = max(0.0, time.time() - started_at)
+        components = compute_cv_reward_simple(
+            built_ok=built_ok,
+            forward_shape_ok=forward_shape_ok,
+            backward_ok=False,
+            loss_drop_ok=False,
+            val_metric=None,
+            val_metric_baseline=None,
+            latency_ms=latency_ms,
+            params_m=params_m,
+            flops_g=None,
+            critic_score=None,
+            kl_div=cfg.kl_div,
+            weights=cfg.weights,
+        )
+        return {
+            "reward": components["reward"],
+            "components": components,
+            **_base_eval_result(
+                seed_accuracy_baseline=seed_accuracy_baseline,
+                eval_limit_seconds=cfg.eval_limit_seconds,
+                backbone_model_names=backbone_model_names,
+            ),
+            "built_ok": built_ok,
+            "forward_ok": forward_ok,
+            "forward_shape_ok": forward_shape_ok,
+            "latency_ms": latency_ms,
+            "params_m": params_m,
+            "estimated_total_seconds": estimated_total_seconds,
+            "static_only": True,
+        }
+    finally:
+        if mdl is not None:
+            try:
+                mdl.to("cpu")
+            except Exception:
+                pass
+            del mdl
+        _clear_reward_cuda_state()
+
+
 def _safe_exec_code(code: str) -> Dict[str, Any]:
     """
     Execute user-provided model code with torch/nn in scope and return the namespace.
@@ -3775,7 +3884,7 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
             cfg = _deserialize_eval_cfg(request.get("cfg"))
             train_loader = None
             val_loader = None
-            if not _is_formal_nn_eval_enabled(cfg):
+            if (not _is_formal_nn_eval_enabled(cfg)) and (not _is_static_only_eval_enabled(cfg)):
                 loader_key = _loader_cache_key(cfg)
                 if loader_key not in loader_cache:
                     loader_cache[loader_key] = _build_cifar10_loaders(cfg)
@@ -3861,6 +3970,55 @@ def _evaluate_code_and_reward_direct(
         in_shape=in_shape,
         out_shape=out_shape,
     )
+
+    if _is_static_only_eval_enabled(cfg):
+        try:
+            builder = build_fn_from_code(code, in_shape, out_shape, prm, device)
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = f"{error_type}: {e}"
+            failure_result = _empty_eval_result(
+                error=error_msg,
+                seed_accuracy_baseline=seed_accuracy_baseline,
+                eval_limit_seconds=cfg.eval_limit_seconds,
+                backbone_model_names=backbone_model_names,
+            )
+            failure_result["frozen_eval"] = _nested_eval_payload(
+                failure_result,
+                eval_mode="frozen",
+                backbone_frozen=True,
+            )
+            failure_result["static_only"] = True
+            return failure_result
+        try:
+            static_result = evaluate_static_build_and_forward(
+                build_fn=builder,
+                cfg=cfg,
+                seed_accuracy_baseline=seed_accuracy_baseline,
+                backbone_model_names=backbone_model_names,
+            )
+            static_result["frozen_eval"] = _nested_eval_payload(
+                static_result,
+                eval_mode="frozen",
+                backbone_frozen=True,
+            )
+            return static_result
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = f"{error_type}: {e}"
+            failure_result = _empty_eval_result(
+                error=error_msg,
+                seed_accuracy_baseline=seed_accuracy_baseline,
+                eval_limit_seconds=cfg.eval_limit_seconds,
+                backbone_model_names=backbone_model_names,
+            )
+            failure_result["frozen_eval"] = _nested_eval_payload(
+                failure_result,
+                eval_mode="frozen",
+                backbone_frozen=True,
+            )
+            failure_result["static_only"] = True
+            return failure_result
 
     if _is_formal_nn_eval_enabled(cfg):
         try:

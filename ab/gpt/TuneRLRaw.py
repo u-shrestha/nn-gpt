@@ -97,14 +97,6 @@ class RawCodeLogger(TuneRL.SimpleCodeLogger):
 
     def log_generation(self, prompt: str, completion: str, reward: float, api_result=None):
         super().log_generation(prompt, completion, reward, api_result)
-        record = {
-            "prompt": prompt,
-            "completion": completion,
-            "reward": reward,
-            "api_result": api_result,
-        }
-        with open(self.samples_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def configure_raw_defaults() -> None:
