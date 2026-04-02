@@ -1107,7 +1107,9 @@ def run_sft_training():
 
 def patch_sft_runtime() -> tuple[str, str, str]:
     """Patch TuneRL to use the SFT runtime and CIFAR-aware reward."""
-    model_source, tokenizer_source, source_mode = resolve_sft_model_sources()
+    model_source = SFT_BASE_MODEL_ID
+    tokenizer_source = SFT_BASE_MODEL_ID
+    source_mode = "model-id-download"
     TuneRL.base_model = model_source
     TuneRL.tokenizer_source = tokenizer_source
     TuneRL.LOAD_EXISTING_MODEL = SFT_LOAD_INITIAL_ADAPTER
@@ -1187,7 +1189,6 @@ def main() -> None:
     bootstrap_sft_runtime()
 
     print(f"[SFT RL] Base model id: {SFT_BASE_MODEL_ID}")
-    print(f"[SFT RL] Preferred local model dir: {_repo_model_dir(SFT_BASE_MODEL_ID)}")
     print(f"[SFT RL] Base model source ({source_mode}): {model_source}")
     if tokenizer_source != model_source:
         print(f"[SFT RL] Tokenizer source: {tokenizer_source}")
