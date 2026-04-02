@@ -2236,6 +2236,11 @@ def _recompute_discovery_reward(
     return total_reward, r_primary, r_tiebreak
 
 
+def _setdefault_many(target: Dict[str, Any], defaults: Dict[str, Any]) -> None:
+    for key, value in defaults.items():
+        target.setdefault(key, value)
+
+
 def _attach_group_context(
     res: Dict[str, Any],
     *,
@@ -2244,107 +2249,117 @@ def _attach_group_context(
 ) -> Dict[str, Any]:
     frozen_train_acc = _optional_float(res.get("frozen_train_acc", res.get("train_acc")))
     frozen_test_acc = _optional_float(res.get("frozen_test_acc", res.get("test_acc", res.get("val_metric"))))
-    res.setdefault("test_acc", frozen_test_acc)
-    res.setdefault("frozen_train_acc", frozen_train_acc)
-    res.setdefault("frozen_test_acc", frozen_test_acc)
-    res.setdefault("unfrozen_train_acc", None)
-    res.setdefault("unfrozen_test_acc", None)
-    res.setdefault("frozen_eval", None)
-    res.setdefault("unfrozen_eval", None)
-    res.setdefault("seed_accuracy_baseline", seed_accuracy_baseline)
-    res.setdefault("seed_train_acc_gap", None)
-    res.setdefault("seed_train_acc_improved", False)
-    res.setdefault("accuracy_baseline", seed_accuracy_baseline)
-    res.setdefault("train_acc_gain", None)
-    res.setdefault("train_acc_improved", False)
-    res.setdefault("group_baseline_train_acc", group_context["group_baseline_train_acc"])
-    res.setdefault("group_train_acc_gain", None)
-    res.setdefault("group_train_acc_improved", False)
-    res.setdefault("reward_target_metric", REWARD_TARGET_METRIC)
-    res.setdefault("reward_target_value", _result_reward_target_value(res))
-    res.setdefault("group_baseline_reward_target_acc", group_context["group_baseline_reward_target_acc"])
-    res.setdefault("group_reward_target_gain", None)
-    res.setdefault("group_reward_target_improved", False)
-    res.setdefault("reward_batch_index", group_context["reward_batch_index"])
-    res.setdefault("reward_group_id", group_context["reward_group_id"])
-    res.setdefault("group_warmup", group_context["group_warmup"])
-    res.setdefault("timed_out", False)
-    res.setdefault("estimated_total_seconds", None)
-    res.setdefault("eval_limit_seconds", None)
-    res.setdefault("warmup_dense_reward", None)
-    res.setdefault("backbone_model_names", [])
-    res.setdefault("best_closed_group_mean_reward_target_acc", group_context["best_closed_group_mean_reward_target_acc"])
-    res.setdefault("best_closed_group_mean_train_acc", group_context["best_closed_group_mean_train_acc"])
-    res.setdefault("best_closed_group_mean_test_acc", group_context["best_closed_group_mean_test_acc"])
-    res.setdefault("best_reward_target_for_goal", None)
-    res.setdefault("r_dense", 0.0)
-    res.setdefault("r_prev_group", 0.0)
-    res.setdefault("r_best_group", 0.0)
-    res.setdefault("r_goal_best", 0.0)
-    res.setdefault("r_goal_match", 0.0)
-    res.setdefault("r_trainset_novelty", 0.0)
-    res.setdefault("r_generalization", 0.0)
-    res.setdefault("r_structure_group", 0.0)
-    res.setdefault("r_structure_archive", 0.0)
-    res.setdefault("r_batch_elite", 0.0)
-    res.setdefault("r_repeat_family", 0.0)
-    res.setdefault("r_plain_fuse_penalty", 0.0)
-    res.setdefault("r_no_progress_penalty", 0.0)
-    res.setdefault("batch_elite_rank", None)
-    res.setdefault("batch_elite_tier", "none")
-    res.setdefault("batch_elite_threshold_passed", False)
-    res.setdefault("goal_tag_hit_count", 0)
-    res.setdefault("goal_tag_total_count", 0)
-    res.setdefault("goal_tag_hit_rate", 0.0)
-    res.setdefault("prev_target_reward_target_acc", None)
-    res.setdefault("best_target_reward_target_acc", None)
-    res.setdefault("prev_target_train_acc", None)
-    res.setdefault("best_target_train_acc", None)
+    _setdefault_many(
+        res,
+        {
+            "test_acc": frozen_test_acc,
+            "frozen_train_acc": frozen_train_acc,
+            "frozen_test_acc": frozen_test_acc,
+            "unfrozen_train_acc": None,
+            "unfrozen_test_acc": None,
+            "frozen_eval": None,
+            "unfrozen_eval": None,
+            "seed_accuracy_baseline": seed_accuracy_baseline,
+            "seed_train_acc_gap": None,
+            "seed_train_acc_improved": False,
+            "accuracy_baseline": seed_accuracy_baseline,
+            "train_acc_gain": None,
+            "train_acc_improved": False,
+            "group_baseline_train_acc": group_context["group_baseline_train_acc"],
+            "group_train_acc_gain": None,
+            "group_train_acc_improved": False,
+            "reward_target_metric": REWARD_TARGET_METRIC,
+            "reward_target_value": _result_reward_target_value(res),
+            "group_baseline_reward_target_acc": group_context["group_baseline_reward_target_acc"],
+            "group_reward_target_gain": None,
+            "group_reward_target_improved": False,
+            "reward_batch_index": group_context["reward_batch_index"],
+            "reward_group_id": group_context["reward_group_id"],
+            "group_warmup": group_context["group_warmup"],
+            "timed_out": False,
+            "estimated_total_seconds": None,
+            "eval_limit_seconds": None,
+            "warmup_dense_reward": None,
+            "backbone_model_names": [],
+            "best_closed_group_mean_reward_target_acc": group_context["best_closed_group_mean_reward_target_acc"],
+            "best_closed_group_mean_train_acc": group_context["best_closed_group_mean_train_acc"],
+            "best_closed_group_mean_test_acc": group_context["best_closed_group_mean_test_acc"],
+            "best_reward_target_for_goal": None,
+            "r_dense": 0.0,
+            "r_prev_group": 0.0,
+            "r_best_group": 0.0,
+            "r_goal_best": 0.0,
+            "r_goal_match": 0.0,
+            "r_trainset_novelty": 0.0,
+            "r_generalization": 0.0,
+            "r_structure_group": 0.0,
+            "r_structure_archive": 0.0,
+            "r_batch_elite": 0.0,
+            "r_repeat_family": 0.0,
+            "r_plain_fuse_penalty": 0.0,
+            "r_no_progress_penalty": 0.0,
+            "batch_elite_rank": None,
+            "batch_elite_tier": "none",
+            "batch_elite_threshold_passed": False,
+            "goal_tag_hit_count": 0,
+            "goal_tag_total_count": 0,
+            "goal_tag_hit_rate": 0.0,
+            "prev_target_reward_target_acc": None,
+            "best_target_reward_target_acc": None,
+            "prev_target_train_acc": None,
+            "best_target_train_acc": None,
+        },
+    )
 
     open_discovery = res.setdefault("open_discovery", {})
-    open_discovery.setdefault("r_primary", 0.0)
-    open_discovery.setdefault("r_tiebreak", 0.0)
-    open_discovery.setdefault("r_trainset_novelty", res.get("r_trainset_novelty", 0.0))
-    open_discovery.setdefault("r_dense", res.get("r_dense", 0.0))
-    open_discovery.setdefault("r_prev_group", res.get("r_prev_group", 0.0))
-    open_discovery.setdefault("r_best_group", res.get("r_best_group", 0.0))
-    open_discovery.setdefault("r_goal_best", res.get("r_goal_best", 0.0))
-    open_discovery.setdefault("r_goal_match", res.get("r_goal_match", 0.0))
-    open_discovery.setdefault("r_generalization", res.get("r_generalization", 0.0))
-    open_discovery.setdefault("r_structure_group", res.get("r_structure_group", 0.0))
-    open_discovery.setdefault("r_structure_archive", res.get("r_structure_archive", 0.0))
-    open_discovery.setdefault("r_batch_elite", res.get("r_batch_elite", 0.0))
-    open_discovery.setdefault("r_repeat_family", res.get("r_repeat_family", 0.0))
-    open_discovery.setdefault("r_plain_fuse_penalty", res.get("r_plain_fuse_penalty", 0.0))
-    open_discovery.setdefault("r_no_progress_penalty", res.get("r_no_progress_penalty", 0.0))
-    open_discovery.setdefault("batch_elite_rank", res.get("batch_elite_rank"))
-    open_discovery.setdefault("batch_elite_tier", res.get("batch_elite_tier", "none"))
-    open_discovery.setdefault("batch_elite_threshold_passed", res.get("batch_elite_threshold_passed", False))
-    open_discovery.setdefault("novel_vs_trainset_family", False)
-    open_discovery.setdefault("novel_vs_trainset_graph", False)
-    open_discovery.setdefault("archive_snapshot_family_freq", 0)
-    open_discovery.setdefault("batch_same_family_count", 0)
-    open_discovery.setdefault("group_baseline_train_acc", group_context["group_baseline_train_acc"])
-    open_discovery.setdefault("group_baseline_reward_target_acc", group_context["group_baseline_reward_target_acc"])
-    open_discovery.setdefault("best_closed_group_mean_train_acc", group_context["best_closed_group_mean_train_acc"])
-    open_discovery.setdefault("best_closed_group_mean_reward_target_acc", group_context["best_closed_group_mean_reward_target_acc"])
-    open_discovery.setdefault("best_closed_group_mean_test_acc", group_context["best_closed_group_mean_test_acc"])
-    open_discovery.setdefault("prev_target_train_acc", res.get("prev_target_train_acc"))
-    open_discovery.setdefault("best_target_train_acc", res.get("best_target_train_acc"))
-    open_discovery.setdefault("group_train_acc_gain", res.get("group_train_acc_gain"))
-    open_discovery.setdefault("group_train_acc_improved", res.get("group_train_acc_improved", False))
-    open_discovery.setdefault("reward_target_metric", res.get("reward_target_metric", REWARD_TARGET_METRIC))
-    open_discovery.setdefault("reward_target_value", res.get("reward_target_value"))
-    open_discovery.setdefault("group_reward_target_gain", res.get("group_reward_target_gain"))
-    open_discovery.setdefault("group_reward_target_improved", res.get("group_reward_target_improved", False))
-    open_discovery.setdefault("goal_tag_hit_count", res.get("goal_tag_hit_count", 0))
-    open_discovery.setdefault("goal_tag_total_count", res.get("goal_tag_total_count", 0))
-    open_discovery.setdefault("goal_tag_hit_rate", res.get("goal_tag_hit_rate", 0.0))
-    open_discovery.setdefault("prev_target_reward_target_acc", res.get("prev_target_reward_target_acc"))
-    open_discovery.setdefault("best_target_reward_target_acc", res.get("best_target_reward_target_acc"))
-    open_discovery.setdefault("reward_batch_index", group_context["reward_batch_index"])
-    open_discovery.setdefault("reward_group_id", group_context["reward_group_id"])
-    open_discovery.setdefault("group_warmup", group_context["group_warmup"])
+    _setdefault_many(
+        open_discovery,
+        {
+            "r_primary": 0.0,
+            "r_tiebreak": 0.0,
+            "r_trainset_novelty": res.get("r_trainset_novelty", 0.0),
+            "r_dense": res.get("r_dense", 0.0),
+            "r_prev_group": res.get("r_prev_group", 0.0),
+            "r_best_group": res.get("r_best_group", 0.0),
+            "r_goal_best": res.get("r_goal_best", 0.0),
+            "r_goal_match": res.get("r_goal_match", 0.0),
+            "r_generalization": res.get("r_generalization", 0.0),
+            "r_structure_group": res.get("r_structure_group", 0.0),
+            "r_structure_archive": res.get("r_structure_archive", 0.0),
+            "r_batch_elite": res.get("r_batch_elite", 0.0),
+            "r_repeat_family": res.get("r_repeat_family", 0.0),
+            "r_plain_fuse_penalty": res.get("r_plain_fuse_penalty", 0.0),
+            "r_no_progress_penalty": res.get("r_no_progress_penalty", 0.0),
+            "batch_elite_rank": res.get("batch_elite_rank"),
+            "batch_elite_tier": res.get("batch_elite_tier", "none"),
+            "batch_elite_threshold_passed": res.get("batch_elite_threshold_passed", False),
+            "novel_vs_trainset_family": False,
+            "novel_vs_trainset_graph": False,
+            "archive_snapshot_family_freq": 0,
+            "batch_same_family_count": 0,
+            "group_baseline_train_acc": group_context["group_baseline_train_acc"],
+            "group_baseline_reward_target_acc": group_context["group_baseline_reward_target_acc"],
+            "best_closed_group_mean_train_acc": group_context["best_closed_group_mean_train_acc"],
+            "best_closed_group_mean_reward_target_acc": group_context["best_closed_group_mean_reward_target_acc"],
+            "best_closed_group_mean_test_acc": group_context["best_closed_group_mean_test_acc"],
+            "prev_target_train_acc": res.get("prev_target_train_acc"),
+            "best_target_train_acc": res.get("best_target_train_acc"),
+            "group_train_acc_gain": res.get("group_train_acc_gain"),
+            "group_train_acc_improved": res.get("group_train_acc_improved", False),
+            "reward_target_metric": res.get("reward_target_metric", REWARD_TARGET_METRIC),
+            "reward_target_value": res.get("reward_target_value"),
+            "group_reward_target_gain": res.get("group_reward_target_gain"),
+            "group_reward_target_improved": res.get("group_reward_target_improved", False),
+            "goal_tag_hit_count": res.get("goal_tag_hit_count", 0),
+            "goal_tag_total_count": res.get("goal_tag_total_count", 0),
+            "goal_tag_hit_rate": res.get("goal_tag_hit_rate", 0.0),
+            "prev_target_reward_target_acc": res.get("prev_target_reward_target_acc"),
+            "best_target_reward_target_acc": res.get("best_target_reward_target_acc"),
+            "reward_batch_index": group_context["reward_batch_index"],
+            "reward_group_id": group_context["reward_group_id"],
+            "group_warmup": group_context["group_warmup"],
+        },
+    )
     return res
 
 
