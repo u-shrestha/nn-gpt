@@ -72,6 +72,61 @@ _TRAIN_GPU_TOKENS_ENV = "NNGPT_TRAIN_GPU_TOKENS"
 _REWARD_GPU_TOKENS_ENV = "NNGPT_REWARD_GPU_TOKENS"
 
 
+def _repo_model_dir(model_id: str) -> Path:
+    return Path("out/llm") / model_id
+
+
+def _repo_tokenizer_dir(model_id: str) -> Path:
+    return Path("out/tokenizer") / model_id
+
+
+def _has_model_files(model_dir: Path) -> bool:
+    if not model_dir.is_dir():
+        return False
+    if not (model_dir / "config.json").exists():
+        return False
+    return any(
+        (model_dir / filename).exists()
+        for filename in (
+            "model.safetensors",
+            "model.safetensors.index.json",
+            "pytorch_model.bin",
+            "pytorch_model.bin.index.json",
+        )
+    )
+
+
+def _has_tokenizer_files(tokenizer_dir: Path) -> bool:
+    if not tokenizer_dir.is_dir():
+        return False
+    return any(
+        (tokenizer_dir / filename).exists()
+        for filename in (
+            "tokenizer_config.json",
+            "tokenizer.json",
+            "tokenizer.model",
+            "vocab.json",
+        )
+    )
+
+
+def resolve_sft_model_sources() -> tuple[str, str, str]:
+    repo_model_dir = _repo_model_dir(SFT_BASE_MODEL_ID)
+    repo_tokenizer_dir = _repo_tokenizer_dir(SFT_BASE_MODEL_ID)
+
+    if _has_model_files(repo_model_dir):
+        if _has_tokenizer_files(repo_model_dir):
+            return str(repo_model_dir), str(repo_model_dir), "out/llm"
+        if _has_tokenizer_files(repo_tokenizer_dir):
+            return str(repo_model_dir), str(repo_tokenizer_dir), "out/llm+out/tokenizer"
+        return str(repo_model_dir), SFT_BASE_MODEL_ID, "out/llm+model-id-tokenizer"
+
+    if _has_tokenizer_files(repo_tokenizer_dir):
+        return SFT_BASE_MODEL_ID, str(repo_tokenizer_dir), "model-id+out/tokenizer"
+
+    return SFT_BASE_MODEL_ID, SFT_BASE_MODEL_ID, "model-id-download"
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None or raw == "":
