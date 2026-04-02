@@ -2,6 +2,7 @@ import os
 import shutil
 import random
 import inspect
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -240,6 +241,39 @@ def _resolve_sft_local_rank(runtime: Dict[str, Any]) -> Dict[str, Any]:
         "visible_cuda_devices": visible_cuda_devices,
         "resolution": "single_process_training",
     }
+
+
+def _maybe_relaunch_sft_with_visible_gpu_workers() -> None:
+    if os.getenv("NNGPT_SFT_AUTO_TORCHRUN_DONE", "") == "1":
+        return
+    if os.getenv("WORLD_SIZE") not in (None, "", "1"):
+        return
+    if os.getenv("LOCAL_RANK") not in (None, ""):
+        return
+
+    import torch
+
+    if not torch.cuda.is_available():
+        return
+    visible_cuda_devices = int(torch.cuda.device_count())
+    _configure_sft_gpu_role_env(visible_cuda_devices)
+    if visible_cuda_devices <= 1:
+        return
+
+    os.environ["NNGPT_SFT_AUTO_TORCHRUN_DONE"] = "1"
+    print("[SFT RL] Relaunching with single training worker: nproc_per_node=1")
+    os.execvpe(
+        sys.executable,
+        [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--nproc_per_node=1",
+            "-m",
+            "ab.gpt.TuneRLSft",
+        ],
+        os.environ,
+    )
 
 
 def _maybe_init_single_process_deepspeed_group(
@@ -1107,9 +1141,7 @@ def run_sft_training():
 
 def patch_sft_runtime() -> tuple[str, str, str]:
     """Patch TuneRL to use the SFT runtime and CIFAR-aware reward."""
-    model_source = SFT_BASE_MODEL_ID
-    tokenizer_source = SFT_BASE_MODEL_ID
-    source_mode = "model-id-download"
+    model_source, tokenizer_source, source_mode = resolve_sft_model_sources()
     TuneRL.base_model = model_source
     TuneRL.tokenizer_source = tokenizer_source
     TuneRL.LOAD_EXISTING_MODEL = SFT_LOAD_INITIAL_ADAPTER
@@ -1184,6 +1216,7 @@ def main() -> None:
             f"train_gpu_tokens={gpu_role_plan['train_gpu_tokens']} "
             f"reward_gpu_tokens={gpu_role_plan['reward_gpu_tokens']}"
         )
+    _maybe_relaunch_sft_with_visible_gpu_workers()
     _validate_sft_visible_worker_count(RewardUtil.get_distributed_runtime_info())
     model_source, tokenizer_source, source_mode = patch_sft_runtime()
     bootstrap_sft_runtime()
