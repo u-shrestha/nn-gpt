@@ -28,6 +28,7 @@ SFT_DATASET_LIMIT = 500
 SFT_FEEDBACK_CHAR_BUDGET = 1200
 SFT_LR = 5e-5
 SFT_NUM_EPOCHS = 5
+SFT_KL_COEF = 5e-4
 SFT_LORA_R = 16
 SFT_LORA_ALPHA = 32
 SFT_LORA_DROPOUT = 0.05
@@ -876,6 +877,13 @@ def _build_sft_grpo_config(
         "gradient_checkpointing": True,
         "num_generations": runtime_settings["global_num_generations"],
     }
+    explicit_kl_coef = TuneRL.env_float("NNGPT_RL_KL_COEF", SFT_KL_COEF)
+    if "beta" in config_signature.parameters:
+        config_kwargs["beta"] = explicit_kl_coef
+    elif "kl_coef" in config_signature.parameters:
+        config_kwargs["kl_coef"] = explicit_kl_coef
+    else:
+        raise RuntimeError("Installed GRPOConfig does not expose `beta` or `kl_coef`; cannot set explicit KL control")
     if use_deepspeed:
         if "deepspeed" not in config_signature.parameters:
             raise RuntimeError("Installed GRPOConfig does not support the `deepspeed` argument")
@@ -1168,6 +1176,7 @@ def main() -> None:
     if SFT_LOAD_INITIAL_ADAPTER:
         print(f"[SFT RL] Init adapter path: {SFT_INIT_ADAPTER}")
     print(f"[SFT RL] Temperature: {SFT_TEMPERATURE}")
+    print(f"[SFT RL] KL coef: {TuneRL.env_float('NNGPT_RL_KL_COEF', SFT_KL_COEF):.6f}")
     print(
         f"[SFT RL] Eval plan: stage1=static_only(no-check_nn), stage2/3=nn-dataset-formal(cifar-10), "
         f"resize={SFT_EVAL_IMAGE_SIZE}, batch={SFT_EVAL_BATCH_SIZE}, "

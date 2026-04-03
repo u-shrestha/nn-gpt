@@ -183,11 +183,20 @@ MAX_STAGE_SAMPLE_HISTORY = 24000
 MAX_STAGE_GROUP_HISTORY = 512
 STATIC_STAGE_REWARD_TARGET_METRIC = "stage1_static_score"
 FORMAL_STAGE_REWARD_TARGET_METRIC = "frozen_test_acc"
-STAGE1_EXECUTABLE_BONUS = 0.12
-STAGE1_DISCOVERY_FAMILY_BONUS = 0.16
-STAGE1_DISCOVERY_GRAPH_BONUS = 0.08
-STAGE1_DOMINANT_FAMILY_PENALTY = -0.08
-STAGE1_PLAIN_PARALLEL_PENALTY = -0.10
+STAGE1_EXECUTABLE_BONUS = 0.04
+STAGE1_DISCOVERY_FAMILY_BONUS = 0.42
+STAGE1_DISCOVERY_GRAPH_BONUS = 0.20
+STAGE1_STATIC_BASE_SCORE = 0.02
+STAGE1_GOAL_MATCH_SCALE = 0.10
+STAGE1_STRUCTURE_GROUP_SCALE = 1.45
+STAGE1_STRUCTURE_ARCHIVE_SCALE = 1.85
+STAGE1_NON_DISCOVERY_EXECUTABLE_PENALTY = -0.12
+STAGE1_ARCHIVE_REPEAT_STEP_PENALTY = -0.05
+STAGE1_ARCHIVE_REPEAT_MAX_PENALTY = -0.30
+STAGE1_BATCH_REPEAT_STEP_PENALTY = -0.04
+STAGE1_BATCH_REPEAT_MAX_PENALTY = -0.20
+STAGE1_DOMINANT_FAMILY_PENALTY = -0.30
+STAGE1_PLAIN_PARALLEL_PENALTY = -0.42
 STAGE2_DENSE_SCALE = 0.75
 STAGE2_PREV_GROUP_SCALE = 0.70
 STAGE2_BEST_GROUP_SCALE = 0.70
@@ -3289,16 +3298,31 @@ def base_discovery_reward_fn(
         reward_target_value = None
         if executable_candidate:
             r_dense = STAGE1_EXECUTABLE_BONUS
+            r_structure_group *= STAGE1_STRUCTURE_GROUP_SCALE
+            r_structure_archive *= STAGE1_STRUCTURE_ARCHIVE_SCALE
             if discovery_candidate:
                 r_goal_best = STAGE1_DISCOVERY_FAMILY_BONUS
             elif novel_vs_trainset_graph:
                 r_goal_best = STAGE1_DISCOVERY_GRAPH_BONUS
-            r_goal_match = 0.06 * goal_tag_hit_rate
+            else:
+                r_no_progress_penalty = STAGE1_NON_DISCOVERY_EXECUTABLE_PENALTY
+            if archive_snapshot_family_freq > 0:
+                archive_repeat_penalty = max(
+                    STAGE1_ARCHIVE_REPEAT_MAX_PENALTY,
+                    STAGE1_ARCHIVE_REPEAT_STEP_PENALTY * float(archive_snapshot_family_freq),
+                )
+                r_no_progress_penalty += archive_repeat_penalty
+            if batch_same_family_count >= 3:
+                batch_repeat_penalty = max(
+                    STAGE1_BATCH_REPEAT_MAX_PENALTY,
+                    STAGE1_BATCH_REPEAT_STEP_PENALTY * float(batch_same_family_count - 2),
+                )
+                r_no_progress_penalty += batch_repeat_penalty
+            r_goal_match = STAGE1_GOAL_MATCH_SCALE * goal_tag_hit_rate
             r_repeat_family = _clip(r_repeat_family, STAGE1_DOMINANT_FAMILY_PENALTY, 0.0)
             r_plain_fuse_penalty = _clip(r_plain_fuse_penalty, STAGE1_PLAIN_PARALLEL_PENALTY, 0.0)
             reward_target_value = _clip(
-                0.10
-                + max(0.0, r_dense)
+                STAGE1_STATIC_BASE_SCORE
                 + max(0.0, r_goal_best)
                 + max(0.0, r_structure_group)
                 + max(0.0, r_structure_archive),
@@ -3315,6 +3339,7 @@ def base_discovery_reward_fn(
             + r_structure_archive
             + r_repeat_family
             + r_plain_fuse_penalty
+            + r_no_progress_penalty
         )
         r_tiebreak = r_goal_match
         total_reward = _clip(r_primary + r_tiebreak, -2.0, 2.0)
