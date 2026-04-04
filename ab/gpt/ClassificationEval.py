@@ -11,29 +11,34 @@ from ab.gpt.util.Const import new_out_file
 import re
 
 def extract_answer(llm_output: str, valid_datasets: list) -> str | None:
-    """Find the first valid dataset name mentioned in the LLM output."""
+    """Find the first valid dataset name mentioned in the LLM output.
+
+    Three passes in order of strictness:
+    1. Exact match — handles clean one-word responses.
+    2. Whole-word regex — avoids prefix confusion (e.g. "cifar-10" inside "cifar-100").
+    3. Normalized whole-word regex — handles hyphens/underscores written as spaces.
+    """
     if not llm_output:
         return None
     text = llm_output.strip().lower()
-    # Exact match first (handles clean one-word responses)
-    for ds in valid_datasets:
-        ds_lower = ds.lower() #new
 
+    # Pass 1: exact match
+    for ds in valid_datasets:
         if text == ds.lower():
             return ds
-        if ds_lower in text:
-            return ds
 
-        ds_normalized = ds_lower.replace('-', ' ').replace('_', ' ')
-        if ds_normalized in text:
-            return ds
-    return None
-    # Substring fallback (handles "Answer: cifar-100" etc.)
+    # Pass 2: whole-word regex match
     for ds in valid_datasets:
         if re.search(r'\b' + re.escape(ds.lower()) + r'\b', text):
             return ds
-        # if ds.lower() in text:
-        #     return ds
+
+    # Pass 3: normalized whole-word match (hyphens/underscores → spaces)
+    text_normalized = text.replace('-', ' ').replace('_', ' ')
+    for ds in valid_datasets:
+        ds_normalized = ds.lower().replace('-', ' ').replace('_', ' ')
+        if re.search(r'\b' + re.escape(ds_normalized) + r'\b', text_normalized):
+            return ds
+
     return None
 
 
