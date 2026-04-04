@@ -162,16 +162,20 @@ RL_STAGE_TO_INDEX = {
     for index, stage_name in enumerate(RL_STAGE_ORDER, start=1)
 }
 STAGE_REFERENCE_MIN_GROUPS = {
-    STAGE1_STRUCTURE_EXPLORE: 10,
+    STAGE1_STRUCTURE_EXPLORE: 4,
     STAGE2_FORMAL_EXPLORE: 5,
     STAGE3_FORMAL_OPTIMIZE: 0,
 }
-STAGE1_GATE_WINDOW_GENERATIONS = 4000
+STAGE1_GATE_WINDOW_GENERATIONS = 1600
 STAGE2_GATE_WINDOW_GENERATIONS = 4000
 RECOVERY_GATE_WINDOW_GENERATIONS = 2000
-STAGE1_GATE_EXECUTABLE_MIN = 64
-STAGE1_GATE_DISCOVERY_MIN = 24
-STAGE1_GATE_UNIQUE_DISCOVERY_FAMILIES_MIN = 8
+STAGE1_GATE_EXECUTABLE_MIN = 96
+STAGE1_GATE_DISCOVERY_MIN = 8
+STAGE1_GATE_UNIQUE_DISCOVERY_FAMILIES_MIN = 6
+STAGE1_FORCE_PROMOTION_MIN_GROUPS = 10
+STAGE1_FORCE_PROMOTION_EXECUTABLE_MIN = 800
+STAGE1_FORCE_PROMOTION_DISCOVERY_MIN = 8
+STAGE1_FORCE_PROMOTION_UNIQUE_DISCOVERY_FAMILIES_MIN = 6
 STAGE2_GATE_FORMAL_SUCCESS_MIN = 16
 STAGE2_GATE_UNIQUE_FORMAL_FAMILIES_MIN = 6
 STAGE2_GATE_IMPROVING_GROUPS_REQUIRED = 2
@@ -190,13 +194,13 @@ STAGE1_STATIC_BASE_SCORE = 0.02
 STAGE1_GOAL_MATCH_SCALE = 0.10
 STAGE1_STRUCTURE_GROUP_SCALE = 1.45
 STAGE1_STRUCTURE_ARCHIVE_SCALE = 1.85
-STAGE1_NON_DISCOVERY_EXECUTABLE_PENALTY = -0.12
-STAGE1_ARCHIVE_REPEAT_STEP_PENALTY = -0.05
-STAGE1_ARCHIVE_REPEAT_MAX_PENALTY = -0.30
-STAGE1_BATCH_REPEAT_STEP_PENALTY = -0.04
-STAGE1_BATCH_REPEAT_MAX_PENALTY = -0.20
-STAGE1_DOMINANT_FAMILY_PENALTY = -0.30
-STAGE1_PLAIN_PARALLEL_PENALTY = -0.42
+STAGE1_NON_DISCOVERY_EXECUTABLE_PENALTY = -0.20
+STAGE1_ARCHIVE_REPEAT_STEP_PENALTY = -0.08
+STAGE1_ARCHIVE_REPEAT_MAX_PENALTY = -0.60
+STAGE1_BATCH_REPEAT_STEP_PENALTY = -0.08
+STAGE1_BATCH_REPEAT_MAX_PENALTY = -0.40
+STAGE1_DOMINANT_FAMILY_PENALTY = -0.60
+STAGE1_PLAIN_PARALLEL_PENALTY = -0.70
 STAGE2_DENSE_SCALE = 0.75
 STAGE2_PREV_GROUP_SCALE = 0.70
 STAGE2_BEST_GROUP_SCALE = 0.70
@@ -1825,7 +1829,6 @@ def _stage1_gate_ready() -> bool:
         if generations_since_recovery < STAGE_RECOVERY_RELEASE_GENERATIONS and new_families_since_recovery < STAGE_RECOVERY_RELEASE_DISCOVERY_FAMILIES:
             return False
     recent_generations = _recent_stage_generation_window(STAGE1_STRUCTURE_EXPLORE, STAGE1_GATE_WINDOW_GENERATIONS)
-    recent_groups = _recent_stage_group_window(STAGE1_STRUCTURE_EXPLORE, 5)
     current_entry_group_count = len(_recent_stage_group_window(STAGE1_STRUCTURE_EXPLORE, MAX_STAGE_GROUP_HISTORY))
     if len(recent_generations) < STAGE1_GATE_WINDOW_GENERATIONS:
         return False
@@ -1834,14 +1837,39 @@ def _stage1_gate_ready() -> bool:
     executable_count = sum(1 for item in recent_generations if bool(item.get("executable_candidate")))
     discovery_rows = [item for item in recent_generations if bool(item.get("discovery_candidate"))]
     unique_discovery_families = len(_family_hash_set(discovery_rows, key="family_hash"))
-    mean_dominant_share = _mean_dominant_share(recent_groups)
     return bool(
         executable_count >= STAGE1_GATE_EXECUTABLE_MIN
         and len(discovery_rows) >= STAGE1_GATE_DISCOVERY_MIN
         and unique_discovery_families >= STAGE1_GATE_UNIQUE_DISCOVERY_FAMILIES_MIN
-        and mean_dominant_share is not None
-        and mean_dominant_share <= 0.60
     )
+
+
+def _stage1_force_promotion_ready() -> Optional[Dict[str, int]]:
+    if bool(recovery_active):
+        return None
+    recent_generations = _recent_stage_generation_window(STAGE1_STRUCTURE_EXPLORE, STAGE1_GATE_WINDOW_GENERATIONS)
+    current_entry_group_count = len(_recent_stage_group_window(STAGE1_STRUCTURE_EXPLORE, MAX_STAGE_GROUP_HISTORY))
+    if len(recent_generations) < STAGE1_GATE_WINDOW_GENERATIONS:
+        return None
+    if current_entry_group_count < STAGE1_FORCE_PROMOTION_MIN_GROUPS:
+        return None
+    recent_executable_count = sum(1 for item in recent_generations if bool(item.get("executable_candidate")))
+    discovery_rows = [item for item in recent_generations if bool(item.get("discovery_candidate"))]
+    recent_discovery_count = len(discovery_rows)
+    recent_unique_discovery_families = len(_family_hash_set(discovery_rows, key="family_hash"))
+    if recent_executable_count < STAGE1_FORCE_PROMOTION_EXECUTABLE_MIN:
+        return None
+    if recent_discovery_count < STAGE1_FORCE_PROMOTION_DISCOVERY_MIN:
+        return None
+    if recent_unique_discovery_families < STAGE1_FORCE_PROMOTION_UNIQUE_DISCOVERY_FAMILIES_MIN:
+        return None
+    return {
+        "stage_group_count": current_entry_group_count,
+        "recent_generation_count": len(recent_generations),
+        "recent_executable_count": recent_executable_count,
+        "recent_discovery_count": recent_discovery_count,
+        "recent_unique_discovery_families": recent_unique_discovery_families,
+    }
 
 
 def _stage2_gate_ready() -> bool:
@@ -2005,14 +2033,32 @@ def _evaluate_stage_transitions(group_progress_payload: Dict[str, Any]) -> None:
         )
         return
 
-    if stage_name == STAGE1_STRUCTURE_EXPLORE and _stage1_gate_ready():
-        _transition_to_stage(
-            STAGE2_FORMAL_EXPLORE,
-            event="entered",
-            reason="stage1_gate_satisfied",
-            group_progress_payload=group_progress_payload,
-        )
-        return
+    if stage_name == STAGE1_STRUCTURE_EXPLORE:
+        force_promotion_snapshot = _stage1_force_promotion_ready()
+        if force_promotion_snapshot is not None:
+            _transition_to_stage(
+                STAGE2_FORMAL_EXPLORE,
+                event="entered",
+                reason=(
+                    "stage1_forced_promotion_after_plateau:"
+                    f" stage_groups={force_promotion_snapshot['stage_group_count']},"
+                    f" recent_generations={force_promotion_snapshot['recent_generation_count']},"
+                    f" recent_executable_count={force_promotion_snapshot['recent_executable_count']},"
+                    f" recent_discovery_count={force_promotion_snapshot['recent_discovery_count']},"
+                    " recent_unique_discovery_families="
+                    f"{force_promotion_snapshot['recent_unique_discovery_families']}"
+                ),
+                group_progress_payload=group_progress_payload,
+            )
+            return
+        if _stage1_gate_ready():
+            _transition_to_stage(
+                STAGE2_FORMAL_EXPLORE,
+                event="entered",
+                reason="stage1_gate_satisfied",
+                group_progress_payload=group_progress_payload,
+            )
+            return
 
     if stage_name == STAGE2_FORMAL_EXPLORE and _stage2_gate_ready():
         _transition_to_stage(
@@ -2081,6 +2127,7 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
     prev_closed_group_mean_reward_target_acc = closed_mean_reward_target
     prev_closed_group_train_acc_mean = closed_mean_train
     prev_closed_group_mean_test_acc = closed_mean_test
+    stage1_feedback_ready = bool(current_group_top_feedback) or stage_name != STAGE1_STRUCTURE_EXPLORE
 
     if best_closed_group_mean_reward_target_acc is None or (
         closed_mean_reward_target is not None and closed_mean_reward_target > best_closed_group_mean_reward_target_acc
@@ -2088,7 +2135,8 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
         if closed_mean_reward_target is not None:
             best_closed_group_mean_reward_target_acc = closed_mean_reward_target
             best_closed_group_id = current_group_id
-            best_group_feedback[:] = list(current_group_top_feedback[:FEEDBACK_SUMMARY_LIMIT])
+            if stage1_feedback_ready:
+                best_group_feedback[:] = list(current_group_top_feedback[:FEEDBACK_SUMMARY_LIMIT])
 
     for goal_key, candidate_best in current_group_goal_best_candidates.items():
         best_reward_target_by_goal[goal_key] = max(
@@ -2116,7 +2164,8 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
         dominant_family_hash = None
         dominant_family_share = 0.0
 
-    prev_group_feedback[:] = list(current_group_top_feedback[:FEEDBACK_SUMMARY_LIMIT])
+    if stage1_feedback_ready:
+        prev_group_feedback[:] = list(current_group_top_feedback[:FEEDBACK_SUMMARY_LIMIT])
 
     progress_path, feedback_path, best_feedback_path = _group_feedback_paths()
     worker_info = get_eval_worker_diagnostics()
@@ -3247,6 +3296,8 @@ def base_discovery_reward_fn(
     r_repeat_family = 0.0
     r_plain_fuse_penalty = 0.0
     r_no_progress_penalty = 0.0
+    dominant_family_repeat = False
+    plain_parallel_repeat = False
     executable_candidate = _is_executable_candidate(res, graph_info)
     formal_success_candidate = _is_trainable_candidate(res, graph_info)
     discovery_candidate = False
@@ -3286,12 +3337,14 @@ def base_discovery_reward_fn(
             and graph_info.family_hash == dominant_family_hash
             and not discovery_candidate
         ):
+            dominant_family_repeat = True
             r_repeat_family = REPEAT_FAMILY_PENALTY
         if (
             (not group_warmup)
             and graph_info.is_plain_parallel_triple
             and not discovery_candidate
         ):
+            plain_parallel_repeat = True
             r_plain_fuse_penalty = PLAIN_FUSE_PENALTY
 
     if stage_name == STAGE1_STRUCTURE_EXPLORE:
@@ -3329,6 +3382,18 @@ def base_discovery_reward_fn(
                 0.0,
                 1.0,
             )
+            shallow_pattern_repeat = bool(
+                (not discovery_candidate)
+                and shallow_one_shot
+                and (archive_snapshot_family_freq > 0 or batch_same_family_count >= 3)
+            )
+            if (
+                (not discovery_candidate and archive_snapshot_family_freq > 3)
+                or shallow_pattern_repeat
+                or plain_parallel_repeat
+                or dominant_family_repeat
+            ):
+                reward_target_value = min(float(reward_target_value), 0.18)
         if (reward_target_value is not None) and (effective_group_baseline_reward_target_acc is not None) and (not group_warmup):
             group_reward_target_gain = float(reward_target_value - effective_group_baseline_reward_target_acc)
             group_reward_target_improved = bool(group_reward_target_gain >= GROUP_IMPROVEMENT_DELTA)
@@ -4060,6 +4125,7 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
     global B_index
 
     current_batch_results: List[Dict[str, Any]] = []
+    stage_name = str(current_stage_name)
     for item in scored_results:
         index = int(item["local_index"])
         prompt = item["prompt"]
@@ -4076,7 +4142,8 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
         if reward_target_value is not None:
             current_batch_results.append(res)
         if is_executable:
-            _record_current_group_trainable_sample(goal_key, res, graph_info)
+            if stage_name != STAGE1_STRUCTURE_EXPLORE or bool(res.get("discovery_candidate")):
+                _record_current_group_trainable_sample(goal_key, res, graph_info)
             graph_archive_counts[graph_info.graph_hash] += 1
             family_archive_counts[graph_info.family_id] += 1
             family_hash_archive_counts[graph_info.family_hash] += 1

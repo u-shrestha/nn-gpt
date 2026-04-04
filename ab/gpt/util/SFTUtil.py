@@ -327,8 +327,8 @@ Produce one trainable architecture that improves short-budget training accuracy 
    - Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b`
    - Initialize both with `TorchVision(model=..., in_channels=...)`
    - Use both backbones in `forward`
-   - The backbone model names do NOT need to come from a whitelist; runtime trainability is what matters
-   - `{available_backbones}` is only an example/recommended source list if you want safe torchvision choices
+   - Choose both backbone model names from this exact list: [{available_backbones}]
+   - Do not invent aliases, renamed variants, or unsupported backbone names
    - Do not omit either backbone, and do not add a third backbone
    - Both backbones are frozen during RL proxy training and final training
 
@@ -343,11 +343,14 @@ Produce one trainable architecture that improves short-budget training accuracy 
    - Implement `drop_conv3x3_block`
    - Implement `Net.__init__`
    - Implement `Net.forward`
-   - Call `self.infer_dimensions_dynamically(out_shape[0])` inside `__init__`
-   - Always define `self.device`, `self.use_amp`, and `self._input_spec`
+   - In `__init__`, set `self.device = device`, `self.use_amp = torch.cuda.is_available()`, and `self._input_spec = tuple(in_shape[1:])`
+   - After that, call `self.infer_dimensions_dynamically(out_shape[0])`
+   - Do not use `_input_dim` or `_output_dim`
+   - Do not call `infer_dimensions(...)`
+   - Do not reference undefined names such as `dropout_prob`, `in_channels`, or `features`
 
 7. Component guidance
-   - You may choose any torchvision backbone names that can instantiate at runtime; examples include [{available_backbones}]
+   - Reuse only backbone names from [{available_backbones}]
    - You may define optional modules such as `self.stem`, `self.bridge`, `self.project`, `self.mixer`, `self.fuse`
    - You may use `TorchVision(...)`, `FractalUnit(...)`, `nn.Sequential(...)`, and standard `nn.*` layers inside `__init__`
    - Use all major modules you define in `forward`
@@ -426,8 +429,9 @@ Produce one trainable architecture that improves short-budget training accuracy 
 4. Dual-backbone rules are mandatory
    - Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b`
    - Initialize both with `TorchVision(model=..., in_channels=...)`
-   - Backbone names do NOT need to be on a whitelist and they may be the same or different, as long as runtime instantiation and training proxy evaluation succeed
-   - `{available_backbones}` is only a recommended example list of safe torchvision options
+   - Choose both backbone model names from this exact list: [{available_backbones}]
+   - The two backbone names may be the same or different, but both must come from that list
+   - Do not invent aliases, renamed variants, or unsupported backbone names
    - Both backbones must appear in `__init__` and `forward`
    - Do not omit either backbone, and do not add a third backbone
    - Both backbones are frozen during RL proxy training and final training
@@ -437,7 +441,10 @@ Produce one trainable architecture that improves short-budget training accuracy 
    - Implement `Net.__init__`
    - Implement `Net.forward`
    - In `__init__`, set `self.device = device`, `self.use_amp = torch.cuda.is_available()`, and `self._input_spec = tuple(in_shape[1:])`
-   - Call `self.infer_dimensions_dynamically(out_shape[0])`
+   - After that exact initialization sequence, call `self.infer_dimensions_dynamically(out_shape[0])`
+   - Do not use `_input_dim` or `_output_dim`
+   - Do not call `infer_dimensions(...)`
+   - Do not reference undefined names such as `dropout_prob`, `in_channels`, or `features`
 
 6. Build an accuracy-oriented graph
    - Avoid the plain one-shot parallel fuse topology because it is usually too weak

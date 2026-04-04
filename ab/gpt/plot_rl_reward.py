@@ -549,6 +549,7 @@ def _plot_dashboard(data: RewardLogData, summary: dict[str, float], *, output_pa
             axes = [axes]
 
     x = data.sample_index
+    stage1_only = bool(data.stage_name) and all(stage_name == "stage1_structure_explore" for stage_name in data.stage_name)
     reward_roll = rolling_nanmean(data.reward, window=window)
     target_roll = rolling_nanmean(data.reward_target_value, window=window)
     timeout_roll = [value * 100.0 for value in rolling_nanmean(data.timed_out, window=window)]
@@ -572,9 +573,9 @@ def _plot_dashboard(data: RewardLogData, summary: dict[str, float], *, output_pa
     axes[1].plot(x, data.train_acc, color="#2E7D32", linewidth=1.2, label="Train Acc")
     axes[1].plot(x, data.frozen_test_acc, color="#6A1B9A", linewidth=1.2, label="Frozen Test Acc")
     axes[1].plot(x, target_roll, color="#F57C00", linewidth=2.0, label=f"Reward Target MA{window}")
-    axes[1].set_title("Accuracy / Reward Target")
+    axes[1].set_title("Stage1 Static Score / Reward Target" if stage1_only else "Accuracy / Reward Target")
     axes[1].set_xlabel("Sample")
-    axes[1].set_ylabel("Accuracy")
+    axes[1].set_ylabel("Score" if stage1_only else "Accuracy")
     axes[1].set_ylim(0, 1)
     axes[1].grid(True, linestyle="--", alpha=0.35)
     axes[1].legend(loc="best", fontsize=8)
