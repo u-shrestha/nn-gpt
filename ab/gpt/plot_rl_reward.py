@@ -498,20 +498,20 @@ def _stage_palette(stage_name: str) -> tuple[str, str]:
     return palette.get(str(stage_name), ("#F5F5F5", "#616161"))
 
 
-def _apply_stage_overlays(axes: list[Any], data: RewardLogData) -> None:
+def _apply_stage_overlays(sample_axes: list[Any], data: RewardLogData) -> None:
     segments = _stage_segments(data)
     if not segments:
         for idx, is_warmup in enumerate(data.group_warmup):
             if is_warmup == 1.0:
-                for ax in axes:
+                for ax in sample_axes:
                     ax.axvspan(idx + 0.5, idx + 1.5, color="#FFF3E0", alpha=0.18)
         return
     for start, end, stage_name in segments:
         fill_color, line_color = _stage_palette(stage_name)
-        for ax in axes:
+        for ax in sample_axes:
             ax.axvspan(start - 0.5, end + 0.5, color=fill_color, alpha=0.18)
         if start > 1:
-            for ax in axes:
+            for ax in sample_axes:
                 ax.axvline(start - 0.5, color=line_color, linestyle="--", linewidth=1.2, alpha=0.9)
 
 
@@ -624,7 +624,7 @@ def _plot_dashboard(data: RewardLogData, summary: dict[str, float], *, output_pa
     axes[5].grid(True, linestyle="--", alpha=0.35)
     axes[5].legend(loc="best", fontsize=8)
 
-    _apply_stage_overlays(axes, data)
+    _apply_stage_overlays([axes[0], axes[1], axes[2], axes[5]], data)
 
     fig.suptitle("RL Reward Dashboard", fontsize=16)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
