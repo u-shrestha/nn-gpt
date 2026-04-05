@@ -464,6 +464,55 @@ def _group_means(data: RewardLogData, values: list[float]) -> tuple[list[int], l
     return cycles, means
 
 
+def _cycle_target_summary(data: RewardLogData) -> dict[str, list[float] | list[int]]:
+    grouped: dict[int, list[float]] = {}
+    for group_id, value in zip(data.reward_group_id, data.reward_target_value):
+        grouped.setdefault(int(group_id), []).append(float(value))
+
+    cycles = sorted(grouped.keys())
+    avg_values: list[float] = []
+    median_values: list[float] = []
+    best_values: list[float] = []
+    err_down: list[float] = []
+    err_up: list[float] = []
+
+    for cycle in cycles:
+        valid_values = [value for value in grouped[cycle] if not math.isnan(float(value))]
+        if not valid_values:
+            avg_values.append(float("nan"))
+            median_values.append(float("nan"))
+            best_values.append(float("nan"))
+            err_down.append(float("nan"))
+            err_up.append(float("nan"))
+            continue
+
+        avg_value = float(statistics.fmean(valid_values))
+        median_value = float(statistics.median(valid_values))
+        best_value = float(max(valid_values))
+        if len(valid_values) >= 2:
+            sem = float(statistics.stdev(valid_values)) / math.sqrt(float(len(valid_values)))
+            ci_half_width = 1.96 * sem
+        else:
+            ci_half_width = 0.0
+        low_bound = max(0.0, avg_value - ci_half_width)
+        high_bound = min(1.0, avg_value + ci_half_width)
+
+        avg_values.append(avg_value)
+        median_values.append(median_value)
+        best_values.append(best_value)
+        err_down.append(avg_value - low_bound)
+        err_up.append(high_bound - avg_value)
+
+    return {
+        "cycles": cycles,
+        "avg": avg_values,
+        "median": median_values,
+        "best": best_values,
+        "err_down": err_down,
+        "err_up": err_up,
+    }
+
+
 def _group_progress_series(data: RewardLogData, key: str) -> tuple[list[int], list[float]]:
     cycles = sorted(int(group_id) for group_id in data.group_progress_by_group.keys())
     values = [
@@ -471,6 +520,18 @@ def _group_progress_series(data: RewardLogData, key: str) -> tuple[list[int], li
         for cycle in cycles
     ]
     return cycles, values
+
+
+def _cycle_xticks(cycles: list[int], *, max_ticks: int = 20) -> list[int]:
+    if not cycles:
+        return []
+    if len(cycles) <= max_ticks:
+        return list(cycles)
+    step = max(1, math.ceil(len(cycles) / float(max_ticks)))
+    ticks = [cycles[index] for index in range(0, len(cycles), step)]
+    if ticks[-1] != cycles[-1]:
+        ticks.append(cycles[-1])
+    return sorted(set(int(cycle) for cycle in ticks))
 
 
 def _stage_segments(data: RewardLogData) -> list[tuple[int, int, str]]:
@@ -592,15 +653,62 @@ def _plot_dashboard(data: RewardLogData, summary: dict[str, float], *, output_pa
     axes[2].grid(True, linestyle="--", alpha=0.35)
     axes[2].legend(loc="best", fontsize=8)
 
-    cycles, target_means = _group_means(data, data.reward_target_value)
+    cycle_summary = _cycle_target_summary(data)
+    cycles = [int(cycle) for cycle in cycle_summary["cycles"]]
     progress_cycles, closed_target = _group_progress_series(data, "closed_mean_reward_target_acc")
-    axes[3].plot(cycles, target_means, color="#EF6C00", linewidth=2.0, label="Sample Mean Target")
+    if cycles:
+        axes[3].errorbar(
+            cycles,
+            cycle_summary["avg"],
+            yerr=[cycle_summary["err_down"], cycle_summary["err_up"]],
+            fmt="none",
+            ecolor="#FF9800",
+            elinewidth=1.8,
+            capsize=4,
+            alpha=0.6,
+            label="Cycle Avg Target 95% CI",
+        )
+        axes[3].scatter(
+            cycles,
+            cycle_summary["best"],
+            marker="D",
+            color="#E65100",
+            s=60,
+            edgecolors="white",
+            linewidth=0.8,
+            label="Cycle Best Target",
+            zorder=5,
+        )
+        axes[3].scatter(
+            cycles,
+            cycle_summary["median"],
+            marker="_",
+            color="#D32F2F",
+            s=180,
+            linewidths=2.5,
+            label="Cycle Median Target",
+            zorder=6,
+        )
+        axes[3].scatter(
+            cycles,
+            cycle_summary["avg"],
+            marker="o",
+            color="#F57C00",
+            s=40,
+            edgecolors="black",
+            linewidth=0.5,
+            label="Cycle Avg Target",
+            zorder=4,
+        )
     if progress_cycles:
         axes[3].plot(progress_cycles, closed_target, color="#1565C0", linewidth=1.8, label="Closed Mean Target")
     axes[3].set_title("Cycle Reward Target")
-    axes[3].set_xlabel("Cycle")
-    axes[3].set_ylabel("Accuracy")
+    axes[3].set_xlabel("Cycle (Group ID)")
+    axes[3].set_ylabel("Target Metric")
     axes[3].set_ylim(0, 1)
+    if cycles:
+        axes[3].set_xticks(_cycle_xticks(cycles))
+        axes[3].set_xlim(min(cycles) - 0.5, max(cycles) + 0.5)
     axes[3].grid(True, linestyle="--", alpha=0.35)
     axes[3].legend(loc="best", fontsize=8)
 
