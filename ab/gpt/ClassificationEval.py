@@ -71,6 +71,10 @@ def evaluate_epoch(models_base_dir: Path) -> dict:
                 if marker in raw_output:
                     raw_output = raw_output.split(marker, 1)[-1]
                     break
+            # Strip reasoning block emitted by thinking models (e.g. OlympicCoder, DeepSeek-R1)
+            # Keep only text after </think>; if no </think>, use the full output as-is
+            if '</think>' in raw_output:
+                raw_output = raw_output.split('</think>', 1)[-1]
             llm_output   = raw_output.strip()
             origdf       = pd.read_pickle(df_file)
             ground_truth = origdf.get('better_dataset')
