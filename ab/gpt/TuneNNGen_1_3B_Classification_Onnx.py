@@ -11,7 +11,6 @@ def add_normalization_to_lemur(epoch=5):
     import ab.nn.util.db.Query as Q
     from ab.nn.util.db.Query import tmp_data, fill_hyper_prm
 
-
     def _fixed_join_nn_query(sql, limit_clause, cur):
         join_conditions = []
         for c in (sql.same_columns or []):
@@ -32,8 +31,6 @@ def add_normalization_to_lemur(epoch=5):
         ''')
         return fill_hyper_prm(cur, sql.num_joint_nns)
 
-    # Q.join_nn_query = _fixed_join_nn_query
-    # print("[INFO] join_nn_query bug patched ✓")
     Q.join_nn_query = _fixed_join_nn_query
 
     # Also patch in Read.py where it's imported directly
@@ -67,7 +64,6 @@ def add_normalization_to_lemur(epoch=5):
                 lambda r: r['dataset'] if r['norm_acc'] >= r['norm_acc_2'] else r['dataset_2'], axis=1)
         return df
 
-    # Preserve cache_clear from original so lemur.data.cache_clear() still works
     if hasattr(original_lemur_data, 'cache_clear'):
         patched_lemur_data.cache_clear = original_lemur_data.cache_clear
 
@@ -75,18 +71,22 @@ def add_normalization_to_lemur(epoch=5):
     lemur._normalization_patched = True
     print("[INFO] Normalization patch applied to lemur.data ✓")
 
+
 def main(dry_run=False):
     add_normalization_to_lemur(epoch=5)
     TuneNNGen.main(
-        llm_conf='ds_coder_7b_instruct.json',
+        llm_conf='ds_coder_1.3b_instruct.json',
         llm_tune_conf='NN_dataset_compare.json',
         nn_gen_conf='NN_dataset_compare.json',
         nn_gen_conf_id='dataset_comparison',
-        max_new_tokens=512,  # OlympicCoder emits <think>...</think> before answering
+        max_new_tokens=150,     
+        prompt_batch=1,         # ONNX batch-padding causes empty outputs for shorter prompts
+        num_train_epochs=1,     # 1.3B degrades with > 1 inner epoch per outer cycle
         max_prompts=3 if dry_run else None,
-        onnx_run=False,
+        onnx_run=True,
         classification_mode=True,
     )
+
 
 if __name__ == '__main__':
     if '--test' in sys.argv:

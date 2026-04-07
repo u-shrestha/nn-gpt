@@ -255,7 +255,8 @@ class ChatBot:
                 formatted_prompt,
                 return_tensors="pt",
                 truncation=True,
-                max_length=self.tokenizer.model_max_length - (max_new_tokens or 4096)
+                max_length=self.tokenizer.model_max_length - (max_new_tokens or 4096),
+                add_special_tokens=False,  # chat template already includes BOS; prevents EOS being appended
             )
 
 
