@@ -120,7 +120,7 @@ python -m ab.stat.export
 
 - **`ab.gpt.TuneNNGen*.py`** – Performs fine-tuning and evaluation of an LLM. For evaluation purposes, the LLM generates neural network models, which are then trained to assess improvements in the LLM’s performance on this task. The -s flag allows skipping model generation for the specified number of epochs.
 
-<a href='https://huggingface.co/ABrain'><strong>Pretrained LLM weights</strong></a>
+<a href='https://huggingface.co/ABrain'><strong>Fine-tuned LLMs</strong></a>
 
 ### 🐳 Docker
 All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be seamlessly executed within the AI Linux Docker container.
