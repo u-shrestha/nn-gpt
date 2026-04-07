@@ -117,19 +117,40 @@ def nn_gen(
         for pr in key_config["prompt"]:
             prompt += pr + "\n"
 
-        data = (
-            lemur.data(only_best_accuracy=True, task=key_config["task"])
-            .groupby(by="nn")
-            .sample(n=1)[:test_nn]
-        )
+        num_joint_nns = key_config.get("num_joint_nns", 1)
+        use_join = num_joint_nns >= 2
 
-        addon_task = key_config.get("addon_task")
-        addon_data = lemur.data(only_best_accuracy=True, task=addon_task) if addon_task else None
+        if use_join:
+            from ab.nn.util.db.Query import JoinConf
+            data = lemur.data(
+                only_best_accuracy=True,
+                task=key_config["task"],
+                sql=JoinConf(
+                    num_joint_nns=num_joint_nns,
+                    same_columns=tuple(key_config.get("keep_same", [])),
+                    diff_columns=tuple(key_config.get("no_repeat", [])),
+                    enhance_nn=key_config.get("improve", False),
+                ),
+            )[:test_nn]
+            addon_data = None
+        else:
+            data = (
+                lemur.data(only_best_accuracy=True, task=key_config["task"])
+                .groupby(by="nn")
+                .sample(n=1)[:test_nn]
+            )
+            addon_task = key_config.get("addon_task")
+            addon_data = lemur.data(only_best_accuracy=True, task=addon_task) if addon_task else None
 
+        output_type = key_config.get("output_type", "code")
+
+        nn_code_max_chars = key_config.get("nn_code_max_chars")
         for _, row in data.iterrows():
             para_dict = {}
             for it in key_config["input_list"]:
                 para_dict[it["para"]] = row[it["value"]]
+            if nn_code_max_chars and "nn_code" in para_dict and isinstance(para_dict["nn_code"], str):
+                para_dict["nn_code"] = para_dict["nn_code"][:nn_code_max_chars]
 
             if addon_data is not None and not addon_data.empty:
                 available_addon = addon_data.loc[addon_data.nn != row["nn"]]
@@ -139,14 +160,14 @@ def nn_gen(
                         for it in key_config["addon_list"]:
                             para_dict[it["para"]] = addon_row[it["value"]]
 
-            prompts.append((prompt.format(**para_dict), row))
+            prompts.append((prompt.format(**para_dict), row, output_type))
 
     models_dir = synth_dir(out_path)
 
     if use_delta:
         for idx, prompt_data in tqdm(enumerate(prompts)):
             model_dir = models_dir / f"B{idx}"
-            prompt_text, origdf = prompt_data
+            prompt_text, origdf, output_type = prompt_data
 
             seed = epoch * 10000 + idx
             torch.manual_seed(seed)
@@ -279,7 +300,7 @@ def nn_gen(
     else:
         pending = []
         for idx, prompt_data in tqdm(enumerate(prompts)):
-            prompt_text, origdf = prompt_data
+            prompt_text, origdf, output_type = prompt_data
 
             if unsloth_max_input_length:
                 in_text = [{"role": "user", "content": prompt_text}]
@@ -289,7 +310,7 @@ def nn_gen(
                     print(f'Prompt is too long, skipping...')
                     continue
 
-            pending.append((idx, prompt_text, origdf))
+            pending.append((idx, prompt_text, origdf, output_type))
 
         if prompt_batch < 1:
             prompt_batch = 1
@@ -305,11 +326,18 @@ def nn_gen(
             else:
                 batch_outputs = [chat_bot.chat(p, engineer_prompt=False, max_new_tokens=max_new_tokens) for p in batch_prompts]
 
-            for (idx, prompt_text, origdf), output in zip(batch, batch_outputs):
+            for (idx, prompt_text, origdf, output_type), output in zip(batch, batch_outputs):
                 model_dir = models_dir / f"B{idx}"
                 code, hp, tr, full_out = output
 
                 makedirs(model_dir, exist_ok=True)
+
+                if output_type == 'classification':
+                    create_file(model_dir, new_out_file, full_out)
+                    if origdf is not None:
+                        origdf.to_pickle(model_dir / 'dataframe.df')
+                    continue
+
                 if save_llm_output:
                     create_file(model_dir, new_out_file, full_out)
 
@@ -486,6 +514,17 @@ def _has_generated_nn_code(out_path) -> bool:
     return False
 
 
+def _has_generated_output(out_path) -> bool:
+    """Returns True if at least one synthesized model directory B*/ contains full_output.txt."""
+    models_dir = synth_dir(out_path)
+    if not exists(models_dir):
+        return False
+    for bdir in glob.glob(str(models_dir / "B*")):
+        if isfile(os.path.join(bdir, new_out_file)):
+            return True
+    return False
+
+
 def generate_step(state: AgentState) -> dict:
     epoch = state["current_epoch"]
     skip_epoch = state.get("skip_epoch", 0)
@@ -528,14 +567,17 @@ def generate_step(state: AgentState) -> dict:
             use_backbone=state.get("use_backbone",False),
         )
 
-    if not _has_generated_nn_code(out_path):
-        print(f"[INFO] No code generated at epoch {epoch}, skipping evaluation")
+    classification_mode = state.get("classification_mode", False)
+    has_output = _has_generated_output(out_path) if classification_mode else _has_generated_nn_code(out_path)
+    if not has_output:
+        print(f"[INFO] No output generated at epoch {epoch}, skipping evaluation")
         return {"next_action": "finetune"}
 
     return {"next_action": "evaluate"}
 
 
-def _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode):
+def _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode,
+                    classification_mode=False):
     """
     Single source of truth for one evaluation epoch.
     Runs NNEval (trains generated NNs for nn_train_epochs and records accuracy).
@@ -546,7 +588,11 @@ def _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode
     results = {"epoch": epoch}
 
     if exists(models_dir):
-        if trans_mode:
+        if classification_mode:
+            from ab.gpt.ClassificationEval import evaluate_epoch as cls_eval
+            cls_result = cls_eval(models_dir)
+            results[f"epoch_{epoch + 1}_accuracy"] = cls_result["accuracy"]
+        elif trans_mode:
             try:
                 run_eval(epoch_num=epoch, FT_MODE=True)
                 print('[DEBUG] Release_memory.')
@@ -645,6 +691,7 @@ def evaluate_step(state: AgentState) -> dict:
         state.get("nn_name_prefix"),
         state["nn_train_epochs"],
         state.get("trans_mode", False),
+        state.get("classification_mode", False),
     )
 
     updates = {}
@@ -790,7 +837,8 @@ def tune(
     use_predictor=False,
     use_backbone=False,
     enable_merge=False,
-    use_unsloth=False
+    use_unsloth=False,
+    classification_mode=False,
 ):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
@@ -907,7 +955,8 @@ def tune(
 
         "use_predictor": use_predictor,
         "use_backbone": use_backbone,
-        "enable_merge": enable_merge
+        "enable_merge": enable_merge,
+        "classification_mode": classification_mode,
     }
 
     shutil.rmtree(epoch_dir(), ignore_errors=True)
@@ -927,7 +976,8 @@ def tune(
             else:
                 nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix, unsloth_max_input_length, prompt_batch, use_backbone=use_backbone)
 
-            _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode)
+            _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode,
+                            classification_mode)
 
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')
         model, chat_bot = _finetune_epoch(

@@ -12,7 +12,7 @@ def add_normalization_to_lemur(epoch=5):
     from ab.nn.util.db.Query import tmp_data, fill_hyper_prm
 
 
-    def _fixed_join_nn_query(sql, cur):
+    def _fixed_join_nn_query(sql, limit_clause, cur):
         join_conditions = []
         for c in (sql.same_columns or []):
             join_conditions.append(f'd1.{c} = d2.{c}')
@@ -28,7 +28,7 @@ def add_normalization_to_lemur(epoch=5):
                 d2.prm_id AS prm_id_2
             FROM {tmp_data} d1
             JOIN {tmp_data} d2 ON {on_clause}
-            LIMIT 1000
+            {limit_clause}
         ''')
         return fill_hyper_prm(cur, sql.num_joint_nns)
 
@@ -78,13 +78,14 @@ def add_normalization_to_lemur(epoch=5):
 def main(dry_run=False):
     add_normalization_to_lemur(epoch=5)
     TuneNNGen.main(
-        llm_conf='ds_coder_1.3b_instruct.json',
+        llm_conf='ds_coder_7b_instruct.json',
         llm_tune_conf='NN_dataset_compare.json',
         nn_gen_conf='NN_dataset_compare.json',
         nn_gen_conf_id='dataset_comparison',
-        max_new_tokens=64,
+        max_new_tokens=512,  # OlympicCoder emits <think>...</think> before answering
         max_prompts=3 if dry_run else None,
-        onnx_run=True
+        onnx_run=False,
+        classification_mode=True,
     )
 
 if __name__ == '__main__':

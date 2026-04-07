@@ -152,7 +152,8 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          run_iterative_pipeline=False, cycles=5, models_per_cycle=150, samples_per_prompt=1, accuracy_threshold=0.40,
          min_selected_k=15, fallback_threshold=0.35, adaptive_threshold=False,
          novelty_check=True, resume_from_cycle=None, max_retries=3, use_optimized_training=True,
-         use_agents=USE_AGENTS, use_predictor=USE_PREDICTOR, use_backbone=False):
+         use_agents=USE_AGENTS, use_predictor=USE_PREDICTOR, use_backbone=False,
+         classification_mode=False):
     persist_llm_conf(llm_conf, enable_merge)
     # --- Pipeline mode intercept ---
     if run_iterative_pipeline:
@@ -342,7 +343,8 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
             use_agents=use_agents,
             use_predictor=use_predictor,
             enable_merge=enable_merge,
-            use_unsloth = unsloth_opt
+            use_unsloth=unsloth_opt,
+            classification_mode=classification_mode,
         )
 
         # Normal completion - auto merge best
