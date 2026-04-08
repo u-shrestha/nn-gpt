@@ -27,6 +27,23 @@ BATCH = 64
 DROPOUT = 0.2
 MOMENTUM = 0.9
 TRANSFORM = "norm_256_flip"
+STOCHASTIC_DEPTH_PROB = 0.0
+NORM_EPS = 1e-5
+NORM_STD = 0.5
+TIE_WEIGHTS = 0.0
+DROPOUT_AUX = 0.0
+ATTENTION_DROPOUT = 0.0
+NORM_MOMENTUM = 0.1
+SCORE_THRESH = 0.01
+NMS_THRESH = 0.45
+IOU_THRESH = 0.5
+DETECTIONS_PER_IMG = 0.5
+TOPK_CANDIDATES = 0.5
+NEG_TO_POS_RATIO = 0.5
+PRETRAINED = 0.0
+PATCH_SIZE = 0.125
+
+PRM_JSON = None
 
 SAVE_TO_DB = True
 NN_NAME_PREFIX = None
@@ -44,6 +61,53 @@ def _resolve_use_all_visible_gpus(use_all_visible_gpus: Optional[bool]) -> bool:
     if raw is None or raw == "":
         return True
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _default_eval_prm(
+    *,
+    lr: float,
+    batch: int,
+    dropout: float,
+    momentum: float,
+    transform: str,
+    stochastic_depth_prob: float,
+    norm_eps: float,
+    norm_std: float,
+    tie_weights: float,
+    dropout_aux: float,
+    attention_dropout: float,
+    norm_momentum: float,
+    score_thresh: float,
+    nms_thresh: float,
+    iou_thresh: float,
+    detections_per_img: float,
+    topk_candidates: float,
+    neg_to_pos_ratio: float,
+    pretrained: float,
+    patch_size: float,
+) -> Dict[str, Any]:
+    return {
+        "lr": lr,
+        "batch": batch,
+        "dropout": dropout,
+        "momentum": momentum,
+        "transform": transform,
+        "stochastic_depth_prob": stochastic_depth_prob,
+        "norm_eps": norm_eps,
+        "norm_std": norm_std,
+        "tie_weights": tie_weights,
+        "dropout_aux": dropout_aux,
+        "attention_dropout": attention_dropout,
+        "norm_momentum": norm_momentum,
+        "score_thresh": score_thresh,
+        "nms_thresh": nms_thresh,
+        "iou_thresh": iou_thresh,
+        "detections_per_img": detections_per_img,
+        "topk_candidates": topk_candidates,
+        "neg_to_pos_ratio": neg_to_pos_ratio,
+        "pretrained": pretrained,
+        "patch_size": patch_size,
+    }
 
 
 def _extract_accuracy_from_eval_payload(payload: Dict[str, Any]) -> Optional[float]:
@@ -203,6 +267,22 @@ def _collect_epoch_requests(
     dropout: float,
     momentum: float,
     transform: str,
+    stochastic_depth_prob: float,
+    norm_eps: float,
+    norm_std: float,
+    tie_weights: float,
+    dropout_aux: float,
+    attention_dropout: float,
+    norm_momentum: float,
+    score_thresh: float,
+    nms_thresh: float,
+    iou_thresh: float,
+    detections_per_img: float,
+    topk_candidates: float,
+    neg_to_pos_ratio: float,
+    pretrained: float,
+    patch_size: float,
+    prm_json: Optional[Dict[str, Any]],
     epoch_limit_minutes: Optional[int],
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     requests: List[Dict[str, Any]] = []
@@ -260,13 +340,28 @@ def _collect_epoch_requests(
             except Exception as exc:
                 print(f"Error loading LLM recommended training params from {hp_path}: {exc}.")
         if not prm:
-            prm = {
-                "lr": lr,
-                "batch": batch,
-                "dropout": dropout,
-                "momentum": momentum,
-                "transform": transform,
-            }
+            prm = _default_eval_prm(
+                lr=lr,
+                batch=batch,
+                dropout=dropout,
+                momentum=momentum,
+                transform=transform,
+                stochastic_depth_prob=stochastic_depth_prob,
+                norm_eps=norm_eps,
+                norm_std=norm_std,
+                tie_weights=tie_weights,
+                dropout_aux=dropout_aux,
+                attention_dropout=attention_dropout,
+                norm_momentum=norm_momentum,
+                score_thresh=score_thresh,
+                nms_thresh=nms_thresh,
+                iou_thresh=iou_thresh,
+                detections_per_img=detections_per_img,
+                topk_candidates=topk_candidates,
+                neg_to_pos_ratio=neg_to_pos_ratio,
+                pretrained=pretrained,
+                patch_size=patch_size,
+            )
             print(f"Training model {model_id} with command-line/default training params {prm}")
 
         prefix_for_db = nn_name_prefix
@@ -297,6 +392,10 @@ def _collect_epoch_requests(
                 )
         else:
             print("  No dataframe.df found. Using command-line/default evaluation parameters.")
+
+        if prm_json:
+            prm.update(prm_json)
+            print(f"  Applied --prm_json overrides: {prm_json}")
 
         prm["epoch"] = int(nn_train_epochs)
         if prm.get("transform") is None or not isinstance(prm.get("transform"), str):
@@ -341,6 +440,22 @@ def main(
     dropout=DROPOUT,
     momentum=MOMENTUM,
     transform=TRANSFORM,
+    stochastic_depth_prob=STOCHASTIC_DEPTH_PROB,
+    norm_eps=NORM_EPS,
+    norm_std=NORM_STD,
+    tie_weights=TIE_WEIGHTS,
+    dropout_aux=DROPOUT_AUX,
+    attention_dropout=ATTENTION_DROPOUT,
+    norm_momentum=NORM_MOMENTUM,
+    score_thresh=SCORE_THRESH,
+    nms_thresh=NMS_THRESH,
+    iou_thresh=IOU_THRESH,
+    detections_per_img=DETECTIONS_PER_IMG,
+    topk_candidates=TOPK_CANDIDATES,
+    neg_to_pos_ratio=NEG_TO_POS_RATIO,
+    pretrained=PRETRAINED,
+    patch_size=PATCH_SIZE,
+    prm_json=PRM_JSON,
     epoch_limit_minutes=EPOCH_LIMIT_MINUTES,
     custom_synth_dir=CUSTOM_SYNTH_DIR,
     cycle=CYCLE,
@@ -387,6 +502,22 @@ def main(
                     dropout=dropout,
                     momentum=momentum,
                     transform=transform,
+                    stochastic_depth_prob=stochastic_depth_prob,
+                    norm_eps=norm_eps,
+                    norm_std=norm_std,
+                    tie_weights=tie_weights,
+                    dropout_aux=dropout_aux,
+                    attention_dropout=attention_dropout,
+                    norm_momentum=norm_momentum,
+                    score_thresh=score_thresh,
+                    nms_thresh=nms_thresh,
+                    iou_thresh=iou_thresh,
+                    detections_per_img=detections_per_img,
+                    topk_candidates=topk_candidates,
+                    neg_to_pos_ratio=neg_to_pos_ratio,
+                    pretrained=pretrained,
+                    patch_size=patch_size,
+                    prm_json=prm_json,
                     epoch_limit_minutes=epoch_limit_minutes,
                 )
 
@@ -522,6 +653,102 @@ if __name__ == "__main__":
         help=f"Default transform for NNEval if not in dataframe.df's prm (default: {TRANSFORM}).",
     )
     parser.add_argument(
+        "--stochastic_depth_prob",
+        type=float,
+        default=STOCHASTIC_DEPTH_PROB,
+        help=f"Stochastic depth probability (default: {STOCHASTIC_DEPTH_PROB}).",
+    )
+    parser.add_argument(
+        "--norm_eps",
+        type=float,
+        default=NORM_EPS,
+        help=f"Normalization epsilon (default: {NORM_EPS}).",
+    )
+    parser.add_argument(
+        "--norm_std",
+        type=float,
+        default=NORM_STD,
+        help=f"Normalization std (default: {NORM_STD}).",
+    )
+    parser.add_argument(
+        "--tie_weights",
+        type=float,
+        default=TIE_WEIGHTS,
+        help=f"Tie weights flag as float (default: {TIE_WEIGHTS}).",
+    )
+    parser.add_argument(
+        "--dropout_aux",
+        type=float,
+        default=DROPOUT_AUX,
+        help=f"Auxiliary dropout rate (default: {DROPOUT_AUX}).",
+    )
+    parser.add_argument(
+        "--attention_dropout",
+        type=float,
+        default=ATTENTION_DROPOUT,
+        help=f"Attention dropout rate (default: {ATTENTION_DROPOUT}).",
+    )
+    parser.add_argument(
+        "--norm_momentum",
+        type=float,
+        default=NORM_MOMENTUM,
+        help=f"Normalization momentum (default: {NORM_MOMENTUM}).",
+    )
+    parser.add_argument(
+        "--score_thresh",
+        type=float,
+        default=SCORE_THRESH,
+        help=f"Score threshold for detection tasks (default: {SCORE_THRESH}).",
+    )
+    parser.add_argument(
+        "--nms_thresh",
+        type=float,
+        default=NMS_THRESH,
+        help=f"NMS threshold for detection tasks (default: {NMS_THRESH}).",
+    )
+    parser.add_argument(
+        "--iou_thresh",
+        type=float,
+        default=IOU_THRESH,
+        help=f"IoU threshold for detection tasks (default: {IOU_THRESH}).",
+    )
+    parser.add_argument(
+        "--detections_per_img",
+        type=float,
+        default=DETECTIONS_PER_IMG,
+        help=f"Detections per image value (default: {DETECTIONS_PER_IMG}).",
+    )
+    parser.add_argument(
+        "--topk_candidates",
+        type=float,
+        default=TOPK_CANDIDATES,
+        help=f"Top-k candidates value (default: {TOPK_CANDIDATES}).",
+    )
+    parser.add_argument(
+        "--neg_to_pos_ratio",
+        type=float,
+        default=NEG_TO_POS_RATIO,
+        help=f"Negative-to-positive ratio value (default: {NEG_TO_POS_RATIO}).",
+    )
+    parser.add_argument(
+        "--pretrained",
+        type=float,
+        default=PRETRAINED,
+        help=f"Pretrained flag as float (default: {PRETRAINED}).",
+    )
+    parser.add_argument(
+        "--patch_size",
+        type=float,
+        default=PATCH_SIZE,
+        help=f"Patch size value (default: {PATCH_SIZE}).",
+    )
+    parser.add_argument(
+        "--prm_json",
+        type=str,
+        default=PRM_JSON,
+        help='JSON string of hyperparameter overrides, e.g. \'{"lr": 0.017, "batch": 32}\'.',
+    )
+    parser.add_argument(
         "--save_to_db",
         action=argparse.BooleanOptionalAction,
         default=SAVE_TO_DB,
@@ -554,6 +781,13 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    prm_json_dict = None
+    if args.prm_json:
+        try:
+            prm_json_dict = json.loads(args.prm_json)
+        except json.JSONDecodeError as exc:
+            print(f"Error parsing --prm_json: {exc}", file=sys.stderr)
+            sys.exit(1)
     print("Starting evaluation of altered NNs...")
     print(f"NNAlter run epochs to scan: {args.nn_alter_epochs}")
     print(f"Each altered NN will be trained for: {args.nn_train_epochs} epochs for evaluation.")
@@ -580,6 +814,22 @@ if __name__ == "__main__":
         dropout=args.dropout,
         momentum=args.momentum,
         transform=args.transform,
+        stochastic_depth_prob=args.stochastic_depth_prob,
+        norm_eps=args.norm_eps,
+        norm_std=args.norm_std,
+        tie_weights=args.tie_weights,
+        dropout_aux=args.dropout_aux,
+        attention_dropout=args.attention_dropout,
+        norm_momentum=args.norm_momentum,
+        score_thresh=args.score_thresh,
+        nms_thresh=args.nms_thresh,
+        iou_thresh=args.iou_thresh,
+        detections_per_img=args.detections_per_img,
+        topk_candidates=args.topk_candidates,
+        neg_to_pos_ratio=args.neg_to_pos_ratio,
+        pretrained=args.pretrained,
+        patch_size=args.patch_size,
+        prm_json=prm_json_dict,
         epoch_limit_minutes=args.epoch_limit_minutes,
         custom_synth_dir=args.custom_synth_dir,
         cycle=args.cycle,
