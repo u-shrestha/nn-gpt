@@ -95,6 +95,7 @@ from pathlib import Path
 from dataclasses import dataclass, asdict
 
 from ab.gpt.util.simple_logger import SimpleCodeLogger
+import ab.gpt.util.training_runtime as TrainingRuntime
 from typing import Tuple, Any, List, Dict, Optional, Set
 from collections import Counter, deque
 
@@ -1003,6 +1004,15 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
         json.dump(payload, handle, indent=2, ensure_ascii=False)
 
 
+def _reward_runtime_hooks() -> TrainingRuntime.RuntimeStateHooks:
+    # Reward bookkeeping is pipeline-owned, but the save/restore contract is shared.
+    return TrainingRuntime.RuntimeStateHooks(
+        capture=capture_reward_runtime_state,
+        restore=restore_reward_runtime_state,
+        reset=reset_reward_runtime_state,
+    )
+
+
 def _current_group_top_feedback_payload() -> List[Dict[str, Any]]:
     return [asdict(item) for item in current_group_top_feedback[:FEEDBACK_SUMMARY_LIMIT]]
 
@@ -1780,6 +1790,8 @@ def _save_stage_checkpoint(
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     adapter_dir = checkpoint_dir / "adapter"
     tokenizer_dir = checkpoint_dir / "tokenizer"
+    runtime_state_path = checkpoint_dir / "runtime_state.json"
+    runtime_manifest_path = checkpoint_dir / "runtime_manifest.json"
     reward_state_path = checkpoint_dir / "reward_state.json"
     manifest_path = checkpoint_dir / "stage_manifest.json"
     snapshot_path = checkpoint_dir / "group_progress_snapshot.json"
@@ -1792,8 +1804,6 @@ def _save_stage_checkpoint(
         tokenizer_dir.mkdir(parents=True, exist_ok=True)
         active_rl_tokenizer.save_pretrained(str(tokenizer_dir))
 
-    reward_state = capture_reward_runtime_state()
-    _write_json(reward_state_path, reward_state)
     _write_json(snapshot_path, _stage_group_snapshot_payload(group_progress_payload))
     manifest = {
         "event": str(event),
@@ -1811,10 +1821,20 @@ def _save_stage_checkpoint(
         "checkpoint_dir": str(checkpoint_dir),
         "adapter_dir": str(adapter_dir),
         "tokenizer_dir": str(tokenizer_dir),
+        "runtime_state_path": str(runtime_state_path),
+        "runtime_manifest_path": str(runtime_manifest_path),
         "reward_state_path": str(reward_state_path),
+        "stage_manifest_path": str(manifest_path),
         "plot_snapshot_path": str(plot_path),
     }
-    _write_json(manifest_path, manifest)
+    # Dual-write the new shared filenames and the legacy aliases for older checkpoints.
+    TrainingRuntime.save_runtime_checkpoint(
+        checkpoint_dir,
+        hooks=_reward_runtime_hooks(),
+        manifest=manifest,
+        state_aliases=("reward_state.json",),
+        manifest_aliases=("stage_manifest.json",),
+    )
     _save_stage_plot_snapshot(plot_path)
     return checkpoint_dir
 
@@ -4465,16 +4485,18 @@ def main():
     torch.cuda.empty_cache()
     resume_checkpoint_dir = _resolve_resume_checkpoint_dir()
     resume_manifest = None
-    resume_reward_state = None
+    restored_reward_state_path = None
     resume_stage_override = os.getenv("NNGPT_RL_RESUME_STAGE", "").strip()
     if resume_checkpoint_dir is not None:
-        if not resume_checkpoint_dir.exists():
-            raise FileNotFoundError(f"Resume checkpoint directory not found: {resume_checkpoint_dir}")
-        resume_manifest = _load_json_if_exists(resume_checkpoint_dir / "stage_manifest.json")
-        resume_reward_state = _load_json_if_exists(resume_checkpoint_dir / "reward_state.json")
-        if resume_reward_state is None:
-            raise FileNotFoundError(f"Missing reward_state.json under {resume_checkpoint_dir}")
-        restore_reward_runtime_state(resume_reward_state)
+        resume_manifest = _load_json_if_exists(resume_checkpoint_dir / "runtime_manifest.json")
+        if resume_manifest is None:
+            resume_manifest = _load_json_if_exists(resume_checkpoint_dir / "stage_manifest.json")
+        # Restore runtime state through the shared helper before stage-specific overrides run.
+        restored_reward_state_path = TrainingRuntime.restore_or_reset_runtime_state(
+            resume_checkpoint_dir,
+            _reward_runtime_hooks(),
+            legacy_state_filenames=("reward_state.json",),
+        )
         if resume_stage_override:
             current_state_stage = str(current_stage_name)
             if current_state_stage != resume_stage_override:
@@ -4488,8 +4510,14 @@ def main():
             f"dir={resume_checkpoint_dir} stage={current_stage_name} "
             f"generation_total={_current_generation_total()} reward_batch_index={reward_batch_index}"
         )
+        if restored_reward_state_path is not None:
+            print(f"[RL] Restored runtime state from {restored_reward_state_path}")
     else:
-        reset_reward_runtime_state()
+        TrainingRuntime.restore_or_reset_runtime_state(
+            None,
+            _reward_runtime_hooks(),
+            legacy_state_filenames=("reward_state.json",),
+        )
     precision = best_mixed_precision()
     runtime = get_distributed_runtime_info()
     runtime_settings = resolve_rl_runtime_settings(runtime)

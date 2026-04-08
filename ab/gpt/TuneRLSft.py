@@ -1,4 +1,3 @@
-import json
 import os
 import shutil
 import random
@@ -69,10 +68,20 @@ import ab.gpt.TuneRL as TuneRL
 import ab.gpt.TuneRLRaw as TuneRLRaw
 import ab.gpt.util.Reward as RewardUtil
 import ab.gpt.util.SFTUtil as SFTUtil
+import ab.gpt.util.training_runtime as TrainingRuntime
 
 
 _TRAIN_GPU_TOKENS_ENV = "NNGPT_TRAIN_GPU_TOKENS"
 _REWARD_GPU_TOKENS_ENV = "NNGPT_REWARD_GPU_TOKENS"
+
+
+def _sft_runtime_state_hooks() -> TrainingRuntime.RuntimeStateHooks:
+    # SFT reuses the RL reward runtime state so checkpoint resume stays compatible.
+    return TrainingRuntime.RuntimeStateHooks(
+        capture=TuneRL.capture_reward_runtime_state,
+        restore=TuneRL.restore_reward_runtime_state,
+        reset=TuneRL.reset_reward_runtime_state,
+    )
 
 
 def _repo_model_dir(model_id: str) -> Path:
@@ -191,68 +200,21 @@ def resolve_sft_save_total_limit() -> int:
     return max(1, _env_int("NNGPT_SFT_SAVE_TOTAL_LIMIT", 4))
 
 
-def _resolve_sft_resume_trainer_checkpoint() -> Path | None:
-    raw = _env_str("NNGPT_SFT_RESUME_TRAINER_CHECKPOINT", "")
-    if not raw:
-        return None
-    return Path(raw).expanduser().resolve()
-
-
-def _resolve_sft_resume_stage_checkpoint_dir() -> Path | None:
-    raw = _env_str("NNGPT_SFT_RESUME_STAGE_CHECKPOINT", "")
-    if not raw:
-        return None
-    path = Path(raw).expanduser().resolve()
-    if path.name == "adapter" and (path.parent / "reward_state.json").exists():
-        return path.parent
-    return path
-
-
-def _resolve_sft_resume_stage_adapter_dir(stage_checkpoint_dir: Path | None) -> Path | None:
-    if stage_checkpoint_dir is None:
-        return None
-    if stage_checkpoint_dir.name == "adapter":
-        return stage_checkpoint_dir
-    return stage_checkpoint_dir / "adapter"
-
-
 def _resolve_sft_resume_spec() -> Dict[str, Any]:
-    trainer_checkpoint = _resolve_sft_resume_trainer_checkpoint()
-    stage_checkpoint_dir = _resolve_sft_resume_stage_checkpoint_dir()
-    load_initial_adapter = resolve_sft_load_initial_adapter()
-    if trainer_checkpoint is not None and stage_checkpoint_dir is not None:
-        raise ValueError(
-            "NNGPT_SFT_RESUME_TRAINER_CHECKPOINT and NNGPT_SFT_RESUME_STAGE_CHECKPOINT are mutually exclusive."
-        )
-    if (trainer_checkpoint is not None or stage_checkpoint_dir is not None) and load_initial_adapter:
-        raise ValueError(
-            "Resume mode cannot be combined with NNGPT_SFT_LOAD_INITIAL_ADAPTER. "
-            "Use either a resume checkpoint or an initial adapter, not both."
-        )
-    mode = "fresh"
-    if trainer_checkpoint is not None:
-        mode = "trainer"
-    elif stage_checkpoint_dir is not None:
-        mode = "stage"
+    resume_spec = TrainingRuntime.resolve_resume_spec(
+        trainer_env="NNGPT_SFT_RESUME_TRAINER_CHECKPOINT",
+        stage_env="NNGPT_SFT_RESUME_STAGE_CHECKPOINT",
+        initial_adapter_active=resolve_sft_load_initial_adapter(),
+        initial_adapter_label="NNGPT_SFT_LOAD_INITIAL_ADAPTER",
+        legacy_state_filenames=("reward_state.json",),
+    )
     return {
-        "mode": mode,
-        "trainer_checkpoint": trainer_checkpoint,
-        "stage_checkpoint_dir": stage_checkpoint_dir,
-        "stage_adapter_dir": _resolve_sft_resume_stage_adapter_dir(stage_checkpoint_dir),
-        "active": mode != "fresh",
+        "mode": resume_spec.mode,
+        "trainer_checkpoint": resume_spec.trainer_checkpoint,
+        "stage_checkpoint_dir": resume_spec.stage_checkpoint_dir,
+        "stage_adapter_dir": resume_spec.stage_adapter_dir,
+        "active": resume_spec.active,
     }
-
-
-def _load_json(path: Path) -> Dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
-
-
-def _write_json(path: Path, payload: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
-        handle.write("\n")
 
 
 def _sft_grpo_signature_parameters() -> Dict[str, inspect.Parameter]:
@@ -281,34 +243,26 @@ def _resolved_visible_cuda_device_tokens(visible_cuda_devices: int) -> List[str]
 
 
 def _resolve_sft_mode(visible_gpu_tokens: List[str]) -> Dict[str, str]:
-    requested_mode = os.getenv("NNGPT_SFT_MODE", SFT_MODE_DEFAULT).strip().lower()
-    if requested_mode == "":
-        requested_mode = SFT_MODE_DEFAULT
-    if requested_mode not in {"auto", "split", "single"}:
-        raise ValueError(
-            f"Invalid NNGPT_SFT_MODE={requested_mode!r}. Expected one of: auto, split, single."
-        )
-    if not visible_gpu_tokens:
-        raise RuntimeError("SFT RL requires at least one visible CUDA device.")
-    if requested_mode == "auto":
-        resolved_mode = "split" if len(visible_gpu_tokens) >= 2 else "single"
-    else:
-        resolved_mode = requested_mode
+    role_plan = TrainingRuntime.resolve_role_plan(
+        visible_gpu_tokens=visible_gpu_tokens,
+        requested_mode_env="NNGPT_SFT_MODE",
+        default_mode=SFT_MODE_DEFAULT,
+    )
     return {
-        "requested_mode": requested_mode,
-        "resolved_mode": resolved_mode,
+        "requested_mode": str(role_plan.requested_mode),
+        "resolved_mode": str(role_plan.resolved_mode),
     }
 
 
 def _configure_sft_gpu_role_env(visible_cuda_devices: int) -> Dict[str, List[str] | str]:
     visible_gpu_tokens = _resolved_visible_cuda_device_tokens(visible_cuda_devices)
-    mode_info = _resolve_sft_mode(visible_gpu_tokens)
-    resolved_mode = str(mode_info["resolved_mode"])
-    train_gpu_tokens = visible_gpu_tokens[:1]
-    if resolved_mode == "split":
-        reward_gpu_tokens = list(visible_gpu_tokens)
-    else:
-        reward_gpu_tokens = list(train_gpu_tokens)
+    role_plan = TrainingRuntime.resolve_role_plan(
+        visible_gpu_tokens=visible_gpu_tokens,
+        requested_mode_env="NNGPT_SFT_MODE",
+        default_mode=SFT_MODE_DEFAULT,
+    )
+    train_gpu_tokens = list(role_plan.train_gpu_tokens)
+    reward_gpu_tokens = list(role_plan.aux_gpu_tokens)
     if train_gpu_tokens:
         os.environ[_TRAIN_GPU_TOKENS_ENV] = ",".join(train_gpu_tokens)
     else:
@@ -318,9 +272,9 @@ def _configure_sft_gpu_role_env(visible_cuda_devices: int) -> Dict[str, List[str
     else:
         os.environ.pop(_REWARD_GPU_TOKENS_ENV, None)
     return {
-        "requested_mode": str(mode_info["requested_mode"]),
-        "resolved_mode": resolved_mode,
-        "visible_gpu_tokens": list(visible_gpu_tokens),
+        "requested_mode": str(role_plan.requested_mode),
+        "resolved_mode": str(role_plan.resolved_mode),
+        "visible_gpu_tokens": list(role_plan.visible_gpu_tokens),
         "train_gpu_tokens": list(train_gpu_tokens),
         "reward_gpu_tokens": list(reward_gpu_tokens),
     }
@@ -1064,28 +1018,16 @@ def run_sft_training():
     )
 
     torch.cuda.empty_cache()
-    restored_reward_state_path = None
     trainer_checkpoint = resume_spec["trainer_checkpoint"]
     stage_checkpoint_dir = resume_spec["stage_checkpoint_dir"]
     stage_adapter_dir = resume_spec["stage_adapter_dir"]
-    if trainer_checkpoint is not None:
-        if not trainer_checkpoint.exists():
-            raise FileNotFoundError(f"SFT trainer resume checkpoint not found: {trainer_checkpoint}")
-        trainer_reward_state_path = trainer_checkpoint / "reward_state.json"
-        if not trainer_reward_state_path.exists():
-            raise FileNotFoundError(f"Missing reward_state.json under SFT trainer checkpoint: {trainer_checkpoint}")
-        TuneRL.restore_reward_runtime_state(_load_json(trainer_reward_state_path))
-        restored_reward_state_path = trainer_reward_state_path
-    elif stage_checkpoint_dir is not None:
-        if not stage_checkpoint_dir.exists():
-            raise FileNotFoundError(f"SFT stage resume checkpoint not found: {stage_checkpoint_dir}")
-        stage_reward_state_path = stage_checkpoint_dir / "reward_state.json"
-        if not stage_reward_state_path.exists():
-            raise FileNotFoundError(f"Missing reward_state.json under SFT stage checkpoint: {stage_checkpoint_dir}")
-        TuneRL.restore_reward_runtime_state(_load_json(stage_reward_state_path))
-        restored_reward_state_path = stage_reward_state_path
-    else:
-        TuneRL.reset_reward_runtime_state()
+    resume_state_dir = trainer_checkpoint if trainer_checkpoint is not None else stage_checkpoint_dir
+    # Restore reward-side bookkeeping the same way for trainer and stage checkpoints.
+    restored_reward_state_path = TrainingRuntime.restore_or_reset_runtime_state(
+        resume_state_dir,
+        _sft_runtime_state_hooks(),
+        legacy_state_filenames=("reward_state.json",),
+    )
     precision = TuneRL.best_mixed_precision()
     grpo_config = _build_sft_grpo_config(
         precision=precision,
@@ -1235,15 +1177,13 @@ def run_sft_training():
         args=grpo_config,
     )
     if trainer_checkpoint_supported:
-        from transformers import TrainerCallback
-
-        class _RewardStateCheckpointCallback(TrainerCallback):
-            def on_save(self, args, state, control, **kwargs):
-                checkpoint_dir = Path(args.output_dir) / f"checkpoint-{int(state.global_step)}"
-                _write_json(checkpoint_dir / "reward_state.json", TuneRL.capture_reward_runtime_state())
-                return control
-
-        trainer.add_callback(_RewardStateCheckpointCallback())
+        # Keep legacy reward_state.json in trainer checkpoints so old resumes still work.
+        runtime_callback = TrainingRuntime.build_trainer_checkpoint_callback(
+            _sft_runtime_state_hooks(),
+            state_aliases=("reward_state.json",),
+        )
+        if runtime_callback is not None:
+            trainer.add_callback(runtime_callback)
     TuneRL.log_memory_snapshot("sft/grpo_trainer_initialized")
     warmup_diagnostics = RewardUtil.prewarm_eval_workers(timeout_seconds=60.0, require_gpu=True)
     _validate_gpu_reward_worker_bindings(warmup_diagnostics)
