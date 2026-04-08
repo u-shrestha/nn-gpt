@@ -17,11 +17,14 @@ from ab.gpt.util.Util import verify_nn_code, copy_to_lemur
 from ab.gpt.util.CycleResults import generate_cycle_results, collect_cycle_metrics, save_cycle_results
 from ab.gpt.util import nneval_worker_pool as NNEvalWorkerPool
 
-
+# Default evaluation parameters used by the CLI entrypoint when no per-model
+# metadata is available.
 TASK = "img-classification"
 DATASET = "cifar-10"
 METRIC = "acc"
 
+# Default hyperparameters. The final "epoch" value is always overridden by
+# nn_train_epochs for the current evaluation run.
 LR = 0.01
 BATCH = 64
 DROPOUT = 0.2
@@ -42,7 +45,8 @@ TOPK_CANDIDATES = 0.5
 NEG_TO_POS_RATIO = 0.5
 PRETRAINED = 0.0
 PATCH_SIZE = 0.125
-
+# Optional JSON string passed from CLI to override the assembled prm payload
+# after dataframe.df / hp.json have been loaded.
 PRM_JSON = None
 
 SAVE_TO_DB = True
@@ -51,6 +55,8 @@ NN_ALTER_EPOCHS = None
 ONLY_EPOCH = None
 EPOCH_LIMIT_MINUTES = None
 CUSTOM_SYNTH_DIR = None
+# Cycle number is distinct from the NNAlter epoch index. Iterative pipelines
+# may keep cycle fixed while still evaluating one epoch directory at a time.
 CYCLE = None
 
 
@@ -86,6 +92,8 @@ def _default_eval_prm(
     pretrained: float,
     patch_size: float,
 ) -> Dict[str, Any]:
+    # Build the baseline prm payload before per-model metadata or explicit
+    # prm_json overrides are applied.
     return {
         "lr": lr,
         "batch": batch,
@@ -328,6 +336,8 @@ def _collect_epoch_requests(
             )
             continue
 
+        # Start from command-line/default values, then let per-model files
+        # override them if available.
         resolved_task = task
         resolved_dataset = dataset
         resolved_metric = metric
@@ -397,7 +407,10 @@ def _collect_epoch_requests(
             prm.update(prm_json)
             print(f"  Applied --prm_json overrides: {prm_json}")
 
+        # Always evaluate with nn_train_epochs for this run, regardless of what
+        # may have been stored in the original prm payload.
         prm["epoch"] = int(nn_train_epochs)
+        # NNDataset expects a real transform name, never None.
         if prm.get("transform") is None or not isinstance(prm.get("transform"), str):
             prm["transform"] = transform if transform else TRANSFORM
 
@@ -476,10 +489,15 @@ def main(
         if nn_alter_epochs:
             epoch_indices = [only_epoch] if only_epoch is not None else list(range(nn_alter_epochs))
             for i in epoch_indices:
+                # Track cycle number and epoch number separately. Iterative
+                # pipelines may reuse a cycle label across different epoch dirs.
                 current_cycle = cycle if cycle is not None else i
                 current_epoch = i
                 cycle_start_time = time.time()
+                # Path to one NNAlter epoch output, e.g. out/nngpt/llm/epoch/A0.
                 current_alter_epoch_path = epoch_dir(i)
+                # Allow callers to point directly at a synth dir instead of
+                # deriving it from epoch_dir().
                 models_base_dir = Path(custom_synth_dir) if custom_synth_dir else synth_dir(current_alter_epoch_path)
 
                 if not models_base_dir.exists():
@@ -489,6 +507,8 @@ def main(
                 print(f"\n--- Scanning NNAlter Epoch Directory: {current_alter_epoch_path} ---")
                 print(f"--- Synthesized Models Directory: {models_base_dir} ---")
 
+                # Build eval requests first so already successful models can be
+                # skipped without waking workers unnecessarily.
                 requests, epoch_results = _collect_epoch_requests(
                     models_base_dir=models_base_dir,
                     nn_name_prefix=nn_name_prefix,
@@ -541,6 +561,8 @@ def main(
                             epoch_results.append(_write_failure_outputs(request, worker_result))
                         release_memory()
 
+                # Rebuild cycle_results.json from the artifacts produced in this
+                # epoch directory after all worker results have been written.
                 cycle_end_time = time.time()
                 cycle_time_minutes = (cycle_end_time - cycle_start_time) / 60.0
                 eval_results_list, model_dirs_list, successful_models, failed_models = collect_cycle_metrics(
@@ -609,6 +631,7 @@ if __name__ == "__main__":
         default=NN_TRAIN_EPOCHS,
         help=f"Number of epochs to train each altered NN during evaluation (default: {NN_TRAIN_EPOCHS}).",
     )
+    # Configurable evaluation parameters.
     parser.add_argument("--task", type=str, default=TASK, help=f"Default task for NNEval (default: {TASK}).")
     parser.add_argument(
         "--dataset",
@@ -622,6 +645,7 @@ if __name__ == "__main__":
         default=METRIC,
         help=f"Default metric for NNEval (default: {METRIC}).",
     )
+    # Configurable hyperparameters stored inside the prm payload.
     parser.add_argument(
         "--lr",
         type=float,
@@ -748,6 +772,7 @@ if __name__ == "__main__":
         default=PRM_JSON,
         help='JSON string of hyperparameter overrides, e.g. \'{"lr": 0.017, "batch": 32}\'.',
     )
+    # Other NNEval options.
     parser.add_argument(
         "--save_to_db",
         action=argparse.BooleanOptionalAction,

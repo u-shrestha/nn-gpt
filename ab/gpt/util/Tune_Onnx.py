@@ -1,4 +1,4 @@
-# ab/gpt/util/Tune.py
+# ab/gpt/util/Tune_Onnx.py
 
 import os
 import shutil
@@ -485,6 +485,8 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
             code, hp, tr, full_out = output
 
             makedirs(model_dir, exist_ok=True)
+            # Classification prompts may only need the raw model output plus
+            # source metadata, without constructing a runnable new_nn.py file.
             if output_type == 'classification':
                 create_file(model_dir, new_out_file, full_out)
                 if origdf is not None:
@@ -573,6 +575,8 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
 
             cls_eval(models_dir)
         else:
+            # Use keyword arguments so future NNEval entrypoint growth does not
+            # silently remap positional arguments here.
             NNEval.main(
                 nn_name_prefix=nn_name_prefix,
                 nn_train_epochs=nn_train_epochs,

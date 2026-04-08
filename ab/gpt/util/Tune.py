@@ -380,6 +380,8 @@ def nn_gen(
                     create_file(model_dir, f"original_{origdf['nn']}.py", origdf['nn_code'])
                     origdf.to_pickle(df_file)
 
+    # Track generation-side progress even before later merge logic or external
+    # tooling reads cycle_results.json.
     tracker_file = nngpt_dir / "epoch_tracker.json"
     if tracker_file.exists():
         try:
@@ -512,6 +514,7 @@ def _has_generated_nn_code(out_path) -> bool:
 
 
 def _has_generated_output(out_path) -> bool:
+    """Returns True if at least one synthesized model directory B*/ contains full_output.txt."""
     models_dir = synth_dir(out_path)
     if not exists(models_dir):
         return False
@@ -563,6 +566,8 @@ def generate_step(state: AgentState) -> dict:
             use_backbone=state.get("use_backbone",False),
         )
 
+    # Classification prompts may intentionally emit labels or structured output
+    # without generating a runnable new_nn.py file.
     classification_mode = state.get("classification_mode", False)
     has_output = _has_generated_output(out_path) if classification_mode else _has_generated_nn_code(out_path)
     if not has_output:
