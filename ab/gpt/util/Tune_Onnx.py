@@ -557,7 +557,11 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
             release_memory()
 
     if exists(models_dir):
-        NNEval.main(nn_name_prefix, nn_train_epochs, epoch)
+        NNEval.main(
+            nn_name_prefix=nn_name_prefix,
+            nn_train_epochs=nn_train_epochs,
+            only_epoch=epoch,
+        )
 
     print('[DEBUG] Release_memory.')
     release_memory()

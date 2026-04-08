@@ -72,6 +72,7 @@ import ab.gpt.util.training_runtime as TrainingRuntime
 
 
 _TRAIN_GPU_TOKENS_ENV = "NNGPT_TRAIN_GPU_TOKENS"
+_AUX_GPU_TOKENS_ENV = "NNGPT_AUX_GPU_TOKENS"
 _REWARD_GPU_TOKENS_ENV = "NNGPT_REWARD_GPU_TOKENS"
 
 
@@ -268,8 +269,10 @@ def _configure_sft_gpu_role_env(visible_cuda_devices: int) -> Dict[str, List[str
     else:
         os.environ.pop(_TRAIN_GPU_TOKENS_ENV, None)
     if reward_gpu_tokens:
+        os.environ[_AUX_GPU_TOKENS_ENV] = ",".join(reward_gpu_tokens)
         os.environ[_REWARD_GPU_TOKENS_ENV] = ",".join(reward_gpu_tokens)
     else:
+        os.environ.pop(_AUX_GPU_TOKENS_ENV, None)
         os.environ.pop(_REWARD_GPU_TOKENS_ENV, None)
     return {
         "requested_mode": str(role_plan.requested_mode),

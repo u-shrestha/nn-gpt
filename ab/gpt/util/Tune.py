@@ -518,7 +518,11 @@ def _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode
                 print(f"Error running evaluation main(): {e}", flush=True)
             print('Folder data reload will occur next epoch.')
         else:
-            NNEval.main(nn_name_prefix, nn_train_epochs, epoch)
+            NNEval.main(
+                nn_name_prefix=nn_name_prefix,
+                nn_train_epochs=nn_train_epochs,
+                only_epoch=epoch,
+            )
             print('[DEBUG] Release_memory.')
 
         release_memory()
