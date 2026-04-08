@@ -15,6 +15,7 @@ from os import makedirs
 from os.path import isfile
 import glob
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -44,6 +45,7 @@ from ab.gpt.util.Const import nngpt_upload
 from ab.gpt.brute.trans.TransformEval import run_eval
 from ab.gpt.util.prompt.TransformGenPrompt import TransformGenPrompt, load_data_from_folders
 from ab.gpt.agents.state import AgentState
+import ab.gpt.util.training_runtime as TrainingRuntime
 
 ds_conf = conf_dir / 'DeepSpeed.json'
 TRANSFORM_OUT_DIR = trans_dir / 'dataset_epoch1'
@@ -648,6 +650,7 @@ def _finetune_epoch(
     train_config_path, only_best_accuracy, max_prompts,
     max_new_tokens, base_model_name, trans_mode,
     temperature=1.0, top_k=50, top_p=0.9,
+    resume_trainer_checkpoint=None,
     use_backbone=False,
 ):
     """
@@ -685,7 +688,13 @@ def _finetune_epoch(
 
     print("Dataset length:", len(dataset))
     model.train()
-    model = lora_tuner.train(dataset, tokenizer, out_path / base_model_name)
+    model = lora_tuner.train(
+        dataset,
+        tokenizer,
+        out_path / base_model_name,
+        resume_from_checkpoint=resume_trainer_checkpoint,
+        checkpoint_label="trainer",
+    )
 
     del dataset
     release_memory()
@@ -709,6 +718,7 @@ def finetune_step(state: AgentState) -> dict:
         state.get("max_prompts"), state["max_new_tokens"],
         state["base_model_name"], state.get("trans_mode", False),
         state.get("temperature", 1.0), state.get("top_k", 50), state.get("top_p", 0.9),
+        state.get("trainer_resume_checkpoint"),
         state.get("use_backbone", False),
     )
 
@@ -717,12 +727,25 @@ def finetune_step(state: AgentState) -> dict:
         "chat_bot": chat_bot,
         "current_epoch": epoch + 1,
         "next_action": "generate",
+        "trainer_resume_checkpoint": None,
     }
 
 
 # ============================================================
 # MAIN: tune()
 # ============================================================
+
+
+def _resolve_tune_resume_trainer_checkpoint(initial_adapter_path) -> Optional[str]:
+    # Classic mode and agent mode both consume the same one-shot trainer resume path.
+    resume_spec = TrainingRuntime.resolve_resume_spec(
+        trainer_env="NNGPT_TRAIN_RESUME_TRAINER_CHECKPOINT",
+        initial_adapter_active=bool(initial_adapter_path),
+        initial_adapter_label="llm_path/--peft",
+    )
+    if resume_spec.trainer_checkpoint is None:
+        return None
+    return str(resume_spec.trainer_checkpoint)
 
 def tune(
     test_nn,
@@ -805,6 +828,7 @@ def tune(
 
     model = model_loader.get_model()
     tokenizer = model_loader.get_tokenizer()
+    trainer_resume_checkpoint = _resolve_tune_resume_trainer_checkpoint(llm_path)
 
     if llm_path:
         print(f'Load saved LoRA layer from path: {llm_path}')
@@ -865,6 +889,7 @@ def tune(
 
         "use_predictor": use_predictor,
         "use_backbone": use_backbone,
+        "trainer_resume_checkpoint": trainer_resume_checkpoint,
     }
 
     shutil.rmtree(epoch_dir(), ignore_errors=True)
@@ -893,5 +918,7 @@ def tune(
             train_config_path, only_best_accuracy, max_prompts,
             max_new_tokens, base_model_name, trans_mode,
             temperature, top_k, top_p,
+            trainer_resume_checkpoint,
             use_backbone=use_backbone,
         )
+        trainer_resume_checkpoint = None
