@@ -1,6 +1,11 @@
+import json
 import sys
+from pathlib import Path
 import ab.nn.api as lemur
 import ab.gpt.TuneNNGen as TuneNNGen
+
+_DATASET_META = json.loads((Path(__file__).parent / 'conf' / 'dataset_meta.json').read_text())
+_META_FIELDS = ['num_train_images', 'img_size', 'num_channels', 'num_classes']
 
 def add_normalization_to_lemur(epoch=5):
     if getattr(lemur, '_normalization_patched', False):
@@ -62,6 +67,12 @@ def add_normalization_to_lemur(epoch=5):
         if 'norm_acc' in df.columns and 'norm_acc_2' in df.columns:
             df['better_dataset'] = df.apply(
                 lambda r: r['dataset'] if r['norm_acc'] >= r['norm_acc_2'] else r['dataset_2'], axis=1)
+        if 'dataset' in df.columns:
+            for field in _META_FIELDS:
+                df[f'{field}_1'] = df['dataset'].map(lambda d: _DATASET_META.get(d, {}).get(field))
+        if 'dataset_2' in df.columns:
+            for field in _META_FIELDS:
+                df[f'{field}_2'] = df['dataset_2'].map(lambda d: _DATASET_META.get(d, {}).get(field))
         return df
 
     if hasattr(original_lemur_data, 'cache_clear'):
@@ -76,8 +87,8 @@ def main(dry_run=False):
     add_normalization_to_lemur(epoch=5)
     TuneNNGen.main(
         llm_conf='ds_coder_1.3b_instruct.json',
-        llm_tune_conf='NN_dataset_compare.json',
-        nn_gen_conf='NN_dataset_compare.json',
+        llm_tune_conf='NN_dataset_compare_with_metadata.json',
+        nn_gen_conf='NN_dataset_compare_with_metadata.json',
         nn_gen_conf_id='dataset_comparison',
         max_new_tokens=150,     
         prompt_batch=1,         # ONNX batch-padding causes empty outputs for shorter prompts
