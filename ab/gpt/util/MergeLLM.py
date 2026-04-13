@@ -156,14 +156,10 @@ def save_lineage(lineage):
 
 
 def merge_multiple_adapters(base_model, adapter_paths, output_path):
-    """
-    CPU-safe merge with optional disk offloading.
-    Works for 1.3B easily, 7B with RAM/disk fallback.
-    """
+
     import gc
     import shutil
 
-    print("\n[MERGE] === SAFE CPU MERGE START ===")
     print(f"[MERGE] Base: {base_model}")
     print(f"[MERGE] Adapters: {len(adapter_paths)}")
 
@@ -389,5 +385,5 @@ def merge_nn_llm(epoch: int):
 
 
 if __name__ == "__main__":
-    #rebuild_from_lineage()
-    merge_nn_llm(0)
+    rebuild_from_lineage()
+    #merge_nn_llm(0)
