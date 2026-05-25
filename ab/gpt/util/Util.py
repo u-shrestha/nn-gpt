@@ -10,6 +10,7 @@ from pathlib import Path
 from ab.gpt.util.Const import new_lemur_nn_dir, new_nn_file, new_lemur_stat_dir
 
 from ..util.Code import *
+import json
 
 
 def nn_accepted(nn_dir):
@@ -284,3 +285,16 @@ def evaluate_delimited_formulas(text: str, para_dict: dict) -> str:
     return re.sub(pattern, replace_match, text)
 # =================================================
 
+def extract_augment(text: str):
+    """
+    Extract and JSON-parse the content of the first <aug>…</aug> block
+    Returns a list, or None if absent
+    """
+    match = re.search(r'<aug>(.*?)</aug>', text, re.DOTALL)
+    if not match:
+        return None
+    try:
+        result = json.loads(match.group(1).strip())
+        return result if isinstance(result, list) else None
+    except json.JSONDecodeError:
+        return None

@@ -1,0 +1,12 @@
+{
+  "config_num": 10,
+  "accuracy": 0.0,
+  "augment": [
+    [
+      "cutout",
+      0.4,
+      1.0
+    ]
+  ],
+  "error": "no such table: loader"
+}

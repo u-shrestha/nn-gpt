@@ -2,7 +2,7 @@
 """
 ab/gpt/util/Tune.py — Central tuning pipeline for NNGPT.
 - tune() is the ONLY entry point.
-- All logic lives here: nn_gen, trans_gen, generate_step, finetune_step.
+- All logic lives here: nn_gen, trans_gen, augment_gen, generate_step, finetune_step.
 - Agents only call generate_step() and finetune_step() from this file.
 """
 
@@ -50,9 +50,16 @@ from ab.gpt.util.prompt.TransformGenPrompt import TransformGenPrompt, load_data_
 from ab.gpt.agents.state import AgentState
 import ab.gpt.util.training_runtime as TrainingRuntime
 
+from ab.gpt.brute.trans.augment.AugmentEval import run_eval as aug_run_eval
+from ab.gpt.util.prompt.AugmentGenPrompt import AugmentGenPrompt, load_augment_data
+from ab.gpt.util.Util import extract_augment 
+
+
+
 ds_conf = conf_dir / 'DeepSpeed.json'
 TRANSFORM_OUT_DIR = trans_dir / 'dataset_epoch1'
 TRANSFORM_RES_DIR = trans_dir / 'result_epoch1'
+AUGMENT_RES_DIR = trans_dir / 'augment'/ 'result'
 
 
 # Delta mode constants
@@ -88,7 +95,7 @@ def flatten_chunks(data):
 
 
 # ============================================================
-# SINGLE SOURCE OF TRUTH: GENERATION (nn_gen / trans_gen)
+# SINGLE SOURCE OF TRUTH: GENERATION (nn_gen / trans_gen / augment_gen)
 # ============================================================
 
 def nn_gen(
@@ -508,6 +515,84 @@ def trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict
     release_memory()
 
 
+
+def augment_gen(
+    epoch, out_path, chat_bot, conf_keys,
+    prompt_dict_global, test_nn, max_new_tokens, save_llm_output
+):
+    """
+    Augmentation config generation 
+    """
+    print('Running Augmentation Config Generation...')
+ 
+    all_data = load_augment_data(str(AUGMENT_RES_DIR), only_best_accuracy=True)
+    if len(all_data) == 0:
+        print("Warning: No augment data available for generation. Skipping.", flush=True)
+        return
+ 
+    prompts = []
+    for key in conf_keys:
+        prompt_config = prompt_dict_global[key]
+        prompt = '\n'.join(prompt_config['prompt'])
+ 
+        n_sample = min(test_nn, len(all_data))
+        data_sample = all_data.sample(n=n_sample)
+        addon_data  = all_data
+ 
+        for _, row in data_sample.iterrows():
+            para_dict = {}
+            row_dict  = row.to_dict()
+            for it in prompt_config['input_list']:
+                para_dict[it['para']] = row_dict.get(it['value'])
+ 
+            # Sample a different augment as the addon (crossover partner)
+            filtered = addon_data.loc[addon_data.id_name != row['id_name']]
+            if filtered.empty:
+                print(f"Warning: No addon available for {row['id_name']}. Skipping.", flush=True)
+                continue
+            addon_row = filtered.sample(n=1).iloc[0].to_dict()
+            if prompt_config.get('addon_list'):
+                for it in prompt_config['addon_list']:
+                    para_dict[it['para']] = addon_row.get(it['value'])
+ 
+            try:
+                prompts.append((prompt.format(**para_dict), row))
+            except KeyError as e:
+                print(f"Warning: Missing key {e} in prompt. Skipping.")
+ 
+    models_dir = synth_dir(out_path)
+ 
+    for idx, (prompt_text, origdf) in tqdm(enumerate(prompts)):
+        model_dir = models_dir / f'B{idx}'
+        makedirs(model_dir, exist_ok=True)
+ 
+        _, _hp, _tr, full_out = chat_bot.chat(
+            prompt_text, engineer_prompt=False, max_new_tokens=max_new_tokens
+        )
+ 
+        if save_llm_output:
+            create_file(model_dir, new_out_file, full_out)
+ 
+        augment = extract_augment(full_out)
+        if augment is None:
+            print(f"[ERROR] No valid <aug> block for B{idx}. Skipping.")
+            continue
+ 
+        print(f"[INFO] Generated augment for B{idx}: {augment}")
+        aug_path = model_dir / 'aug.json'
+        with open(aug_path, 'w') as f:
+            json.dump(augment, f)
+ 
+        # Persist the original row so evaluate_step can read it back
+        df_file = model_dir / 'dataframe.df'
+        if origdf is not None:
+            origdf.to_pickle(df_file)
+ 
+    print('[DEBUG] augment_gen: releasing memory.')
+    release_memory()
+ 
+
+
 # ============================================================
 # SINGLE SOURCE OF TRUTH: STEP WRAPPERS
 # These are what the AGENTS call (NOT reimplementing anything)
@@ -588,7 +673,7 @@ def generate_step(state: AgentState) -> dict:
     return {"next_action": "evaluate"}
 
 
-def _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode, classification_mode=False):
+def _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode, augment_mode,classification_mode=False):
     """
     Single source of truth for one evaluation epoch.
     Runs NNEval (trains generated NNs for nn_train_epochs and records accuracy).
@@ -604,6 +689,12 @@ def _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode
 
             cls_result = cls_eval(models_dir)
             results[f"epoch_{epoch + 1}_accuracy"] = cls_result["accuracy"]
+        elif augment_mode:
+            try:
+                aug_run_eval(epoch_num=epoch, FT_MODE=True)
+            except Exception as e:
+                print(f"Error in AugmentEval: {e}", flush=True)
+            print('Augment folder reload will occur next epoch.')
         elif trans_mode:
             try:
                 run_eval(epoch_num=epoch, FT_MODE=True)
@@ -746,7 +837,7 @@ def _finetune_epoch(
     epoch, out_path, model, tokenizer, model_loader, lora_tuner,
     context_length, use_unsloth, unsloth_max_input_length,
     train_config_path, only_best_accuracy, max_prompts,
-    max_new_tokens, base_model_name, trans_mode,
+    max_new_tokens, base_model_name, trans_mode, augment_mode,
     temperature=1.0, top_k=50, top_p=0.9,
     resume_trainer_checkpoint=None,
     use_backbone=False,
@@ -764,6 +855,13 @@ def _finetune_epoch(
             train_config_path,
             TRANSFORM_OUT_DIR,
             TRANSFORM_RES_DIR,
+        )
+    elif augment_mode:
+        data_processor = AugmentGenPrompt(
+            context_length if context_length else model_loader.get_max_length(),
+            tokenizer,
+            train_config_path, # points to train_Augment_gen.json
+            AUGMENT_RES_DIR,
         )
     elif use_backbone:
         from ab.gpt.util.prompt.SFTGenPrompt import SFTGenPrompt
@@ -869,6 +967,7 @@ def tune(
     test_metric=None,
     onnx_run=False,
     trans_mode=False,
+    augment_mode=False,
     prompt_batch=1,
     use_agents=False,
     use_predictor=False,
@@ -1015,17 +1114,19 @@ def tune(
         else:
             if trans_mode:
                 trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix)
+            elif augment_mode:
+                augment_gen(epoch, out_path, chat_bot, conf_keys, prompt_dict, test_nn, max_new_tokens, save_llm_output)
             else:
                 nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix, unsloth_max_input_length, prompt_batch, use_backbone=use_backbone)
 
-            _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode, classification_mode)
+            _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode, augment_mode, classification_mode)
 
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')
         model, chat_bot = _finetune_epoch(
             epoch, out_path, model, tokenizer, model_loader, lora_tuner,
             context_length, use_unsloth, unsloth_max_input_length,
             train_config_path, only_best_accuracy, max_prompts,
-            max_new_tokens, base_model_name, trans_mode,
+            max_new_tokens, base_model_name, trans_mode, augment_mode, 
             temperature, top_k, top_p,
             trainer_resume_checkpoint,
             use_backbone=use_backbone,
