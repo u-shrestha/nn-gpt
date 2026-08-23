@@ -1,0 +1,29 @@
+{
+  "dataset": "imagenette",
+  "architecture": "Resnet",
+  "model_source": "file:/home/ushashrestha/Documents/nn-gpt/ab/gpt/brute/trans/augment/config/Resnet.py",
+  "config_num": 1,
+  "config_id": "660ecc186198",
+  "augment": [
+    [
+      "resizemix",
+      0.5,
+      0.5
+    ],
+    [
+      "cutmix",
+      0.5,
+      0.5
+    ]
+  ],
+  "seed": 42,
+  "fidelity": 30,
+  "gpu_seconds": 5.0,
+  "batch": 64,
+  "lr": 0.01,
+  "momentum": 0.9,
+  "transform": "norm_256",
+  "accuracy": 0.0,
+  "validity_class": "code_error",
+  "error": "list index out of range"
+}

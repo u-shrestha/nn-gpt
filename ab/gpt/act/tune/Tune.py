@@ -64,11 +64,11 @@ LR_SCHEDULER = 'cosine'  # Learning rate scheduler
 PER_DEVICE_TRAIN_BATCH_SIZE = 1
 GRADIENT_ACCUMULATION_STEPS = 8  # Increased for better stability
 WARMUP_RATIO = 0.05  # Warmup as ratio of total steps
-TEST_NN = 10
+TEST_NN = 20
 LOGGING_STEPS = 96  # Less frequent logging
 OPTIMIZER = 'paged_adamw_8bit'
-LLM_TUNE_CONF = 'NN_gen.json'  # 'Transform_gen.json' for transform fine-tune
-NN_GEN_CONF = 'NN_gen.json'  # 'Transform_gen.json'
+LLM_TUNE_CONF = 'Augment.json'  # 'Transform_gen.json' for transform fine-tune
+NN_GEN_CONF = 'Augment.json'  # 'Transform_gen.json'
 NN_GEN_CONF_ID = 'improve_classification_only'
 LLM_CONF = 'ds_coder_7b_olympic.json'
 MAX_PROMPTS = 4 * 1024
@@ -83,10 +83,11 @@ TEST_METRIC = None  # 'bleu' or other metric for evaluation
 ONNX_RUN = False
 UNSLOTH_OPT = False
 TRANS_MODE = False  # only transform fine-tuning
+AUG_MODE = False  # only augmentation-schedule fine-tuning (use with Augment.json confs)
 PROMPT_BATCH = 2
 
 # --- LangGraph Agent Defaults ---
-USE_AGENTS = True
+USE_AGENTS = False
 USE_PREDICTOR = False
 
 # --- Pipeline-Optimized Defaults (for iterative_finetune.py) ---
@@ -154,6 +155,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          evaluation_strategy=None, eval_steps=None, save_strategy=None, save_steps=None,
          save_total_limit=None, load_best_model_at_end=False, metric_for_best_model=None, warmup_steps=None, weight_decay=None,
          per_device_eval_batch_size=None, onnx_run=ONNX_RUN, unsloth_opt=UNSLOTH_OPT, trans_mode=TRANS_MODE,
+         aug_mode=AUG_MODE,
          prompt_batch=PROMPT_BATCH, enable_merge=False,
          # --- Pipeline Hyperparameters ---
          run_iterative_pipeline=False, cycles=5, models_per_cycle=150, samples_per_prompt=1, accuracy_threshold=0.40,
@@ -281,6 +283,7 @@ logging_steps={logging_steps}, optimizer={optimizer}, max_prompts={max_prompts},
 use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={temperature}, top_k={top_k}, top_p={top_p}, onnx_run={onnx_run},
 unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch}, use_agents={use_agents}, use_predictor={use_predictor},
 use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={classification_mode}''')
+    print(f"aug_mode={aug_mode}")
 
     test_prm = {
         'metric_for_best_model': test_metric,
@@ -357,7 +360,7 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
             'report_to': report_to_list,
             'per_device_train_batch_size': per_device_train_batch_size,
             'gradient_accumulation_steps': gradient_accumulation_steps,
-            'warmup_ratio': warmup_ratio,
+            'warmup_steps': warmup_ratio,
             'learning_rate': learning_rate,
             'logging_steps': logging_steps,
             'output_dir': nngpt_dir / 'outputs',
@@ -417,6 +420,8 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
             test_metric=test_metric,
             onnx_run=onnx_run,
             trans_mode=trans_mode,
+            # Tune_Onnx.tune() does not accept aug_mode
+            **({'aug_mode': aug_mode} if not onnx_run else {}),
             prompt_batch=prompt_batch,
             use_agents=use_agents,
             use_predictor=use_predictor,
@@ -641,6 +646,8 @@ if __name__ == '__main__':
                         help="[Pipeline] Weight decay (default: None).")
     parser.add_argument('--trans_mode', action='store_true',
                         help=f"Transform mode only (default: {TRANS_MODE}).")
+    parser.add_argument('--aug_mode', action='store_true',
+                        help=f"Augmentation-schedule mode only (default: {AUG_MODE}).")
     parser.add_argument('--onnx_run', action='store_true',
                         help=f"ONNX format (default: {ONNX_RUN}).")
     parser.add_argument('--unsloth_opt', action='store_true',

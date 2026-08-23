@@ -1,0 +1,2026 @@
+{
+  "1": {
+    "config_id": "69c8bd2c19f8",
+    "augment_configs": [
+      [
+        "cutout",
+        0.35,
+        0.333333
+      ],
+      [
+        "gridmask",
+        0.4,
+        0.666667
+      ]
+    ],
+    "source_config_id": "b9821113c137",
+    "source_order": [
+      "gridmask",
+      "cutout"
+    ],
+    "permutation": [
+      1,
+      0
+    ]
+  },
+  "2": {
+    "config_id": "949828b2f12d",
+    "augment_configs": [
+      [
+        "none",
+        null,
+        0.2
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.6
+      ],
+      [
+        "hide_and_seek",
+        0.4,
+        0.2
+      ]
+    ],
+    "source_config_id": "c68e3c62f5fe",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      0,
+      2,
+      1
+    ]
+  },
+  "3": {
+    "config_id": "3b37679d37d9",
+    "augment_configs": [
+      [
+        "hide_and_seek",
+        0.4,
+        0.2
+      ],
+      [
+        "none",
+        null,
+        0.2
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.6
+      ]
+    ],
+    "source_config_id": "c68e3c62f5fe",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      1,
+      0,
+      2
+    ]
+  },
+  "4": {
+    "config_id": "efc19ffeef2f",
+    "augment_configs": [
+      [
+        "hide_and_seek",
+        0.4,
+        0.2
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.6
+      ],
+      [
+        "none",
+        null,
+        0.2
+      ]
+    ],
+    "source_config_id": "c68e3c62f5fe",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      1,
+      2,
+      0
+    ]
+  },
+  "5": {
+    "config_id": "93882f1cc05c",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.6,
+        0.6
+      ],
+      [
+        "none",
+        null,
+        0.2
+      ],
+      [
+        "hide_and_seek",
+        0.4,
+        0.2
+      ]
+    ],
+    "source_config_id": "c68e3c62f5fe",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      2,
+      0,
+      1
+    ]
+  },
+  "6": {
+    "config_id": "a78d0e11c828",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.6,
+        0.6
+      ],
+      [
+        "hide_and_seek",
+        0.4,
+        0.2
+      ],
+      [
+        "none",
+        null,
+        0.2
+      ]
+    ],
+    "source_config_id": "c68e3c62f5fe",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      2,
+      1,
+      0
+    ]
+  },
+  "7": {
+    "config_id": "e7fb678a501c",
+    "augment_configs": [
+      [
+        "cutout",
+        0.35,
+        0.5
+      ],
+      [
+        "gridmask",
+        0.4,
+        0.5
+      ]
+    ],
+    "source_config_id": "0d43c128bc4d",
+    "source_order": [
+      "gridmask",
+      "cutout"
+    ],
+    "permutation": [
+      1,
+      0
+    ]
+  },
+  "8": {
+    "config_id": "e4df62ddaeeb",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.6,
+        0.4
+      ],
+      [
+        "cutmix",
+        2.0,
+        0.2
+      ],
+      [
+        "cutout",
+        0.35,
+        0.3
+      ],
+      [
+        "mixup",
+        0.2,
+        0.1
+      ]
+    ],
+    "source_config_id": "bb82957ced91",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      3,
+      1,
+      2,
+      0
+    ]
+  },
+  "9": {
+    "config_id": "eb1cdffc2452",
+    "augment_configs": [
+      [
+        "mixup",
+        0.2,
+        0.1
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.4
+      ],
+      [
+        "cutmix",
+        2.0,
+        0.2
+      ],
+      [
+        "cutout",
+        0.35,
+        0.3
+      ]
+    ],
+    "source_config_id": "bb82957ced91",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      0,
+      3,
+      1,
+      2
+    ]
+  },
+  "10": {
+    "config_id": "420eac2aea7c",
+    "augment_configs": [
+      [
+        "mixup",
+        0.2,
+        0.1
+      ],
+      [
+        "cutmix",
+        2.0,
+        0.2
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.4
+      ],
+      [
+        "cutout",
+        0.35,
+        0.3
+      ]
+    ],
+    "source_config_id": "bb82957ced91",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      0,
+      1,
+      3,
+      2
+    ]
+  },
+  "11": {
+    "config_id": "792ed3ca54c9",
+    "augment_configs": [
+      [
+        "cutmix",
+        2.0,
+        0.2
+      ],
+      [
+        "cutout",
+        0.35,
+        0.3
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.4
+      ],
+      [
+        "mixup",
+        0.2,
+        0.1
+      ]
+    ],
+    "source_config_id": "bb82957ced91",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      1,
+      2,
+      3,
+      0
+    ]
+  },
+  "12": {
+    "config_id": "45f890bbf1c7",
+    "augment_configs": [
+      [
+        "cutmix",
+        2.0,
+        0.2
+      ],
+      [
+        "cutout",
+        0.35,
+        0.3
+      ],
+      [
+        "mixup",
+        0.2,
+        0.1
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.4
+      ]
+    ],
+    "source_config_id": "bb82957ced91",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      1,
+      2,
+      0,
+      3
+    ]
+  },
+  "13": {
+    "config_id": "3905b4df41fb",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.6,
+        0.4
+      ],
+      [
+        "mixup",
+        0.2,
+        0.1
+      ],
+      [
+        "cutout",
+        0.35,
+        0.3
+      ],
+      [
+        "cutmix",
+        2.0,
+        0.2
+      ]
+    ],
+    "source_config_id": "bb82957ced91",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      3,
+      0,
+      2,
+      1
+    ]
+  },
+  "14": {
+    "config_id": "0c5ba6bdd894",
+    "augment_configs": [
+      [
+        "gridmask",
+        0.42,
+        0.183083
+      ],
+      [
+        "hide_and_seek",
+        0.3883,
+        0.513833
+      ],
+      [
+        "erasing",
+        0.1923,
+        0.303084
+      ]
+    ],
+    "source_config_id": "12652096ae89",
+    "source_order": [
+      "gridmask",
+      "erasing",
+      "hide_and_seek"
+    ],
+    "permutation": [
+      0,
+      2,
+      1
+    ]
+  },
+  "15": {
+    "config_id": "14cadd19fccb",
+    "augment_configs": [
+      [
+        "erasing",
+        0.1923,
+        0.303084
+      ],
+      [
+        "gridmask",
+        0.42,
+        0.183083
+      ],
+      [
+        "hide_and_seek",
+        0.3883,
+        0.513833
+      ]
+    ],
+    "source_config_id": "12652096ae89",
+    "source_order": [
+      "gridmask",
+      "erasing",
+      "hide_and_seek"
+    ],
+    "permutation": [
+      1,
+      0,
+      2
+    ]
+  },
+  "16": {
+    "config_id": "6c325a0b24d5",
+    "augment_configs": [
+      [
+        "erasing",
+        0.1923,
+        0.303084
+      ],
+      [
+        "hide_and_seek",
+        0.3883,
+        0.513833
+      ],
+      [
+        "gridmask",
+        0.42,
+        0.183083
+      ]
+    ],
+    "source_config_id": "12652096ae89",
+    "source_order": [
+      "gridmask",
+      "erasing",
+      "hide_and_seek"
+    ],
+    "permutation": [
+      1,
+      2,
+      0
+    ]
+  },
+  "17": {
+    "config_id": "182b6d716403",
+    "augment_configs": [
+      [
+        "hide_and_seek",
+        0.3883,
+        0.513833
+      ],
+      [
+        "gridmask",
+        0.42,
+        0.183083
+      ],
+      [
+        "erasing",
+        0.1923,
+        0.303084
+      ]
+    ],
+    "source_config_id": "12652096ae89",
+    "source_order": [
+      "gridmask",
+      "erasing",
+      "hide_and_seek"
+    ],
+    "permutation": [
+      2,
+      0,
+      1
+    ]
+  },
+  "18": {
+    "config_id": "096d17987751",
+    "augment_configs": [
+      [
+        "hide_and_seek",
+        0.3883,
+        0.513833
+      ],
+      [
+        "erasing",
+        0.1923,
+        0.303084
+      ],
+      [
+        "gridmask",
+        0.42,
+        0.183083
+      ]
+    ],
+    "source_config_id": "12652096ae89",
+    "source_order": [
+      "gridmask",
+      "erasing",
+      "hide_and_seek"
+    ],
+    "permutation": [
+      2,
+      1,
+      0
+    ]
+  },
+  "19": {
+    "config_id": "ac5fe0a02d53",
+    "augment_configs": [
+      [
+        "cutout",
+        0.35,
+        0.3
+      ],
+      [
+        "gridmask",
+        0.4,
+        0.7
+      ]
+    ],
+    "source_config_id": "9982a0010ba4",
+    "source_order": [
+      "gridmask",
+      "cutout"
+    ],
+    "permutation": [
+      1,
+      0
+    ]
+  },
+  "20": {
+    "config_id": "fc6a3a83b168",
+    "augment_configs": [
+      [
+        "none",
+        null,
+        0.1
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.6
+      ],
+      [
+        "hide_and_seek",
+        0.4,
+        0.3
+      ]
+    ],
+    "source_config_id": "91698476017c",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      0,
+      2,
+      1
+    ]
+  },
+  "21": {
+    "config_id": "6b5e6d638bf3",
+    "augment_configs": [
+      [
+        "hide_and_seek",
+        0.4,
+        0.3
+      ],
+      [
+        "none",
+        null,
+        0.1
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.6
+      ]
+    ],
+    "source_config_id": "91698476017c",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      1,
+      0,
+      2
+    ]
+  },
+  "22": {
+    "config_id": "54aeb75b41d5",
+    "augment_configs": [
+      [
+        "hide_and_seek",
+        0.4,
+        0.3
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.6
+      ],
+      [
+        "none",
+        null,
+        0.1
+      ]
+    ],
+    "source_config_id": "91698476017c",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      1,
+      2,
+      0
+    ]
+  },
+  "23": {
+    "config_id": "ed341890554e",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.6,
+        0.6
+      ],
+      [
+        "none",
+        null,
+        0.1
+      ],
+      [
+        "hide_and_seek",
+        0.4,
+        0.3
+      ]
+    ],
+    "source_config_id": "91698476017c",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      2,
+      0,
+      1
+    ]
+  },
+  "24": {
+    "config_id": "3dd2378ec5ba",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.6,
+        0.6
+      ],
+      [
+        "hide_and_seek",
+        0.4,
+        0.3
+      ],
+      [
+        "none",
+        null,
+        0.1
+      ]
+    ],
+    "source_config_id": "91698476017c",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      2,
+      1,
+      0
+    ]
+  },
+  "25": {
+    "config_id": "1737076e455e",
+    "augment_configs": [
+      [
+        "cutout",
+        0.35,
+        0.25
+      ],
+      [
+        "gridmask",
+        0.4,
+        0.75
+      ]
+    ],
+    "source_config_id": "d5e2751790c5",
+    "source_order": [
+      "gridmask",
+      "cutout"
+    ],
+    "permutation": [
+      1,
+      0
+    ]
+  },
+  "26": {
+    "config_id": "7a2ca530989a",
+    "augment_configs": [
+      [
+        "mixup",
+        0.2,
+        0.1
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.5
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ],
+      [
+        "cutmix",
+        2.0,
+        0.15
+      ]
+    ],
+    "source_config_id": "6f4ca75c5574",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      0,
+      3,
+      2,
+      1
+    ]
+  },
+  "27": {
+    "config_id": "9487f2d4308c",
+    "augment_configs": [
+      [
+        "mixup",
+        0.2,
+        0.1
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.5
+      ],
+      [
+        "cutmix",
+        2.0,
+        0.15
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ]
+    ],
+    "source_config_id": "6f4ca75c5574",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      0,
+      3,
+      1,
+      2
+    ]
+  },
+  "28": {
+    "config_id": "a52d639a4e34",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.6,
+        0.5
+      ],
+      [
+        "mixup",
+        0.2,
+        0.1
+      ],
+      [
+        "cutmix",
+        2.0,
+        0.15
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ]
+    ],
+    "source_config_id": "6f4ca75c5574",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      3,
+      0,
+      1,
+      2
+    ]
+  },
+  "29": {
+    "config_id": "83217e3280aa",
+    "augment_configs": [
+      [
+        "mixup",
+        0.2,
+        0.1
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.5
+      ],
+      [
+        "cutmix",
+        2.0,
+        0.15
+      ]
+    ],
+    "source_config_id": "6f4ca75c5574",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      0,
+      2,
+      3,
+      1
+    ]
+  },
+  "30": {
+    "config_id": "01a245070dca",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.6,
+        0.5
+      ],
+      [
+        "mixup",
+        0.2,
+        0.1
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ],
+      [
+        "cutmix",
+        2.0,
+        0.15
+      ]
+    ],
+    "source_config_id": "6f4ca75c5574",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      3,
+      0,
+      2,
+      1
+    ]
+  },
+  "31": {
+    "config_id": "169aa90a5002",
+    "augment_configs": [
+      [
+        "cutout",
+        0.35,
+        0.25
+      ],
+      [
+        "cutmix",
+        2.0,
+        0.15
+      ],
+      [
+        "mixup",
+        0.2,
+        0.1
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.5
+      ]
+    ],
+    "source_config_id": "6f4ca75c5574",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      2,
+      1,
+      0,
+      3
+    ]
+  },
+  "32": {
+    "config_id": "f40267285667",
+    "augment_configs": [
+      [
+        "cutout",
+        0.2,
+        0.333333
+      ],
+      [
+        "gridmask",
+        0.5,
+        0.666667
+      ]
+    ],
+    "source_config_id": "17cba4a9e620",
+    "source_order": [
+      "gridmask",
+      "cutout"
+    ],
+    "permutation": [
+      1,
+      0
+    ]
+  },
+  "33": {
+    "config_id": "068c79a96523",
+    "augment_configs": [
+      [
+        "cutout",
+        0.2,
+        0.5
+      ],
+      [
+        "gridmask",
+        0.5,
+        0.5
+      ]
+    ],
+    "source_config_id": "643002a54a65",
+    "source_order": [
+      "gridmask",
+      "cutout"
+    ],
+    "permutation": [
+      1,
+      0
+    ]
+  },
+  "34": {
+    "config_id": "d920f3deaa86",
+    "augment_configs": [
+      [
+        "gridmask",
+        0.3844,
+        0.271174
+      ],
+      [
+        "hide_and_seek",
+        0.4444,
+        0.373025
+      ],
+      [
+        "erasing",
+        0.4743,
+        0.039018
+      ],
+      [
+        "cutmix",
+        0.6979,
+        0.316783
+      ]
+    ],
+    "source_config_id": "a88e8e6e4c0e",
+    "source_order": [
+      "gridmask",
+      "erasing",
+      "hide_and_seek",
+      "cutmix"
+    ],
+    "permutation": [
+      0,
+      2,
+      1,
+      3
+    ]
+  },
+  "35": {
+    "config_id": "0adbed29e582",
+    "augment_configs": [
+      [
+        "gridmask",
+        0.3844,
+        0.271174
+      ],
+      [
+        "erasing",
+        0.4743,
+        0.039018
+      ],
+      [
+        "cutmix",
+        0.6979,
+        0.316783
+      ],
+      [
+        "hide_and_seek",
+        0.4444,
+        0.373025
+      ]
+    ],
+    "source_config_id": "a88e8e6e4c0e",
+    "source_order": [
+      "gridmask",
+      "erasing",
+      "hide_and_seek",
+      "cutmix"
+    ],
+    "permutation": [
+      0,
+      1,
+      3,
+      2
+    ]
+  },
+  "36": {
+    "config_id": "1dfd02ec5aa9",
+    "augment_configs": [
+      [
+        "gridmask",
+        0.3844,
+        0.271174
+      ],
+      [
+        "hide_and_seek",
+        0.4444,
+        0.373025
+      ],
+      [
+        "cutmix",
+        0.6979,
+        0.316783
+      ],
+      [
+        "erasing",
+        0.4743,
+        0.039018
+      ]
+    ],
+    "source_config_id": "a88e8e6e4c0e",
+    "source_order": [
+      "gridmask",
+      "erasing",
+      "hide_and_seek",
+      "cutmix"
+    ],
+    "permutation": [
+      0,
+      2,
+      3,
+      1
+    ]
+  },
+  "37": {
+    "config_id": "29aa5fe9b3a2",
+    "augment_configs": [
+      [
+        "erasing",
+        0.4743,
+        0.039018
+      ],
+      [
+        "gridmask",
+        0.3844,
+        0.271174
+      ],
+      [
+        "cutmix",
+        0.6979,
+        0.316783
+      ],
+      [
+        "hide_and_seek",
+        0.4444,
+        0.373025
+      ]
+    ],
+    "source_config_id": "a88e8e6e4c0e",
+    "source_order": [
+      "gridmask",
+      "erasing",
+      "hide_and_seek",
+      "cutmix"
+    ],
+    "permutation": [
+      1,
+      0,
+      3,
+      2
+    ]
+  },
+  "38": {
+    "config_id": "336bdd205aad",
+    "augment_configs": [
+      [
+        "erasing",
+        0.4743,
+        0.039018
+      ],
+      [
+        "hide_and_seek",
+        0.4444,
+        0.373025
+      ],
+      [
+        "gridmask",
+        0.3844,
+        0.271174
+      ],
+      [
+        "cutmix",
+        0.6979,
+        0.316783
+      ]
+    ],
+    "source_config_id": "a88e8e6e4c0e",
+    "source_order": [
+      "gridmask",
+      "erasing",
+      "hide_and_seek",
+      "cutmix"
+    ],
+    "permutation": [
+      1,
+      2,
+      0,
+      3
+    ]
+  },
+  "39": {
+    "config_id": "12cc7780a43d",
+    "augment_configs": [
+      [
+        "hide_and_seek",
+        0.4444,
+        0.373025
+      ],
+      [
+        "cutmix",
+        0.6979,
+        0.316783
+      ],
+      [
+        "erasing",
+        0.4743,
+        0.039018
+      ],
+      [
+        "gridmask",
+        0.3844,
+        0.271174
+      ]
+    ],
+    "source_config_id": "a88e8e6e4c0e",
+    "source_order": [
+      "gridmask",
+      "erasing",
+      "hide_and_seek",
+      "cutmix"
+    ],
+    "permutation": [
+      2,
+      3,
+      1,
+      0
+    ]
+  },
+  "40": {
+    "config_id": "b9d2a2b314e2",
+    "augment_configs": [
+      [
+        "cutout",
+        0.2,
+        0.4
+      ],
+      [
+        "gridmask",
+        0.5,
+        0.6
+      ]
+    ],
+    "source_config_id": "1a15b7e1ec80",
+    "source_order": [
+      "gridmask",
+      "cutout"
+    ],
+    "permutation": [
+      1,
+      0
+    ]
+  },
+  "41": {
+    "config_id": "c25cb73a41db",
+    "augment_configs": [
+      [
+        "cutout",
+        0.35,
+        0.6
+      ],
+      [
+        "gridmask",
+        0.4,
+        0.4
+      ]
+    ],
+    "source_config_id": "1194a9e51c49",
+    "source_order": [
+      "gridmask",
+      "cutout"
+    ],
+    "permutation": [
+      1,
+      0
+    ]
+  },
+  "42": {
+    "config_id": "5ad41450726d",
+    "augment_configs": [
+      [
+        "cutout",
+        0.35,
+        0.666667
+      ],
+      [
+        "gridmask",
+        0.4,
+        0.333333
+      ]
+    ],
+    "source_config_id": "633ec34fbb9b",
+    "source_order": [
+      "gridmask",
+      "cutout"
+    ],
+    "permutation": [
+      1,
+      0
+    ]
+  },
+  "43": {
+    "config_id": "c213ee2d3bdc",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.2,
+        0.5
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.15
+      ],
+      [
+        "mixup",
+        1.0,
+        0.1
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ]
+    ],
+    "source_config_id": "24a0385947de",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      3,
+      1,
+      0,
+      2
+    ]
+  },
+  "44": {
+    "config_id": "0fdb5f9aaacb",
+    "augment_configs": [
+      [
+        "mixup",
+        1.0,
+        0.1
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.15
+      ],
+      [
+        "resizemix",
+        0.2,
+        0.5
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ]
+    ],
+    "source_config_id": "24a0385947de",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      0,
+      1,
+      3,
+      2
+    ]
+  },
+  "45": {
+    "config_id": "33874b5ce7de",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.2,
+        0.5
+      ],
+      [
+        "mixup",
+        1.0,
+        0.1
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.15
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ]
+    ],
+    "source_config_id": "24a0385947de",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      3,
+      0,
+      1,
+      2
+    ]
+  },
+  "46": {
+    "config_id": "34d8ccc3fcfe",
+    "augment_configs": [
+      [
+        "cutmix",
+        0.5,
+        0.15
+      ],
+      [
+        "mixup",
+        1.0,
+        0.1
+      ],
+      [
+        "resizemix",
+        0.2,
+        0.5
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ]
+    ],
+    "source_config_id": "24a0385947de",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      1,
+      0,
+      3,
+      2
+    ]
+  },
+  "47": {
+    "config_id": "a54b5d0e9dc7",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.2,
+        0.5
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.15
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ],
+      [
+        "mixup",
+        1.0,
+        0.1
+      ]
+    ],
+    "source_config_id": "24a0385947de",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      3,
+      1,
+      2,
+      0
+    ]
+  },
+  "48": {
+    "config_id": "31b122575135",
+    "augment_configs": [
+      [
+        "cutout",
+        0.35,
+        0.25
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.15
+      ],
+      [
+        "mixup",
+        1.0,
+        0.1
+      ],
+      [
+        "resizemix",
+        0.2,
+        0.5
+      ]
+    ],
+    "source_config_id": "24a0385947de",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      2,
+      1,
+      0,
+      3
+    ]
+  },
+  "49": {
+    "config_id": "515b82befca0",
+    "augment_configs": [
+      [
+        "cutout",
+        0.35,
+        0.2
+      ],
+      [
+        "gridmask",
+        0.4,
+        0.8
+      ]
+    ],
+    "source_config_id": "9a2e85b5abc6",
+    "source_order": [
+      "gridmask",
+      "cutout"
+    ],
+    "permutation": [
+      1,
+      0
+    ]
+  },
+  "50": {
+    "config_id": "142ecc0ddc67",
+    "augment_configs": [
+      [
+        "cutmix",
+        0.5,
+        0.15
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ],
+      [
+        "mixup",
+        0.5,
+        0.1
+      ],
+      [
+        "resizemix",
+        0.2,
+        0.5
+      ]
+    ],
+    "source_config_id": "32471c835c78",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      1,
+      2,
+      0,
+      3
+    ]
+  },
+  "51": {
+    "config_id": "f0a8250205d0",
+    "augment_configs": [
+      [
+        "cutout",
+        0.35,
+        0.25
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.15
+      ],
+      [
+        "resizemix",
+        0.2,
+        0.5
+      ],
+      [
+        "mixup",
+        0.5,
+        0.1
+      ]
+    ],
+    "source_config_id": "32471c835c78",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      2,
+      1,
+      3,
+      0
+    ]
+  },
+  "52": {
+    "config_id": "a8d35401c9a4",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.2,
+        0.5
+      ],
+      [
+        "mixup",
+        0.5,
+        0.1
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.15
+      ]
+    ],
+    "source_config_id": "32471c835c78",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      3,
+      0,
+      2,
+      1
+    ]
+  },
+  "53": {
+    "config_id": "fd7067240471",
+    "augment_configs": [
+      [
+        "cutmix",
+        0.5,
+        0.15
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ],
+      [
+        "resizemix",
+        0.2,
+        0.5
+      ],
+      [
+        "mixup",
+        0.5,
+        0.1
+      ]
+    ],
+    "source_config_id": "32471c835c78",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      1,
+      2,
+      3,
+      0
+    ]
+  },
+  "54": {
+    "config_id": "0980afee64e0",
+    "augment_configs": [
+      [
+        "mixup",
+        0.5,
+        0.1
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.15
+      ],
+      [
+        "resizemix",
+        0.2,
+        0.5
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ]
+    ],
+    "source_config_id": "32471c835c78",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      0,
+      1,
+      3,
+      2
+    ]
+  },
+  "55": {
+    "config_id": "30c3e94ca790",
+    "augment_configs": [
+      [
+        "cutmix",
+        0.5,
+        0.15
+      ],
+      [
+        "mixup",
+        0.5,
+        0.1
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ],
+      [
+        "resizemix",
+        0.2,
+        0.5
+      ]
+    ],
+    "source_config_id": "32471c835c78",
+    "source_order": [
+      "mixup",
+      "cutmix",
+      "cutout",
+      "resizemix"
+    ],
+    "permutation": [
+      1,
+      0,
+      2,
+      3
+    ]
+  },
+  "56": {
+    "config_id": "6eea5d9dc0e0",
+    "augment_configs": [
+      [
+        "cutout",
+        0.35,
+        0.1
+      ],
+      [
+        "gridmask",
+        0.4,
+        0.9
+      ]
+    ],
+    "source_config_id": "d9675b532399",
+    "source_order": [
+      "gridmask",
+      "cutout"
+    ],
+    "permutation": [
+      1,
+      0
+    ]
+  },
+  "57": {
+    "config_id": "c90341d2870e",
+    "augment_configs": [
+      [
+        "none",
+        null,
+        0.4
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.4
+      ],
+      [
+        "hide_and_seek",
+        0.4,
+        0.2
+      ]
+    ],
+    "source_config_id": "5a5d58bea47d",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      0,
+      2,
+      1
+    ]
+  },
+  "58": {
+    "config_id": "831a90c16df0",
+    "augment_configs": [
+      [
+        "hide_and_seek",
+        0.4,
+        0.2
+      ],
+      [
+        "none",
+        null,
+        0.4
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.4
+      ]
+    ],
+    "source_config_id": "5a5d58bea47d",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      1,
+      0,
+      2
+    ]
+  },
+  "59": {
+    "config_id": "11438fbf2327",
+    "augment_configs": [
+      [
+        "hide_and_seek",
+        0.4,
+        0.2
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.4
+      ],
+      [
+        "none",
+        null,
+        0.4
+      ]
+    ],
+    "source_config_id": "5a5d58bea47d",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      1,
+      2,
+      0
+    ]
+  },
+  "60": {
+    "config_id": "2a851e39a708",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.6,
+        0.4
+      ],
+      [
+        "none",
+        null,
+        0.4
+      ],
+      [
+        "hide_and_seek",
+        0.4,
+        0.2
+      ]
+    ],
+    "source_config_id": "5a5d58bea47d",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      2,
+      0,
+      1
+    ]
+  },
+  "61": {
+    "config_id": "cc1f4b615ad5",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.6,
+        0.4
+      ],
+      [
+        "hide_and_seek",
+        0.4,
+        0.2
+      ],
+      [
+        "none",
+        null,
+        0.4
+      ]
+    ],
+    "source_config_id": "5a5d58bea47d",
+    "source_order": [
+      "none",
+      "hide_and_seek",
+      "resizemix"
+    ],
+    "permutation": [
+      2,
+      1,
+      0
+    ]
+  }
+}

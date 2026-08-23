@@ -48,3 +48,13 @@ stats/*.json
 cycle_results.json
 eval_info.json
 source_recipe_delta.json
+
+# Local run artifacts-transform
+*.log
+stat/
+fig/
+datasets/
+csv/
+ab/gpt/brute/trans/TransformEval_up.py
+
+

@@ -1,0 +1,52 @@
+{
+    "1": {
+        "config_id": "b9821113c137",
+        "augment_configs": [
+            [
+                "gridmask",
+                0.4,
+                0.666667
+            ],
+            [
+                "cutout",
+                0.35,
+                0.333333
+            ]
+        ]
+    },
+    "2": {
+        "config_id": "a51d2e14d2af",
+        "augment_configs": [
+            [
+                "mixup",
+                0.2,
+                0.4
+            ],
+            [
+                "cutmix",
+                0.5,
+                0.3
+            ],
+            [
+                "cutout",
+                0.35,
+                0.2
+            ],
+            [
+                "resizemix",
+                0.2,
+                0.1
+            ]
+        ]
+    },
+    "3": {
+        "config_id": "7cf22688dfa7",
+        "augment_configs": [
+            [
+                "gridmask",
+                0.4,
+                1.0
+            ]
+        ]
+    }
+}
