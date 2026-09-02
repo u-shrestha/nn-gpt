@@ -1,0 +1,307 @@
+{
+  "4001": {
+    "config_id": "98a5c8b05c86",
+    "augment_configs": [
+      [
+        "none",
+        null,
+        0.2
+      ],
+      [
+        "gridmask",
+        0.5,
+        0.4
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.4
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "4002": {
+    "config_id": "2e6051b4ebbb",
+    "augment_configs": [
+      [
+        "erasing",
+        0.3,
+        0.3
+      ],
+      [
+        "cutmix",
+        0.8,
+        0.7
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "4003": {
+    "config_id": "b3794780a1cb",
+    "augment_configs": [
+      [
+        "gridmask",
+        0.5,
+        0.5
+      ],
+      [
+        "cutout",
+        0.5,
+        0.5
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "4006": {
+    "config_id": "44d9d028b232",
+    "augment_configs": [
+      [
+        "mixup",
+        1.0,
+        0.2
+      ],
+      [
+        "cutmix",
+        2.0,
+        0.2
+      ],
+      [
+        "gridmask",
+        0.6,
+        0.2
+      ],
+      [
+        "cutout",
+        0.35,
+        0.2
+      ],
+      [
+        "resizemix",
+        0.2,
+        0.2
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "4007": {
+    "config_id": "9490fabb76e9",
+    "augment_configs": [
+      [
+        "gridmask",
+        0.6,
+        1.0
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "4008": {
+    "config_id": "5935a4f10bec",
+    "augment_configs": [
+      [
+        "mixup",
+        1.0,
+        0.25
+      ],
+      [
+        "cutmix",
+        2.0,
+        0.25
+      ],
+      [
+        "resizemix",
+        0.3,
+        0.25
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "4009": {
+    "config_id": "dba6829ee3dd",
+    "augment_configs": [
+      [
+        "gridmask",
+        0.4,
+        0.1
+      ],
+      [
+        "cutout",
+        0.35,
+        0.9
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "4010": {
+    "config_id": "0f44b3b7d100",
+    "augment_configs": [
+      [
+        "hide_and_seek",
+        0.3241,
+        0.101932
+      ],
+      [
+        "cutout",
+        0.127,
+        0.12976
+      ],
+      [
+        "hide_and_seek",
+        0.3781,
+        0.454032
+      ],
+      [
+        "hide_and_seek",
+        0.1235,
+        0.314276
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "4011": {
+    "config_id": "2cd15669548c",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.6,
+        0.3
+      ],
+      [
+        "cutout",
+        0.35,
+        0.7
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "4014": {
+    "config_id": "d7757e03dd3a",
+    "augment_configs": [
+      [
+        "mixup",
+        0.5,
+        0.2
+      ],
+      [
+        "cutmix",
+        2.0,
+        0.2
+      ],
+      [
+        "cutout",
+        0.35,
+        0.3
+      ],
+      [
+        "resizemix",
+        0.5,
+        0.3
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "4015": {
+    "config_id": "dd08a00fb620",
+    "augment_configs": [
+      [
+        "mixup",
+        0.2,
+        0.1
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.2
+      ],
+      [
+        "cutout",
+        0.35,
+        0.3
+      ],
+      [
+        "resizemix",
+        0.2,
+        0.4
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "4016": {
+    "config_id": "f14f28359c10",
+    "augment_configs": [
+      [
+        "mixup",
+        0.2,
+        0.25
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.25
+      ],
+      [
+        "cutout",
+        0.1,
+        0.25
+      ],
+      [
+        "resizemix",
+        0.2,
+        0.25
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "4017": {
+    "config_id": "1454891cc8f2",
+    "augment_configs": [
+      [
+        "gridmask",
+        0.5,
+        0.25
+      ],
+      [
+        "cutout",
+        0.2,
+        0.75
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "4018": {
+    "config_id": "804904b523b5",
+    "augment_configs": [
+      [
+        "resizemix",
+        0.6,
+        1.0
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "4019": {
+    "config_id": "518773b7fec8",
+    "augment_configs": [
+      [
+        "none",
+        null,
+        0.25
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.25
+      ],
+      [
+        "gridmask",
+        0.5,
+        0.5
+      ]
+    ],
+    "source": "llm_gen"
+  }
+}

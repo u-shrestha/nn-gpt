@@ -1,0 +1,416 @@
+{
+  "3000": {
+    "config_id": "11bfd0293494",
+    "augment_configs": [
+      [
+        "mixup",
+        1.0,
+        0.15
+      ],
+      [
+        "cutmix",
+        1.0,
+        0.35
+      ],
+      [
+        "cutout",
+        0.05,
+        0.35
+      ],
+      [
+        "resizemix",
+        0.4,
+        0.15
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3001": {
+    "config_id": "0f44b3b7d100",
+    "augment_configs": [
+      [
+        "hide_and_seek",
+        0.3241,
+        0.101932
+      ],
+      [
+        "cutout",
+        0.127,
+        0.12976
+      ],
+      [
+        "hide_and_seek",
+        0.3781,
+        0.454032
+      ],
+      [
+        "hide_and_seek",
+        0.1235,
+        0.314276
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3002": {
+    "config_id": "bb0114e17005",
+    "augment_configs": [
+      [
+        "cutmix",
+        0.5,
+        0.333333
+      ],
+      [
+        "gridmask",
+        0.5,
+        0.333333
+      ],
+      [
+        "cutout",
+        0.5,
+        0.333334
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3003": {
+    "config_id": "09fcb3754d7b",
+    "augment_configs": [
+      [
+        "gridmask",
+        0.666667,
+        0.666667
+      ],
+      [
+        "cutout",
+        0.333333,
+        0.333333
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3004": {
+    "config_id": "d8cb5319fc29",
+    "augment_configs": [
+      [
+        "mixup",
+        0.2,
+        0.25
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.25
+      ],
+      [
+        "cutout",
+        0.35,
+        0.25
+      ],
+      [
+        "resizemix",
+        0.2,
+        0.25
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3005": {
+    "config_id": "9ae29646d72f",
+    "augment_configs": [
+      [
+        "mixup",
+        1.0,
+        0.1
+      ],
+      [
+        "cutmix",
+        1.0,
+        0.15
+      ],
+      [
+        "cutout",
+        0.1,
+        0.25
+      ],
+      [
+        "resizemix",
+        0.4,
+        0.5
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3006": {
+    "config_id": "38e8051ffd9d",
+    "augment_configs": [
+      [
+        "mixup",
+        0.555,
+        0.5
+      ],
+      [
+        "cutmix",
+        1.0,
+        0.25
+      ],
+      [
+        "cutout",
+        0.1,
+        0.15
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.1
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3007": {
+    "config_id": "1ce164ff8e87",
+    "augment_configs": [
+      [
+        "mixup",
+        0.2,
+        0.3
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.3
+      ],
+      [
+        "cutout",
+        0.3,
+        0.2
+      ],
+      [
+        "resizemix",
+        0.4,
+        0.2
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3008": {
+    "config_id": "08eeb62448b0",
+    "augment_configs": [
+      [
+        "gridmask",
+        0.5,
+        0.5
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.5
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3009": {
+    "config_id": "9a460a08cf74",
+    "augment_configs": [
+      [
+        "none",
+        null,
+        0.125
+      ],
+      [
+        "hide_and_seek",
+        0.3,
+        0.75
+      ],
+      [
+        "resizemix",
+        0.3,
+        0.125
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3010": {
+    "config_id": "9334fb6370fa",
+    "augment_configs": [
+      [
+        "mixup",
+        0.2,
+        0.1
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.2
+      ],
+      [
+        "cutout",
+        0.1,
+        0.3
+      ],
+      [
+        "resizemix",
+        0.2,
+        0.4
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3011": {
+    "config_id": "dd5fdd634f53",
+    "augment_configs": [
+      [
+        "erasing",
+        0.3656,
+        1.0
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3012": {
+    "config_id": "f8736e896b80",
+    "augment_configs": [
+      [
+        "mixup",
+        1.0,
+        0.25
+      ],
+      [
+        "cutmix",
+        1.0,
+        0.25
+      ],
+      [
+        "gridmask",
+        0.5,
+        0.25
+      ],
+      [
+        "cutout",
+        0.1,
+        0.25
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3013": {
+    "config_id": "ada7e58b2e35",
+    "augment_configs": [
+      [
+        "erasing",
+        0.1,
+        0.4
+      ],
+      [
+        "gridmask",
+        0.4,
+        0.4
+      ],
+      [
+        "hide_and_seek",
+        0.3,
+        0.2
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3014": {
+    "config_id": "d1e59b308a55",
+    "augment_configs": [
+      [
+        "mixup",
+        1.0,
+        0.25
+      ],
+      [
+        "cutmix",
+        1.0,
+        0.25
+      ],
+      [
+        "cutout",
+        0.2,
+        0.25
+      ],
+      [
+        "resizemix",
+        0.6,
+        0.25
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3015": {
+    "config_id": "4f928108b103",
+    "augment_configs": [
+      [
+        "hide_and_seek",
+        0.3,
+        0.25
+      ],
+      [
+        "cutmix",
+        0.5,
+        0.25
+      ],
+      [
+        "resizemix",
+        0.5,
+        0.25
+      ],
+      [
+        "cutout",
+        0.2,
+        0.25
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3016": {
+    "config_id": "2ea16ccf64cd",
+    "augment_configs": [
+      [
+        "gridmask",
+        0.4,
+        0.333333
+      ],
+      [
+        "cutout",
+        0.35,
+        0.666667
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3017": {
+    "config_id": "68ca5fe539e2",
+    "augment_configs": [
+      [
+        "gridmask",
+        0.4,
+        0.5
+      ],
+      [
+        "cutout",
+        0.35,
+        0.5
+      ]
+    ],
+    "source": "llm_gen"
+  },
+  "3019": {
+    "config_id": "a80f6cc32781",
+    "augment_configs": [
+      [
+        "gridmask",
+        0.5,
+        0.5
+      ],
+      [
+        "mixup",
+        0.55,
+        0.5
+      ]
+    ],
+    "source": "llm_gen"
+  }
+}

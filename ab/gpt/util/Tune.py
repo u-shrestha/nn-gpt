@@ -877,7 +877,7 @@ def _evaluate_epoch(
         elif aug_mode:
             cfg_name = f'gen_epoch_A{epoch}.json'
             if (AUG_CONFIG_DIR / cfg_name).exists():
-                from ab.gpt.brute.trans.augment.AugEval import run_eval as aug_run_eval, RESNET_FILE
+                from ab.gpt.brute.trans.augment.AugEval import run_eval as aug_run_eval
                 try:
                     aug_run_eval(config_file=cfg_name)
                 except Exception as e:
@@ -1400,7 +1400,8 @@ def tune(
                 nn_train_epochs,
                 trans_mode,
                 classification_mode,
-                custom_synth_dir=synth_dir(out_path)
+                custom_synth_dir=synth_dir(out_path),
+                aug_mode=aug_mode
             )
 
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')

@@ -149,7 +149,7 @@ def run_eval(start_from=0, seed=SEED, config_file=CONFIG_FILE,
     print(f"Starting from config #{start_from} / {total} "
           f"(fidelity={num_epochs} ep, seed={seed})")
 
-    for config_num, config_id, augment in configs:
+    for config_num, config_id, augment, source in configs:
         if config_num < start_from:
             continue
 
