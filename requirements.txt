@@ -23,6 +23,6 @@ matplotlib
 optimum[onnxruntime-gpu]
 onnx>=1.16.0
 onnxruntime-gpu>=1.18.0
-kernels
+kernels>=0.10.2,<0.11  # same range transformers 5.2.0 declares; >=0.15 breaks its import
 
 httpx
