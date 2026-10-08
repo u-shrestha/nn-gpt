@@ -2131,6 +2131,7 @@ class IterativeFinetuner:
             logger.info(f"Loaded {len(self.cycle_results)} previous cycle results")
 
         # Run cycles
+        failed_cycle = None
         for cycle in range(start_cycle, self.cycles + 1):
             try:
                 result = self.run_cycle(cycle)
@@ -2155,12 +2156,14 @@ class IterativeFinetuner:
                     logger.error("")
                     logger.error("The pipeline has saved all results up to this point.")
                     logger.error("=" * 80)
+                    failed_cycle = cycle
                     break
 
                 # Validate cycle completion
                 cycle_file = self.output_dir / f"cycle_{cycle}" / "cycle_results.json"
                 if not cycle_file.exists():
                     logger.error(f"Cycle {cycle} results file not found after completion!")
+                    failed_cycle = cycle
                     break
 
             except KeyboardInterrupt:
@@ -2170,6 +2173,7 @@ class IterativeFinetuner:
             except Exception as e:
                 logger.exception(f"Unexpected error in cycle {cycle}: {e}")
                 logger.error(f"Pipeline stopped due to unexpected error. Resume with: --resume_from_cycle {cycle + 1}")
+                failed_cycle = cycle
                 break
 
         # Save all results
@@ -2222,6 +2226,8 @@ class IterativeFinetuner:
                 added = result["training"]["new_examples_added"]
                 logger.info(f"  Cycle {cycle}: {success_rate:.1f}% success, "
                             f"best={best_acc:.2f}%, avg={avg_acc:.2f}%, added={added} examples")
+
+        return failed_cycle is None
 
 
 def main():

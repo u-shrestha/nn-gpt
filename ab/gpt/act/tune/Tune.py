@@ -224,7 +224,8 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
                 sys.exit(1)
             print(f"Mobile re-eval cycle {cycle} complete.")
             return
-        pipeline.run()
+        if pipeline.run() is False:
+            sys.exit(1)
         return  # Skip standalone training
 
     if nn_gen_conf is None:
