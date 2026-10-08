@@ -66,6 +66,8 @@ class IterativeFinetuner:
             nn_prefixes: Tuple[str, ...] = DEFAULT_NN_PREFIXES,
             llmatic: bool = False,
             llmatic_crossover_every: int = 3,
+            nn_gen_conf: Optional[str] = None,
+            max_new_tokens: Optional[int] = None,
     ):
         self.output_dir = out_dir / 'curation_output'
         self.base_data_dir = self.output_dir / 'chat_data'
@@ -88,6 +90,9 @@ class IterativeFinetuner:
         # LLMatic MAP-Elites seed selection (forwarded to the per-cycle subprocess)
         self.llmatic = llmatic
         self.llmatic_crossover_every = llmatic_crossover_every
+        # Optional per-cycle overrides; None keeps the per-cycle defaults
+        self.nn_gen_conf = nn_gen_conf
+        self.max_new_tokens = max_new_tokens
 
         # Initialize components
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -433,6 +438,9 @@ class IterativeFinetuner:
             cmd.append("--llmatic")
             cmd.extend(["--llmatic_crossover_every", str(self.llmatic_crossover_every)])
 
+        if self.nn_gen_conf is not None:
+            cmd.extend(["--nn_gen_conf", str(self.nn_gen_conf)])
+
         # Load previous cycle's checkpoint for continual learning (cycle 2+)
         if cycle > 1:
             prev_checkpoint = self.output_dir / f"cycle_{cycle - 1}" / "checkpoint"
@@ -463,7 +471,8 @@ class IterativeFinetuner:
             optimized_params.extend(["--target_modules", pipeline_defaults['target_modules']])
 
             # Generation parameters
-            optimized_params.extend(["--max_new_tokens", str(pipeline_defaults['max_new_tokens'])])
+            max_new_tokens = self.max_new_tokens if self.max_new_tokens is not None else pipeline_defaults['max_new_tokens']
+            optimized_params.extend(["--max_new_tokens", str(max_new_tokens)])
             optimized_params.extend(["--temperature", str(pipeline_defaults['temperature'])])
             optimized_params.extend(["--top_k", str(pipeline_defaults['top_k'])])
 
@@ -482,6 +491,8 @@ class IterativeFinetuner:
             logger.info("Using optimized training configuration (from TuneNNGen.py defaults)")
         else:
             logger.info("Using default training configuration")
+            if self.max_new_tokens is not None:
+                cmd.extend(["--max_new_tokens", str(self.max_new_tokens)])
 
         logger.info(f"Running fine-tuning: {' '.join(cmd)}")
         start_time = time.time()

@@ -143,11 +143,11 @@ def _best_dtype_args():
 
 def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_norm=MAX_GRAD_NORM, test_metric=TEST_METRIC,
          tune_layers=TUNE_LAYERS, r=R, lora_alpha=LORA_ALPHA, lora_dropout=LORA_DROPOUT, target_modules=TARGET_MODULES,
-         task_type=TASK_TYPE, bias=BIAS, learning_rate=LEARNING_RATE, llm_tune_conf=LLM_TUNE_CONF, nn_gen_conf=NN_GEN_CONF, nn_gen_conf_id=NN_GEN_CONF_ID,
+         task_type=TASK_TYPE, bias=BIAS, learning_rate=LEARNING_RATE, llm_tune_conf=LLM_TUNE_CONF, nn_gen_conf=None, nn_gen_conf_id=NN_GEN_CONF_ID,
          llm_conf=LLM_CONF, test_nn=TEST_NN, peft=PEFT, skip_epoches=SKIP_EPOCHES, per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
          gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS, warmup_ratio=WARMUP_RATIO, logging_steps=LOGGING_STEPS, optimizer=OPTIMIZER,
          report_to=None, logging_dir=None,
-         max_prompts=MAX_PROMPTS, save_llm_output=SAVE_LLM_OUTPUT, max_new_tokens=MAX_NEW_TOKENS, use_deepspeed=USE_DEEPSPEED, nn_name_prefix=NN_NAME_PREFIX,
+         max_prompts=MAX_PROMPTS, save_llm_output=SAVE_LLM_OUTPUT, max_new_tokens=None, use_deepspeed=USE_DEEPSPEED, nn_name_prefix=NN_NAME_PREFIX,
          nn_train_epochs=NN_TRAIN_EPOCHS, temperature=TEMPERATURE, top_k=TOP_K, top_p=TOP_P, data_dir=None,base_data_dir=None,output_dir=None,
          num_cycles=None, epoch_root=None,
          suppress_thinking=False, budget_tokens=None, skip_lm_finetune=False,
@@ -202,6 +202,11 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
             llmatic=llmatic,
             llmatic_crossover_every=llmatic_crossover_every,
         )
+        # Forward per-cycle overrides only when given explicitly
+        if nn_gen_conf is not None:
+            pipeline_kwargs["nn_gen_conf"] = nn_gen_conf
+        if max_new_tokens is not None:
+            pipeline_kwargs["max_new_tokens"] = max_new_tokens
         if mobile_deployment:
             pipeline_kwargs["mobile_min_quantized_accuracy"] = mobile_min_quantized_accuracy
             pipeline_kwargs["mobile_max_duration_ms"] = mobile_max_duration_ms
@@ -221,6 +226,11 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
             return
         pipeline.run()
         return  # Skip standalone training
+
+    if nn_gen_conf is None:
+        nn_gen_conf = NN_GEN_CONF
+    if max_new_tokens is None:
+        max_new_tokens = MAX_NEW_TOKENS
 
     UNSLOTH_AVAILABLE = False
     if unsloth_opt:
@@ -573,7 +583,7 @@ if __name__ == '__main__':
     # Config files
     parser.add_argument('--llm_tune_conf', type=str, default=LLM_TUNE_CONF,
                         help=f'Config for LLM fine-tuning (default: {LLM_TUNE_CONF}).')
-    parser.add_argument('--nn_gen_conf', type=str, default=NN_GEN_CONF,
+    parser.add_argument('--nn_gen_conf', type=str, default=None,
                         help=f'Config for NN generation (default: {NN_GEN_CONF}).')
     parser.add_argument('--nn_gen_conf_id', type=str, default=NN_GEN_CONF_ID,
                         help=f'Prompt key for NN generation (default: {NN_GEN_CONF_ID}).')
@@ -595,7 +605,7 @@ if __name__ == '__main__':
                         help=f'Training epochs for generated NN (default: {NN_TRAIN_EPOCHS}).')
     parser.add_argument('-m', '--max_prompts', type=int, default=MAX_PROMPTS,
                         help=f'Max prompts for fine-tuning (default: {MAX_PROMPTS}).')
-    parser.add_argument('--max_new_tokens', type=int, default=MAX_NEW_TOKENS,
+    parser.add_argument('--max_new_tokens', type=int, default=None,
                         help=f'Max tokens in LLM output (default: {MAX_NEW_TOKENS}).')
     parser.add_argument('--use_deepspeed', action='store_true',
                         help=f'Use DeepSpeed (default: {USE_DEEPSPEED}).')
