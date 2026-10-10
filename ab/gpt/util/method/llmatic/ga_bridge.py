@@ -23,12 +23,16 @@ Environment:
                                archive (default 0.5, clamped to [0, 1])
   LLMATIC_GA_ARCHIVE           archive JSON path (default: PIPELINE_DIR/
                                llmatic_ga_archive_<dataset>_<MODEL_NAME>[_<RUN_TS>][_seed<FROZEN_SEED>].json)
+  LLMATIC_GA_PARAMS_RANGE      "min,max" parameter count spanned by the grid's params axis
+  LLMATIC_GA_DEPTH_RANGE       "min,max" module count spanned by the grid's depth axis
+                               (both unset = MAPElitesArchive defaults, 1e5..1e8 and ~4..158)
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import random
 from typing import Optional
@@ -39,6 +43,8 @@ from ab.gpt.util.method.llmatic.descriptors import extract_descriptors
 ENV_FLAG = "LLMATIC_GA"
 ENV_FRACTION = "LLMATIC_GA_RESEED_FRACTION"
 ENV_ARCHIVE = "LLMATIC_GA_ARCHIVE"
+ENV_PARAMS_RANGE = "LLMATIC_GA_PARAMS_RANGE"
+ENV_DEPTH_RANGE = "LLMATIC_GA_DEPTH_RANGE"
 DEFAULT_FRACTION = 0.5
 _FORMAT_VERSION = 1
 
@@ -56,6 +62,21 @@ def reseed_fraction() -> float:
     return min(max(fraction, 0.0), 1.0)
 
 
+def _log_range(name: str) -> Optional[tuple]:
+    """log10 (min, max) from a "min,max" env var; None when unset or invalid."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        lo, hi = (float(x) for x in raw.split(","))
+        if 0 < lo < hi:
+            return (math.log10(lo), math.log10(hi))
+    except ValueError:
+        pass
+    print(f"[llmatic-ga] ignoring {name}={raw!r} (expected 'min,max' with 0 < min < max)", flush=True)
+    return None
+
+
 def default_archive_path(pipeline_dir: str, dataset: str) -> str:
     parts = [dataset, os.environ.get("MODEL_NAME") or "unknown"]
     if os.environ.get("RUN_TS"):
@@ -71,16 +92,21 @@ def from_env(pipeline_dir: str, dataset: str) -> Optional["GABridge"]:
         return None
     path = os.environ.get(ENV_ARCHIVE) or default_archive_path(pipeline_dir, dataset)
     num_classes = 100 if "100" in str(dataset) else 10
-    return GABridge(path, num_classes=num_classes)
+    return GABridge(path, num_classes=num_classes,
+                    param_log_range=_log_range(ENV_PARAMS_RANGE), depth_log_range=_log_range(ENV_DEPTH_RANGE))
 
 
 class GABridge:
     """Persistent MAP-Elites archive of GA chromosomes."""
 
-    def __init__(self, path: str, num_classes: int = 10, rng: Optional[random.Random] = None):
+    def __init__(self, path: str, num_classes: int = 10, rng: Optional[random.Random] = None,
+                 param_log_range: Optional[tuple] = None, depth_log_range: Optional[tuple] = None):
         self.path = path
         self.num_classes = num_classes
-        self.archive = MAPElitesArchive(rng=rng)
+        # Only pass ranges that were given, so MAPElitesArchive keeps its own defaults otherwise.
+        self._grid = {k: v for k, v in (("param_log_range", param_log_range),
+                                        ("depth_log_range", depth_log_range)) if v is not None}
+        self.archive = MAPElitesArchive(rng=rng, **self._grid)
         self.iteration = 1
         self.load()
 
@@ -140,14 +166,8 @@ class GABridge:
         except (OSError, ValueError) as e:
             print(f"[llmatic-ga] could not read archive {self.path}: {e}", flush=True)
             return
-        cfg = data.get("config", {})
-        self.archive = MAPElitesArchive(
-            param_bins=cfg.get("param_bins", 10),
-            depth_bins=cfg.get("depth_bins", 10),
-            param_log_range=tuple(cfg.get("param_log_range", (5.0, 8.0))),
-            depth_log_range=tuple(cfg.get("depth_log_range", (0.6, 2.2))),
-            rng=self.archive._rng,
-        )
+        # Elites are re-binned from their stored params/depth on the current grid.
+        self.archive = MAPElitesArchive(rng=self.archive._rng, **self._grid)
         for e in data.get("elites", []):
             self.archive.add(
                 nn_name=e["nn_name"],
