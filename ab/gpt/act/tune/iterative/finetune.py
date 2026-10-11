@@ -441,6 +441,12 @@ class IterativeFinetuner:
         if self.nn_gen_conf is not None:
             cmd.extend(["--nn_gen_conf", str(self.nn_gen_conf)])
 
+        # Generation seeds come from the same corpus the pipeline curates
+        if self.dataset:
+            cmd.extend(["--dataset", str(self.dataset)])
+        if self.nn_prefixes:
+            cmd.extend(["--nn_prefixes", ",".join(self.nn_prefixes)])
+
         # Load previous cycle's checkpoint for continual learning (cycle 2+)
         if cycle > 1:
             prev_checkpoint = self.output_dir / f"cycle_{cycle - 1}" / "checkpoint"

@@ -449,6 +449,8 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
             data_dir=data_dir,
             epoch_root=epoch_root,
             llmatic=({"crossover_every": llmatic_crossover_every} if llmatic else None),
+            dataset=dataset,
+            nn_prefixes=nn_prefixes,
         )
 
         # Normal completion - auto merge best
