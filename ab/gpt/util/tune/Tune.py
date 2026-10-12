@@ -188,7 +188,8 @@ def nn_gen(
             if llmatic_seeds is not None:
                 data = llmatic_seeds
             else:
-                data = data.groupby(by="nn").sample(n=1)[:test_nn]
+                # One row per architecture, shuffled so seeds are not taken in name order
+                data = data.groupby(by="nn").sample(n=1).sample(frac=1)[:test_nn]
             if use_backbone:
                 datasets = sorted(data["dataset"].dropna().unique().tolist()) if "dataset" in data else []
                 print(
