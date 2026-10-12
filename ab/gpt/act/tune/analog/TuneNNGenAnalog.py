@@ -2,7 +2,7 @@ import argparse
 from typing import Literal
 
 import torch
-from ab.gpt.util.Const import nngpt_dir, new_out_file, NN_TRAIN_EPOCHS
+from ab.gpt.util.Const import nngpt_dir, NN_TRAIN_EPOCHS
 
 # --- Default Evaluation Parameters ---
 # These will be used as defaults for argparse arguments
@@ -280,7 +280,6 @@ unsloth_opt={unsloth_opt},  trans_mode={trans_mode},  prompt_batch={prompt_batch
 
     # (Optional) sanity check to surface wrong target_modules/layer indices early
     try:
-        from peft import get_peft_model
         import copy
         # Validate peft_config structure - check that target_modules is not empty
         if not target_modules or len(target_modules) == 0:

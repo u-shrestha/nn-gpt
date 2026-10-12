@@ -10,7 +10,7 @@ import json
 import shutil
 import uuid
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 from collections import defaultdict
 
 from ab.nn.util.Const import out_dir

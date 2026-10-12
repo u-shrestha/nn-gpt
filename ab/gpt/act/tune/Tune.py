@@ -394,7 +394,6 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
     print(f"[LoRA Config] r={r}, lora_alpha={lora_alpha}, lora_dropout={lora_dropout}")
 
     try:
-        from peft import get_peft_model
         import copy
         if not target_modules or len(target_modules) == 0:
             raise ValueError("target_modules cannot be empty")

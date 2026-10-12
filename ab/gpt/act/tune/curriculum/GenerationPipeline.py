@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from ab.nn.util.Const import ab_root_path, out_dir
-from ab.gpt.util.Const import gpt_dir, conf_dir, conf_test_dir, conf_train_dir, conf_llm_dir
+from ab.gpt.util.Const import conf_dir, conf_test_dir, conf_train_dir, conf_llm_dir
 
 
 # ----- Project root ---------------------------------------------------------------------------------

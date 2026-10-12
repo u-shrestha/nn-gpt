@@ -79,14 +79,14 @@ import ab.gpt.act.rl.trainer_runtime as TrainerRuntime
 import ab.gpt.act.rl.stage_state as StageState
 import ab.gpt.act.rl.reward_payload as RewardPayload
 import ab.gpt.util.llm.SFTUtil as SFTUtil
-from ab.gpt.util.llm.GenerationDType import DTypeSafeLinearWrapper, align_generation_head_dtype
+from ab.gpt.util.llm.GenerationDType import align_generation_head_dtype
 from ab.gpt.util.nn.ArchDiscovery import (
     ensure_pattern_name,
     extract_graph_info,
     normalize_pattern_name,
 )
 from ab.gpt.util.Util import extract_str
-from ab.gpt.util.Const import conf_train_dir, conf_test_dir, epoch_dir, new_nn_file, synth_dir, new_out_file
+from ab.gpt.util.Const import epoch_dir, new_nn_file, synth_dir, new_out_file
 from ab.nn.util.Util import create_file
 from ab.gpt.util.Reward import (
     EvalConfig,
@@ -109,7 +109,7 @@ from dataclasses import dataclass, asdict
 
 from ab.gpt.util.simple_logger import SimpleCodeLogger
 import ab.gpt.util.training_runtime as TrainingRuntime
-from collections import Counter, deque
+from collections import Counter
 
 # Open-architecture archives are keyed by canonical graph structure, not prompt labels.
 graph_archive_counts = Counter()
@@ -6252,10 +6252,6 @@ def main():
     return model
 
 if __name__ == "__main__":
-    from ab.gpt.util.simple_logger import SimpleCodeLogger
-    from ab.gpt.util.Reward import evaluate_code_and_reward
-    from typing import Dict
-
     # Ensure directories exist
     log_dir = run_log_dir()
     os.makedirs(log_dir, exist_ok=True)
