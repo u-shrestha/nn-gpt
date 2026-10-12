@@ -161,7 +161,7 @@ class IterativeFinetuner:
 
         # Try to resolve relative to ab/gpt/conf/llm/
         try:
-            from ab.gpt.util.Const import conf_llm_dir, conf_test_dir, conf_train_dir
+            from ab.gpt.util.Const import conf_llm_dir
             resolved_path = conf_llm_dir / config_file.name
             if resolved_path.exists():
                 logger.info(f"Resolved LLM config: {config_path} -> {resolved_path}")
