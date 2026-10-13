@@ -66,6 +66,8 @@ class IterativeFinetuner:
             nn_prefixes: Tuple[str, ...] = DEFAULT_NN_PREFIXES,
             llmatic: bool = False,
             llmatic_crossover_every: int = 3,
+            nn_gen_conf: Optional[str] = None,
+            max_new_tokens: Optional[int] = None,
     ):
         self.output_dir = out_dir / 'curation_output'
         self.base_data_dir = self.output_dir / 'chat_data'
@@ -88,6 +90,9 @@ class IterativeFinetuner:
         # LLMatic MAP-Elites seed selection (forwarded to the per-cycle subprocess)
         self.llmatic = llmatic
         self.llmatic_crossover_every = llmatic_crossover_every
+        # Optional per-cycle overrides; None keeps the per-cycle defaults
+        self.nn_gen_conf = nn_gen_conf
+        self.max_new_tokens = max_new_tokens
 
         # Initialize components
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -433,6 +438,15 @@ class IterativeFinetuner:
             cmd.append("--llmatic")
             cmd.extend(["--llmatic_crossover_every", str(self.llmatic_crossover_every)])
 
+        if self.nn_gen_conf is not None:
+            cmd.extend(["--nn_gen_conf", str(self.nn_gen_conf)])
+
+        # Generation seeds come from the same corpus the pipeline curates
+        if self.dataset:
+            cmd.extend(["--dataset", str(self.dataset)])
+        if self.nn_prefixes:
+            cmd.extend(["--nn_prefixes", ",".join(self.nn_prefixes)])
+
         # Load previous cycle's checkpoint for continual learning (cycle 2+)
         if cycle > 1:
             prev_checkpoint = self.output_dir / f"cycle_{cycle - 1}" / "checkpoint"
@@ -463,7 +477,8 @@ class IterativeFinetuner:
             optimized_params.extend(["--target_modules", pipeline_defaults['target_modules']])
 
             # Generation parameters
-            optimized_params.extend(["--max_new_tokens", str(pipeline_defaults['max_new_tokens'])])
+            max_new_tokens = self.max_new_tokens if self.max_new_tokens is not None else pipeline_defaults['max_new_tokens']
+            optimized_params.extend(["--max_new_tokens", str(max_new_tokens)])
             optimized_params.extend(["--temperature", str(pipeline_defaults['temperature'])])
             optimized_params.extend(["--top_k", str(pipeline_defaults['top_k'])])
 
@@ -482,6 +497,8 @@ class IterativeFinetuner:
             logger.info("Using optimized training configuration (from TuneNNGen.py defaults)")
         else:
             logger.info("Using default training configuration")
+            if self.max_new_tokens is not None:
+                cmd.extend(["--max_new_tokens", str(self.max_new_tokens)])
 
         logger.info(f"Running fine-tuning: {' '.join(cmd)}")
         start_time = time.time()
@@ -2120,6 +2137,7 @@ class IterativeFinetuner:
             logger.info(f"Loaded {len(self.cycle_results)} previous cycle results")
 
         # Run cycles
+        failed_cycle = None
         for cycle in range(start_cycle, self.cycles + 1):
             try:
                 result = self.run_cycle(cycle)
@@ -2144,12 +2162,14 @@ class IterativeFinetuner:
                     logger.error("")
                     logger.error("The pipeline has saved all results up to this point.")
                     logger.error("=" * 80)
+                    failed_cycle = cycle
                     break
 
                 # Validate cycle completion
                 cycle_file = self.output_dir / f"cycle_{cycle}" / "cycle_results.json"
                 if not cycle_file.exists():
                     logger.error(f"Cycle {cycle} results file not found after completion!")
+                    failed_cycle = cycle
                     break
 
             except KeyboardInterrupt:
@@ -2159,6 +2179,7 @@ class IterativeFinetuner:
             except Exception as e:
                 logger.exception(f"Unexpected error in cycle {cycle}: {e}")
                 logger.error(f"Pipeline stopped due to unexpected error. Resume with: --resume_from_cycle {cycle + 1}")
+                failed_cycle = cycle
                 break
 
         # Save all results
@@ -2211,6 +2232,8 @@ class IterativeFinetuner:
                 added = result["training"]["new_examples_added"]
                 logger.info(f"  Cycle {cycle}: {success_rate:.1f}% success, "
                             f"best={best_acc:.2f}%, avg={avg_acc:.2f}%, added={added} examples")
+
+        return failed_cycle is None
 
 
 def main():

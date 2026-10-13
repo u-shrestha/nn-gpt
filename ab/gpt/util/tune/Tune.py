@@ -188,7 +188,8 @@ def nn_gen(
             if llmatic_seeds is not None:
                 data = llmatic_seeds
             else:
-                data = data.groupby(by="nn").sample(n=1)[:test_nn]
+                # One row per architecture, shuffled so seeds are not taken in name order
+                data = data.groupby(by="nn").sample(n=1).sample(frac=1)[:test_nn]
             if use_backbone:
                 datasets = sorted(data["dataset"].dropna().unique().tolist()) if "dataset" in data else []
                 print(
@@ -1102,6 +1103,8 @@ def tune(
     budget_tokens=None,
     skip_lm_finetune=False,
     suppress_thinking=False,
+    dataset=None,
+    nn_prefixes=None,
 ):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
@@ -1161,6 +1164,15 @@ def tune(
         for _key in conf_keys:
             if isinstance(prompt_dict.get(_key), dict):
                 prompt_dict[_key]["llmatic"] = dict(llmatic)
+
+    # Seed generation from the given corpus unless the prompt key sets its own;
+    # nn_gen reads key_config["dataset"] / ["nn_prefixes"].
+    for _key in conf_keys:
+        if isinstance(prompt_dict.get(_key), dict):
+            if dataset:
+                prompt_dict[_key].setdefault("dataset", dataset)
+            if nn_prefixes:
+                prompt_dict[_key].setdefault("nn_prefixes", list(nn_prefixes))
 
     from ab.gpt.util.llm.LLM import LLM
 
