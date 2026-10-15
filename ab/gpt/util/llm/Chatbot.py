@@ -69,6 +69,36 @@ def _safe_tokenizer_max_length(tokenizer, fallback: int = 4096) -> int:
     return tokenizer_max_len
 
 
+# The prompt is never cut to make room for the output. The output budget shrinks
+# to fit the real context window; a prompt that leaves fewer than this many tokens
+# is skipped (empty output, counted as a failed generation by the caller).
+# NNGPT_LEGACY_PROMPT_TRUNCATION=1 restores the old truncating behaviour.
+N2_MIN_NEW_TOKENS = 256
+SKIPPED_OUTPUT = (None, None, None, "")
+
+
+def _legacy_truncation() -> bool:
+    return _env_flag("NNGPT_LEGACY_PROMPT_TRUNCATION")
+
+
+def _context_limit(model, tokenizer, fallback: int = 4096) -> int:
+    """Real context window: the model config first, the tokenizer second."""
+    cfg = getattr(model, "config", None)
+    n = getattr(cfg, "max_position_embeddings", None)
+    if isinstance(n, int) and 0 < n <= 10**7:
+        return n
+    return _safe_tokenizer_max_length(tokenizer, fallback)
+
+
+def _output_budget(ctx: int, in_len: int, max_new_tokens) -> "int | None":
+    """New-token budget that fits after an in_len-token prompt, or None to skip it."""
+    want = max_new_tokens or 4096
+    room = ctx - in_len
+    if room < min(N2_MIN_NEW_TOKENS, want):
+        return None
+    return min(want, room)
+
+
 def _effective_vocab_size(tokenizer) -> int:
     try:
         return max(int(tokenizer.vocab_size), len(tokenizer))
@@ -260,20 +290,39 @@ class ChatBot:
             self.model.eval()
 
         formatted_prompts = [self._prepare_pipeline_input(p) for p in prompts]
-        tokenizer_max_len = _safe_tokenizer_max_length(self.tokenizer)
         token_budget = max_new_tokens or 4096
-        max_input_len = max(1, tokenizer_max_len - token_budget)
+        legacy = _legacy_truncation()
+        results_by_pos = {}
+        if legacy:
+            tokenizer_max_len = _safe_tokenizer_max_length(self.tokenizer)
+            max_input_len = max(1, tokenizer_max_len - token_budget)
+            truncation_kwargs = {"truncation": True, "max_length": max_input_len}
+            kept = list(range(len(formatted_prompts)))
+        else:
+            ctx = _context_limit(self.model, self.tokenizer)
+            lengths = [len(ids) for ids in self.tokenizer(
+                formatted_prompts, add_special_tokens=False)["input_ids"]]
+            kept = []
+            for pos, in_len in enumerate(lengths):
+                if _output_budget(ctx, in_len, token_budget) is None:
+                    print(f"[gen] skipped prompt {pos}: {in_len} input tokens leave "
+                          f"{ctx - in_len} of ctx {ctx} for output", flush=True)
+                    results_by_pos[pos] = SKIPPED_OUTPUT
+                else:
+                    kept.append(pos)
+            if not kept:
+                return [results_by_pos[pos] for pos in range(len(formatted_prompts))]
+            truncation_kwargs = {"truncation": False}
 
         original_padding_side = getattr(self.tokenizer, "padding_side", "right")
         self.tokenizer.padding_side = "left"
         try:
             inputs = self.tokenizer(
-                formatted_prompts,
+                [formatted_prompts[pos] for pos in kept],
                 return_tensors="pt",
                 padding=True,
-                truncation=True,
-                max_length=max_input_len,
                 add_special_tokens=False,  # chat template already includes BOS; prevents EOS being appended
+                **truncation_kwargs,
             )
         finally:
             self.tokenizer.padding_side = original_padding_side
@@ -300,11 +349,17 @@ class ChatBot:
         # With left-padding, all sequences in the batch share the same padded input length.
         # The generated tokens start at index padded_input_length in each output row.
         padded_input_length = inputs['input_ids'].shape[1]
+        if legacy:
+            new_tokens = max_new_tokens or 4096
+        else:
+            new_tokens = _output_budget(ctx, padded_input_length, token_budget)
+            print(f"[gen] input_tokens={padded_input_length} max_new_tokens={new_tokens} "
+                  f"ctx={ctx} batch={len(kept)}", flush=True)
 
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=max_new_tokens or 4096,
+                max_new_tokens=new_tokens,
                 max_length=max_len,
                 do_sample=True,
                 temperature=self.temperature,
@@ -322,7 +377,9 @@ class ChatBot:
                 generated = _strip_reasoning_output(generated)
             nn = extract_code(generated)
             results.append((nn, extract_hyperparam(generated), extract_transform(generated), generated))
-        return results
+        for pos, result in zip(kept, results):
+            results_by_pos[pos] = result
+        return [results_by_pos[pos] for pos in range(len(formatted_prompts))]
 
     def chat(self, prompt: str, max_len=None, max_new_tokens=None, engineer_prompt=True) -> tuple[str, str, str, str]:
         # Set model to eval mode (no-op for ONNX)
@@ -340,11 +397,25 @@ class ChatBot:
         else:
             in_next = self._build_messages(prompt)
         
+        new_tokens = max_new_tokens or 4096
+        if not _legacy_truncation() and not self.is_onnx:
+            ctx = _context_limit(self.model, self.tokenizer)
+            in_len = len(self.tokenizer(
+                self._format_messages(in_next), add_special_tokens=False)["input_ids"])
+            new_tokens = _output_budget(ctx, in_len, max_new_tokens)
+            if new_tokens is None:
+                print(f"[gen] skipped prompt: {in_len} input tokens leave {ctx - in_len} "
+                      f"of ctx {ctx} for output", flush=True)
+                if self.__keep_memory:
+                    self.__messages.pop()
+                return SKIPPED_OUTPUT
+            print(f"[gen] input_tokens={in_len} max_new_tokens={new_tokens} ctx={ctx} batch=1", flush=True)
+
         # Use pipeline if available (PyTorch path)
         if self.__pipeline is not None:
             try:
                 generation_kwargs = {
-                    "max_new_tokens": max_new_tokens or 4096,
+                    "max_new_tokens": new_tokens,
                     "do_sample": True,
                     "max_length": max_len,
                     "temperature": self.temperature,
@@ -379,6 +450,13 @@ class ChatBot:
         # Direct generation (ONNX or PyTorch fallback)
         return self._direct_generate(in_next, max_new_tokens, max_len)
 
+    def _format_messages(self, messages) -> str:
+        """Prompt text exactly as _direct_generate builds it."""
+        if not self.disable_chat_template and hasattr(self.tokenizer, 'apply_chat_template'):
+            return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        formatted_prompt = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in messages])
+        return f"{formatted_prompt}\nAssistant:"
+
     def chat_batch(self, prompts, max_len=None, max_new_tokens=None, engineer_prompt=True):
         """Batch generation for multiple prompts; falls back to per-prompt generation."""
         if not prompts:
@@ -401,29 +479,33 @@ class ChatBot:
         """Direct model.generate() call without pipeline - works for ONNX and PyTorch"""
         try:
             # Apply chat template to format messages
-            if not self.disable_chat_template and hasattr(self.tokenizer, 'apply_chat_template'):
-                formatted_prompt = self.tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True
-                )
-            else:
-                # Fallback: concatenate messages
-                formatted_prompt = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in messages])
-                formatted_prompt = f"{formatted_prompt}\nAssistant:"
-            
-            tokenizer_max_len = _safe_tokenizer_max_length(self.tokenizer)
+            formatted_prompt = self._format_messages(messages)
+
             token_budget = max_new_tokens or 4096
-            max_input_len = max(1, tokenizer_max_len - token_budget)
+            legacy = _legacy_truncation()
+            if legacy:
+                tokenizer_max_len = _safe_tokenizer_max_length(self.tokenizer)
+                max_input_len = max(1, tokenizer_max_len - token_budget)
+                truncation_kwargs = {"truncation": True, "max_length": max(max_input_len, 128)}
+            else:
+                truncation_kwargs = {"truncation": False}
 
             # Tokenize input
             inputs = self.tokenizer(
                 formatted_prompt,
                 return_tensors="pt",
-                truncation=True,
-                max_length=max(max_input_len, 128),
                 add_special_tokens=False,  # chat template already includes BOS; prevents EOS being appended
+                **truncation_kwargs,
             )
+            if legacy or self.is_onnx:
+                new_tokens = token_budget
+            else:
+                ctx = _context_limit(self.model, self.tokenizer)
+                new_tokens = _output_budget(ctx, inputs['input_ids'].shape[-1], token_budget)
+                if new_tokens is None:
+                    print(f"[gen] skipped prompt: {inputs['input_ids'].shape[-1]} input tokens leave "
+                          f"{ctx - inputs['input_ids'].shape[-1]} of ctx {ctx} for output", flush=True)
+                    return SKIPPED_OUTPUT
 
 
             # -- FIX 1: Validate token IDs before GPU move -- 
@@ -469,7 +551,7 @@ class ChatBot:
             with torch.no_grad():
                 outputs = self.model.generate(
                     **inputs,
-                    max_new_tokens=max_new_tokens or 4096,
+                    max_new_tokens=new_tokens,
                     max_length=max_len,
                     do_sample=True,
                     temperature=self.temperature,
