@@ -1,3 +1,4 @@
+import os
 from os import makedirs
 import inspect
 from pathlib import Path
@@ -194,8 +195,12 @@ class LoRA:
         if has_prompt_completion:
             train_on_completions_only = True
         
-        # Split The dataset
-        dataset = dataset.train_test_split(test_size=0.1)
+        # Split The dataset (NNGPT_SEED_SFT_SPLIT: seeded from training_args.seed, so the
+        # rows each cycle trains on can be reconstructed; unseeded otherwise)
+        if os.environ.get("NNGPT_SEED_SFT_SPLIT", "").strip().lower() in {"1", "true", "yes", "on"}:
+            dataset = dataset.train_test_split(test_size=0.1, seed=self.training_args.seed)
+        else:
+            dataset = dataset.train_test_split(test_size=0.1)
         train_dataset = dataset['train']
         eval_dataset = dataset['test']
 
