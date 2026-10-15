@@ -506,7 +506,12 @@ class IterativeFinetuner:
             optimized_params.extend(["--temperature", str(pipeline_defaults['temperature'])])
             optimized_params.extend(["--top_k", str(pipeline_defaults['top_k'])])
 
-            # Evaluation and checkpointing
+            # Evaluation and checkpointing. NNGPT_SFT_EVAL_STRATEGY (e.g. "epoch") overrides
+            # both strategies: at 100-step intervals a short cycle never evaluates.
+            sft_strategy = os.environ.get("NNGPT_SFT_EVAL_STRATEGY", "").strip()
+            if sft_strategy:
+                pipeline_defaults['evaluation_strategy'] = sft_strategy
+                pipeline_defaults['save_strategy'] = sft_strategy
             optimized_params.extend(["--evaluation_strategy", pipeline_defaults['evaluation_strategy']])
             optimized_params.extend(["--eval_steps", str(pipeline_defaults['eval_steps'])])
             optimized_params.extend(["--per_device_eval_batch_size", str(pipeline_defaults['per_device_eval_batch_size'])])
