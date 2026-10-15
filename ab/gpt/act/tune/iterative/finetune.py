@@ -1511,6 +1511,10 @@ class IterativeFinetuner:
         # Filter only successful evaluations with accuracy
         accuracies = {a["model_id"]: a for a in evaluation_results.get("models", []) if a.get("success", False) and "accuracy" in a}
 
+        # NNGPT_CYCLE_DEDUP: within one cycle, select at most one model per structural
+        # hash (the novelty set only learns about a model after selection).
+        cycle_dedup = os.environ.get("NNGPT_CYCLE_DEDUP", "").strip().lower() in {"1", "true", "yes", "on"}
+
         # Build candidate list with novelty pre-check
         candidates = []
         results_list = generation_results.get("results", [])
@@ -1562,6 +1566,16 @@ class IterativeFinetuner:
                     logger.debug(traceback.format_exc())
                     is_novel = False  # Fail-safe: mark as non-novel on error
 
+            struct_hash = None
+            if cycle_dedup and code_path.exists():
+                try:
+                    hasher = self.novelty_checker.hasher
+                    signature = hasher.extract_from_code(code_path.read_text())
+                    if "error" not in signature:
+                        struct_hash = hasher.compute_hash(signature)
+                except Exception as e:
+                    logger.warning(f"Model {model_id}: could not hash structure for within-cycle dedup: {e}")
+
             candidates.append({
                 "model_id": model_id,
                 "code_file": str(code_path),  # Ensure it's a string, not Path
@@ -1569,6 +1583,7 @@ class IterativeFinetuner:
                 "params": result.get("params", 0),
                 "metadata": {k: (str(v) if isinstance(v, Path) else v) for k, v in acc_info.items()},  # Convert any Path objects to strings
                 "is_novel": is_novel,
+                "struct_hash": struct_hash,
             })
             logger.info(f"  Added candidate: {model_id}, acc={accuracy * 100:.2f}%, novel={is_novel}, file={code_path.name}")
 
@@ -1587,13 +1602,26 @@ class IterativeFinetuner:
         else:
             logger.info(f"Using fixed threshold: {effective_threshold * 100:.2f}%")
 
+        # Candidates are sorted best-first, so the most accurate copy of a structure wins.
+        taken_hashes = set()
+
+        def _duplicate_in_cycle(candidate) -> bool:
+            h = candidate.get("struct_hash")
+            if not cycle_dedup or h is None:
+                return False
+            if h in taken_hashes:
+                logger.info(f"Model {candidate['model_id']} skipped: same structure as a model selected this cycle")
+                return True
+            taken_hashes.add(h)
+            return False
+
         # Phase 1: Select all novel models above effective threshold
         selected = []
         logger.info(f"Filtering {len(candidates)} candidates with threshold {effective_threshold * 100:.2f}%")
         for candidate in candidates:
             is_above_threshold = candidate["accuracy"] >= effective_threshold
             logger.debug(f"  {candidate['model_id']}: acc={candidate['accuracy'] * 100:.2f}%, novel={candidate['is_novel']}, above_threshold={is_above_threshold}")
-            if candidate["is_novel"] and is_above_threshold:
+            if candidate["is_novel"] and is_above_threshold and not _duplicate_in_cycle(candidate):
                 selected.append(candidate)
                 logger.info(f"Model {candidate['model_id']} selected: acc={candidate['accuracy'] * 100:.2f}%, params={candidate['params']}")
 
@@ -1612,7 +1640,7 @@ class IterativeFinetuner:
                     continue
 
                 # Only select novel models in fallback
-                if candidate["is_novel"]:
+                if candidate["is_novel"] and not _duplicate_in_cycle(candidate):
                     selected.append(candidate)
                     fallback_added += 1
                     logger.info(f"Model {candidate['model_id']} selected (fallback): acc={candidate['accuracy'] * 100:.2f}%")
