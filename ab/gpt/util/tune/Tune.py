@@ -251,8 +251,16 @@ def nn_gen(
             if llmatic_seeds is not None:
                 data = llmatic_seeds
             else:
-                # One row per architecture, shuffled so seeds are not taken in name order
-                data = data.groupby(by="nn").sample(n=1).sample(frac=1)[:test_nn]
+                # One row per architecture, shuffled so seeds are not taken in name order.
+                # NNGPT_SEED_SHUFFLE=<run seed>: reproducible per cycle (seed + cycle).
+                shuffle_seed = os.environ.get("NNGPT_SEED_SHUFFLE", "").strip()
+                if shuffle_seed:
+                    from ab.gpt.util.method.llmatic.seeds import cycle_from_path
+                    rs = int(shuffle_seed) + cycle_from_path(out_path)
+                    print(f"[seeds] shuffle random_state={rs}", flush=True)
+                    data = data.groupby(by="nn").sample(n=1, random_state=rs).sample(frac=1, random_state=rs)[:test_nn]
+                else:
+                    data = data.groupby(by="nn").sample(n=1).sample(frac=1)[:test_nn]
             if use_backbone:
                 datasets = sorted(data["dataset"].dropna().unique().tolist()) if "dataset" in data else []
                 print(
