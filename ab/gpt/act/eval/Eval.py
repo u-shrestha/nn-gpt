@@ -392,13 +392,14 @@ def _collect_epoch_requests(
         resolved_metric = metric
         # NNGPT_EVAL_PRM_MODE: "seed" (default) lets the seed's DB prm override the
         # generated hp.txt; "generated" keeps hp.txt and only fills missing keys from
-        # the seed; "fixed" ignores both and trains every candidate with the
-        # default settings and NNGPT_FIXED_EVAL_TRANSFORM.
+        # the seed; "fixed" does the same as "generated" (the model's own keys, e.g.
+        # hidden_units, stay available) and then forces the training protocol:
+        # lr, batch, momentum from the Eval defaults and NNGPT_FIXED_EVAL_TRANSFORM.
         prm_mode = os.environ.get("NNGPT_EVAL_PRM_MODE", "seed").strip().lower()
         fixed_transform = os.environ.get("NNGPT_FIXED_EVAL_TRANSFORM") or transform
         prm = None
         hp_path = model_dir_path / hp_file
-        if prm_mode != "fixed" and hp_path.exists():
+        if hp_path.exists():
             try:
                 prm = json.loads(hp_path.read_text(encoding="utf-8"))
                 print(f"Training model {model_id} with LLM recommended prm {prm}")
@@ -440,10 +441,10 @@ def _collect_epoch_requests(
                 orig_pref = origdf["nn"].split("-")[0]
                 original_prm_from_df = origdf.get("prm")
                 if isinstance(original_prm_from_df, dict):
-                    if prm_mode == "generated":
+                    if prm_mode in ("generated", "fixed"):
                         for _k, _v in original_prm_from_df.items():
                             prm.setdefault(_k, _v)
-                    elif prm_mode != "fixed":
+                    else:
                         prm.update(original_prm_from_df)
                 prefix_for_db = nn_name_prefix or (
                     origdf.get("nn", "unknown").split("-")[0]
@@ -465,6 +466,10 @@ def _collect_epoch_requests(
         if prm_json:
             prm.update(prm_json)
             print(f"  Applied --prm_json overrides: {prm_json}")
+
+        if prm_mode == "fixed":
+            prm.update({"lr": lr, "batch": batch, "momentum": momentum, "transform": fixed_transform})
+            prm.setdefault("dropout", dropout)
 
         # Always evaluate with nn_train_epochs for this run, regardless of what
         # may have been stored in the original prm payload.
