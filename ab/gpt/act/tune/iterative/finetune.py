@@ -1905,7 +1905,15 @@ class IterativeFinetuner:
                 acc = info.get("eval_results", {}).get("accuracy")
             except Exception as e:
                 logger.warning(f"B{i}: could not parse eval_info.json: {e}")
-                acc = None
+                info, acc = {}, None
+            if os.environ.get("NNGPT_CORPUS_FIX", "").strip().lower() in {"1", "true", "yes", "on"}:
+                # Record the real parameter count; 0 made appended rows say "params <= 0".
+                try:
+                    from ab.gpt.util.nn.descriptors import nn_descriptors
+                    eval_prm = (info.get("eval_args") or {}).get("prm") or {}
+                    results[-1]["params"] = nn_descriptors(code_path.read_text(), eval_prm)[0]
+                except Exception as e:
+                    logger.warning(f"B{i}: could not count parameters: {e}")
             if acc is None:
                 # Code + eval_info present but no accuracy -> treat as failed eval.
                 results[i]["ok"] = False
