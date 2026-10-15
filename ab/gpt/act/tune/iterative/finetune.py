@@ -325,6 +325,17 @@ class IterativeFinetuner:
             logger.error("\n✗ Prerequisites validation failed. Cannot proceed.")
             raise RuntimeError("Prerequisites validation failed. Please fix issues before running pipeline.")
 
+        # Optional floor on the base corpus size (NNGPT_MIN_CORPUS). Curation against a
+        # different LEMUR snapshot can collapse the corpus (for example 16 rows instead of 444).
+        min_corpus = int(os.environ.get("NNGPT_MIN_CORPUS", "0") or 0)
+        if min_corpus > 0:
+            train_file = self.base_data_dir / "train.jsonl"
+            n_rows = sum(1 for line in open(train_file, encoding="utf-8") if line.strip())
+            logger.info(f"Base corpus: {n_rows} training rows in {train_file} (NNGPT_MIN_CORPUS={min_corpus})")
+            if n_rows < min_corpus:
+                raise RuntimeError(
+                    f"Base corpus has {n_rows} training rows, fewer than NNGPT_MIN_CORPUS={min_corpus}: {train_file}")
+
         logger.info("\n✓ All prerequisites validated successfully!")
 
         # Check for resume capability
