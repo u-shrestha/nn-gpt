@@ -18,6 +18,7 @@ import argparse
 import inspect
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -454,6 +455,10 @@ class IterativeFinetuner:
                 logger.info(f"Loading previous cycle checkpoint: {prev_checkpoint}")
                 cmd.extend(["--peft", str(prev_checkpoint)])
             else:
+                if os.environ.get("NNGPT_CARRY_ADAPTER", "").strip().lower() in {"1", "true", "yes", "on"}:
+                    # Carry-over is the point of the run; never fall back to the base silently.
+                    raise FileNotFoundError(
+                        f"NNGPT_CARRY_ADAPTER is set but {prev_checkpoint} does not exist")
                 logger.warning(f"Previous cycle checkpoint not found: {prev_checkpoint}")
                 logger.warning("Starting from base model instead")
 
