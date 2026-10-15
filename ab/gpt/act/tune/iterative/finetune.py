@@ -119,6 +119,14 @@ class IterativeFinetuner:
 
         self.novelty_checker = NoveltyChecker(self.output_dir / "seen_models.json")
 
+        # LLMATIC_ADMIT_GENERATED: descriptors of evaluated generated models go to a
+        # sidecar the per-cycle children read (inherited env), so they can enter
+        # the MAP-Elites archive.
+        self.llmatic_admit_generated = os.environ.get(
+            "LLMATIC_ADMIT_GENERATED", "").strip().lower() in {"1", "true", "yes", "on"}
+        if self.llmatic_admit_generated:
+            os.environ.setdefault("LLMATIC_DESC_FILE", str(self.output_dir / "llmatic_descriptors.json"))
+
         # Track results across cycles
         self.cycle_results = []
 
@@ -1915,6 +1923,7 @@ class IterativeFinetuner:
 
         results: List[Dict[str, Any]] = []
         eval_models: List[Dict[str, Any]] = []
+        new_descriptors: Dict[str, List[int]] = {}
         for i in range(max(indexed) + 1):
             bdir = indexed.get(i)
             code_path = (bdir / new_nn_file) if bdir else None
@@ -1934,14 +1943,21 @@ class IterativeFinetuner:
             except Exception as e:
                 logger.warning(f"B{i}: could not parse eval_info.json: {e}")
                 info, acc = {}, None
-            if os.environ.get("NNGPT_CORPUS_FIX", "").strip().lower() in {"1", "true", "yes", "on"}:
-                # Record the real parameter count; 0 made appended rows say "params <= 0".
+            corpus_fix = os.environ.get("NNGPT_CORPUS_FIX", "").strip().lower() in {"1", "true", "yes", "on"}
+            admit = getattr(self, "llmatic_admit_generated", False)
+            if corpus_fix or (admit and acc is not None):
                 try:
                     from ab.gpt.util.nn.descriptors import nn_descriptors
                     eval_prm = (info.get("eval_args") or {}).get("prm") or {}
-                    results[-1]["params"] = nn_descriptors(code_path.read_text(), eval_prm)[0]
+                    n_params, n_layers = nn_descriptors(code_path.read_text(), eval_prm)
+                    if corpus_fix:
+                        # Record the real parameter count; 0 made appended rows say "params <= 0".
+                        results[-1]["params"] = n_params
+                    saved_name = (info.get("eval_results") or {}).get("checksum")
+                    if admit and acc is not None and saved_name:
+                        new_descriptors[saved_name] = [n_params, n_layers]
                 except Exception as e:
-                    logger.warning(f"B{i}: could not count parameters: {e}")
+                    logger.warning(f"B{i}: could not compute descriptors: {e}")
             if acc is None:
                 # Code + eval_info present but no accuracy -> treat as failed eval.
                 results[i]["ok"] = False
@@ -1952,6 +1968,16 @@ class IterativeFinetuner:
                 "accuracy": float(acc),
                 "code_file": str(code_path),
             })
+
+        if new_descriptors:
+            desc_file = Path(os.environ["LLMATIC_DESC_FILE"])
+            known = json.loads(desc_file.read_text()) if desc_file.exists() else {}
+            known.update(new_descriptors)
+            tmp_file = desc_file.with_suffix(".tmp")
+            tmp_file.write_text(json.dumps(known, indent=1))
+            os.replace(tmp_file, desc_file)
+            logger.info(f"LLMatic: {len(new_descriptors)} generated models' descriptors added to {desc_file} "
+                        f"({len(known)} total)")
 
         successful = len(eval_models)
         logger.info(
