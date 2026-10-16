@@ -17,12 +17,13 @@ langgraph>=1.0.4
 
 unsloth==2026.3.4
 unsloth-zoo==2026.3.2
+torchao>=0.13.0,<0.16  # torchao 0.16+ targets torch 2.10+; nn-dataset pins torch 2.9.1
 triton>=3.4.0
 
 matplotlib
 optimum[onnxruntime-gpu]
 onnx>=1.16.0
 onnxruntime-gpu>=1.18.0
-kernels
+kernels>=0.10.2,<0.11  # same range transformers 5.2.0 declares; >=0.15 breaks its import
 
 httpx
