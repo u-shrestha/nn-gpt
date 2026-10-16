@@ -58,6 +58,69 @@ TRANSFORM_OUT_DIR = trans_dir / 'dataset_epoch1'
 TRANSFORM_RES_DIR = trans_dir / 'result_epoch1'
 
 
+def _env_on(name) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _carry_probe(model, tokenizer, max_len, out_dir):
+    """Mean token loss of the model as built for this cycle on fixed chat rows
+    (NNGPT_CARRY_PROBE=comma-separated jsonl paths; NNGPT_CARRY_PROBE_N rows each).
+    Measurement only: prints one line per file and writes carry_probe.json."""
+    import hashlib
+    paths = [p for p in os.environ.get("NNGPT_CARRY_PROBE", "").split(",") if p.strip()]
+    n_rows = int(os.environ.get("NNGPT_CARRY_PROBE_N", "64"))
+    results = {}
+    was_training = model.training
+    model.eval()
+    device = next(model.parameters()).device
+    for path in paths:
+        rows = []
+        with open(path.strip(), encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    rows.append(json.loads(line))
+                if len(rows) >= n_rows:
+                    break
+        per_row = []
+        for row in rows:
+            messages = row.get("messages", [])
+            text = tokenizer.apply_chat_template(messages, tokenize=False)
+            # Same tokenization as SFT (Prompt.preprocess_batch).
+            ids = tokenizer(text, truncation=True, max_length=max_len)["input_ids"]
+            prompt = tokenizer.apply_chat_template(
+                [m for m in messages if m["role"] != "assistant"], tokenize=False, add_generation_prompt=True)
+            n_prompt = len(tokenizer(prompt, truncation=True, max_length=max_len)["input_ids"])
+            x = torch.tensor([ids], device=device)
+            with torch.no_grad():
+                logits = model(input_ids=x).logits[0, :-1].float()
+            tok_loss = torch.nn.functional.cross_entropy(logits, x[0, 1:], reduction="none")
+            code = tok_loss[max(n_prompt - 1, 0):]
+            per_row.append({
+                "ids_sha1": hashlib.sha1(json.dumps(ids).encode()).hexdigest(),
+                "n_tokens": len(ids) - 1,
+                "loss_sum_all": float(tok_loss.sum()),
+                "n_code": int(code.numel()),
+                "loss_sum_code": float(code.sum()),
+            })
+        n_all = sum(r["n_tokens"] for r in per_row) or 1
+        n_code = sum(r["n_code"] for r in per_row) or 1
+        summary = {
+            "n": len(per_row),
+            "loss_all": sum(r["loss_sum_all"] for r in per_row) / n_all,
+            "loss_code": sum(r["loss_sum_code"] for r in per_row) / n_code,
+            "rows": per_row,
+        }
+        results[path.strip()] = summary
+        print(f"[carry-probe] file={path.strip()} n={summary['n']} "
+              f"loss_all={summary['loss_all']:.6f} loss_code={summary['loss_code']:.6f}", flush=True)
+    if was_training:
+        model.train()
+    if out_dir is not None:
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        (Path(out_dir) / "carry_probe.json").write_text(json.dumps(results, indent=1))
+    return results
+
+
 # Delta mode constants
 _MAX_DELTA_RETRIES = 2
 
@@ -188,8 +251,16 @@ def nn_gen(
             if llmatic_seeds is not None:
                 data = llmatic_seeds
             else:
-                # One row per architecture, shuffled so seeds are not taken in name order
-                data = data.groupby(by="nn").sample(n=1).sample(frac=1)[:test_nn]
+                # One row per architecture, shuffled so seeds are not taken in name order.
+                # NNGPT_SEED_SHUFFLE=<run seed>: reproducible per cycle (seed + cycle).
+                shuffle_seed = os.environ.get("NNGPT_SEED_SHUFFLE", "").strip()
+                if shuffle_seed:
+                    from ab.gpt.util.method.llmatic.seeds import cycle_from_path
+                    rs = int(shuffle_seed) + cycle_from_path(out_path)
+                    print(f"[seeds] shuffle random_state={rs}", flush=True)
+                    data = data.groupby(by="nn").sample(n=1, random_state=rs).sample(frac=1, random_state=rs)[:test_nn]
+                else:
+                    data = data.groupby(by="nn").sample(n=1).sample(frac=1)[:test_nn]
             if use_backbone:
                 datasets = sorted(data["dataset"].dropna().unique().tolist()) if "dataset" in data else []
                 print(
@@ -1191,10 +1262,19 @@ def tune(
     trainer_resume_checkpoint = _resolve_tune_resume_trainer_checkpoint(
         llm_path)
 
+    init_adapter = None
     if llm_path:
         print(f'Load saved LoRA layer from path: {llm_path}')
-        model = PeftModel.from_pretrained(model, llm_path, is_trainable=True)
-        model = model.merge_and_unload()
+        if _env_on("NNGPT_CARRY_ADAPTER"):
+            # Merging into the 4-bit base re-quantizes the weights and erases the
+            # adapter's update. Keep the base frozen; LoRA() reloads this
+            # adapter as trainable and continues training it.
+            if not Path(llm_path, "adapter_config.json").exists():
+                raise FileNotFoundError(f"NNGPT_CARRY_ADAPTER: no adapter_config.json in {llm_path}")
+            init_adapter = llm_path
+        else:
+            model = PeftModel.from_pretrained(model, llm_path, is_trainable=True)
+            model = model.merge_and_unload()
 
     if use_deepspeed:
         deepspeed.initialize(model=model, config_params=ds_conf)
@@ -1206,9 +1286,16 @@ def tune(
         access_token=access_token,
         peft_config=peft_config,
         use_unsloth=use_unsloth,
+        init_adapter=init_adapter,
     )
 
     print('Using Max Length:', model_loader.get_max_length())
+
+    if os.environ.get("NNGPT_CARRY_PROBE"):
+        # Loss of the model exactly as this cycle will generate with it.
+        _probe_len = (unsloth_max_input_length if (use_unsloth and unsloth_max_input_length)
+                      else context_length if context_length else model_loader.get_max_length())
+        _carry_probe(model, tokenizer, _probe_len, epoch_root_path.parent)
 
     chat_bot = ChatBot(
         model, tokenizer, temperature=temperature, top_k=top_k, top_p=top_p,
