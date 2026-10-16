@@ -18,6 +18,7 @@ import argparse
 import inspect
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -117,6 +118,14 @@ class IterativeFinetuner:
         logger.addHandler(console_handler)
 
         self.novelty_checker = NoveltyChecker(self.output_dir / "seen_models.json")
+
+        # LLMATIC_ADMIT_GENERATED: descriptors of evaluated generated models go to a
+        # sidecar the per-cycle children read (inherited env), so they can enter
+        # the MAP-Elites archive.
+        self.llmatic_admit_generated = os.environ.get(
+            "LLMATIC_ADMIT_GENERATED", "").strip().lower() in {"1", "true", "yes", "on"}
+        if self.llmatic_admit_generated:
+            os.environ.setdefault("LLMATIC_DESC_FILE", str(self.output_dir / "llmatic_descriptors.json"))
 
         # Track results across cycles
         self.cycle_results = []
@@ -324,6 +333,17 @@ class IterativeFinetuner:
             logger.error("\n✗ Prerequisites validation failed. Cannot proceed.")
             raise RuntimeError("Prerequisites validation failed. Please fix issues before running pipeline.")
 
+        # Optional floor on the base corpus size (NNGPT_MIN_CORPUS). Curation against a
+        # different LEMUR snapshot can collapse the corpus (for example 16 rows instead of 444).
+        min_corpus = int(os.environ.get("NNGPT_MIN_CORPUS", "0") or 0)
+        if min_corpus > 0:
+            train_file = self.base_data_dir / "train.jsonl"
+            n_rows = sum(1 for line in open(train_file, encoding="utf-8") if line.strip())
+            logger.info(f"Base corpus: {n_rows} training rows in {train_file} (NNGPT_MIN_CORPUS={min_corpus})")
+            if n_rows < min_corpus:
+                raise RuntimeError(
+                    f"Base corpus has {n_rows} training rows, fewer than NNGPT_MIN_CORPUS={min_corpus}: {train_file}")
+
         logger.info("\n✓ All prerequisites validated successfully!")
 
         # Check for resume capability
@@ -454,6 +474,10 @@ class IterativeFinetuner:
                 logger.info(f"Loading previous cycle checkpoint: {prev_checkpoint}")
                 cmd.extend(["--peft", str(prev_checkpoint)])
             else:
+                if os.environ.get("NNGPT_CARRY_ADAPTER", "").strip().lower() in {"1", "true", "yes", "on"}:
+                    # Carry-over is the point of the run; never fall back to the base silently.
+                    raise FileNotFoundError(
+                        f"NNGPT_CARRY_ADAPTER is set but {prev_checkpoint} does not exist")
                 logger.warning(f"Previous cycle checkpoint not found: {prev_checkpoint}")
                 logger.warning("Starting from base model instead")
 
@@ -482,7 +506,12 @@ class IterativeFinetuner:
             optimized_params.extend(["--temperature", str(pipeline_defaults['temperature'])])
             optimized_params.extend(["--top_k", str(pipeline_defaults['top_k'])])
 
-            # Evaluation and checkpointing
+            # Evaluation and checkpointing. NNGPT_SFT_EVAL_STRATEGY (e.g. "epoch") overrides
+            # both strategies: at 100-step intervals a short cycle never evaluates.
+            sft_strategy = os.environ.get("NNGPT_SFT_EVAL_STRATEGY", "").strip()
+            if sft_strategy:
+                pipeline_defaults['evaluation_strategy'] = sft_strategy
+                pipeline_defaults['save_strategy'] = sft_strategy
             optimized_params.extend(["--evaluation_strategy", pipeline_defaults['evaluation_strategy']])
             optimized_params.extend(["--eval_steps", str(pipeline_defaults['eval_steps'])])
             optimized_params.extend(["--per_device_eval_batch_size", str(pipeline_defaults['per_device_eval_batch_size'])])
@@ -1495,6 +1524,10 @@ class IterativeFinetuner:
         # Filter only successful evaluations with accuracy
         accuracies = {a["model_id"]: a for a in evaluation_results.get("models", []) if a.get("success", False) and "accuracy" in a}
 
+        # NNGPT_CYCLE_DEDUP: within one cycle, select at most one model per structural
+        # hash (the novelty set only learns about a model after selection).
+        cycle_dedup = os.environ.get("NNGPT_CYCLE_DEDUP", "").strip().lower() in {"1", "true", "yes", "on"}
+
         # Build candidate list with novelty pre-check
         candidates = []
         results_list = generation_results.get("results", [])
@@ -1546,6 +1579,16 @@ class IterativeFinetuner:
                     logger.debug(traceback.format_exc())
                     is_novel = False  # Fail-safe: mark as non-novel on error
 
+            struct_hash = None
+            if cycle_dedup and code_path.exists():
+                try:
+                    hasher = self.novelty_checker.hasher
+                    signature = hasher.extract_from_code(code_path.read_text())
+                    if "error" not in signature:
+                        struct_hash = hasher.compute_hash(signature)
+                except Exception as e:
+                    logger.warning(f"Model {model_id}: could not hash structure for within-cycle dedup: {e}")
+
             candidates.append({
                 "model_id": model_id,
                 "code_file": str(code_path),  # Ensure it's a string, not Path
@@ -1553,6 +1596,7 @@ class IterativeFinetuner:
                 "params": result.get("params", 0),
                 "metadata": {k: (str(v) if isinstance(v, Path) else v) for k, v in acc_info.items()},  # Convert any Path objects to strings
                 "is_novel": is_novel,
+                "struct_hash": struct_hash,
             })
             logger.info(f"  Added candidate: {model_id}, acc={accuracy * 100:.2f}%, novel={is_novel}, file={code_path.name}")
 
@@ -1571,13 +1615,26 @@ class IterativeFinetuner:
         else:
             logger.info(f"Using fixed threshold: {effective_threshold * 100:.2f}%")
 
+        # Candidates are sorted best-first, so the most accurate copy of a structure wins.
+        taken_hashes = set()
+
+        def _duplicate_in_cycle(candidate) -> bool:
+            h = candidate.get("struct_hash")
+            if not cycle_dedup or h is None:
+                return False
+            if h in taken_hashes:
+                logger.info(f"Model {candidate['model_id']} skipped: same structure as a model selected this cycle")
+                return True
+            taken_hashes.add(h)
+            return False
+
         # Phase 1: Select all novel models above effective threshold
         selected = []
         logger.info(f"Filtering {len(candidates)} candidates with threshold {effective_threshold * 100:.2f}%")
         for candidate in candidates:
             is_above_threshold = candidate["accuracy"] >= effective_threshold
             logger.debug(f"  {candidate['model_id']}: acc={candidate['accuracy'] * 100:.2f}%, novel={candidate['is_novel']}, above_threshold={is_above_threshold}")
-            if candidate["is_novel"] and is_above_threshold:
+            if candidate["is_novel"] and is_above_threshold and not _duplicate_in_cycle(candidate):
                 selected.append(candidate)
                 logger.info(f"Model {candidate['model_id']} selected: acc={candidate['accuracy'] * 100:.2f}%, params={candidate['params']}")
 
@@ -1596,7 +1653,7 @@ class IterativeFinetuner:
                     continue
 
                 # Only select novel models in fallback
-                if candidate["is_novel"]:
+                if candidate["is_novel"] and not _duplicate_in_cycle(candidate):
                     selected.append(candidate)
                     fallback_added += 1
                     logger.info(f"Model {candidate['model_id']} selected (fallback): acc={candidate['accuracy'] * 100:.2f}%")
@@ -1871,6 +1928,7 @@ class IterativeFinetuner:
 
         results: List[Dict[str, Any]] = []
         eval_models: List[Dict[str, Any]] = []
+        new_descriptors: Dict[str, List[int]] = {}
         for i in range(max(indexed) + 1):
             bdir = indexed.get(i)
             code_path = (bdir / new_nn_file) if bdir else None
@@ -1889,7 +1947,22 @@ class IterativeFinetuner:
                 acc = info.get("eval_results", {}).get("accuracy")
             except Exception as e:
                 logger.warning(f"B{i}: could not parse eval_info.json: {e}")
-                acc = None
+                info, acc = {}, None
+            corpus_fix = os.environ.get("NNGPT_CORPUS_FIX", "").strip().lower() in {"1", "true", "yes", "on"}
+            admit = getattr(self, "llmatic_admit_generated", False)
+            if corpus_fix or (admit and acc is not None):
+                try:
+                    from ab.gpt.util.nn.descriptors import nn_descriptors
+                    eval_prm = (info.get("eval_args") or {}).get("prm") or {}
+                    n_params, n_layers = nn_descriptors(code_path.read_text(), eval_prm)
+                    if corpus_fix:
+                        # Record the real parameter count; 0 made appended rows say "params <= 0".
+                        results[-1]["params"] = n_params
+                    saved_name = (info.get("eval_results") or {}).get("checksum")
+                    if admit and acc is not None and saved_name:
+                        new_descriptors[saved_name] = [n_params, n_layers]
+                except Exception as e:
+                    logger.warning(f"B{i}: could not compute descriptors: {e}")
             if acc is None:
                 # Code + eval_info present but no accuracy -> treat as failed eval.
                 results[i]["ok"] = False
@@ -1900,6 +1973,16 @@ class IterativeFinetuner:
                 "accuracy": float(acc),
                 "code_file": str(code_path),
             })
+
+        if new_descriptors:
+            desc_file = Path(os.environ["LLMATIC_DESC_FILE"])
+            known = json.loads(desc_file.read_text()) if desc_file.exists() else {}
+            known.update(new_descriptors)
+            tmp_file = desc_file.with_suffix(".tmp")
+            tmp_file.write_text(json.dumps(known, indent=1))
+            os.replace(tmp_file, desc_file)
+            logger.info(f"LLMatic: {len(new_descriptors)} generated models' descriptors added to {desc_file} "
+                        f"({len(known)} total)")
 
         successful = len(eval_models)
         logger.info(

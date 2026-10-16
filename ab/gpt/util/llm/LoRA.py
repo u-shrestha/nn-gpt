@@ -1,3 +1,4 @@
+import os
 from os import makedirs
 import inspect
 from pathlib import Path
@@ -9,6 +10,7 @@ import ab.gpt.util.training_runtime as TrainingRuntime
 from datasets import Dataset
 from peft import (
     LoraConfig,
+    PeftModel,
     get_peft_model,
     prepare_model_for_kbit_training
 )
@@ -96,7 +98,8 @@ class LoRA:
                  training_args: TrainingArguments,
                  access_token=None,
                  peft_config=None,
-                 use_unsloth=False
+                 use_unsloth=False,
+                 init_adapter=None,
                  ):
         self.model = model
         self.tokenizer = tokenizer
@@ -110,6 +113,9 @@ class LoRA:
         else:
             self.peft_config = peft_config
         
+        if init_adapter and use_unsloth:
+            raise ValueError("init_adapter (NNGPT_CARRY_ADAPTER) is not supported with unsloth")
+
         if use_unsloth:
             # Use Unsloth's native LoRA attachment (keeps bfloat16 dtypes)
             try:
@@ -144,7 +150,13 @@ class LoRA:
             self.model = prepare_model_for_kbit_training(self.model)
             self.model.gradient_checkpointing_enable()
             print("[LoRA] Gradient checkpointing enabled")
-            self.peft_model = get_peft_model(self.model, self.peft_config)
+            if init_adapter:
+                # Continue training the previous cycle's adapter on the frozen base,
+                # after the same k-bit preparation a fresh adapter gets.
+                self.peft_model = PeftModel.from_pretrained(self.model, init_adapter, is_trainable=True)
+                print(f"[LoRA] Continuing adapter from {init_adapter}")
+            else:
+                self.peft_model = get_peft_model(self.model, self.peft_config)
         
         self.peft_model._hf_peft_config_loaded = True 
         # Log trainable parameters immediately after adapters are attached
@@ -183,8 +195,12 @@ class LoRA:
         if has_prompt_completion:
             train_on_completions_only = True
         
-        # Split The dataset
-        dataset = dataset.train_test_split(test_size=0.1)
+        # Split The dataset (NNGPT_SEED_SFT_SPLIT: seeded from training_args.seed, so the
+        # rows each cycle trains on can be reconstructed; unseeded otherwise)
+        if os.environ.get("NNGPT_SEED_SFT_SPLIT", "").strip().lower() in {"1", "true", "yes", "on"}:
+            dataset = dataset.train_test_split(test_size=0.1, seed=self.training_args.seed)
+        else:
+            dataset = dataset.train_test_split(test_size=0.1)
         train_dataset = dataset['train']
         eval_dataset = dataset['test']
 
