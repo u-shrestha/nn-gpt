@@ -234,3 +234,146 @@ def test_without_reset_a_short_run_inherits_a_longer_run_s_tail(tmp_path):
     for e in range(4):
         rows = ES.append_epoch_stats(path, {"epoch": e, "accuracy_max": 0.9})
     assert [r["epoch"] for r in rows] == [0, 1, 2, 3]
+
+
+# --- the plot must carry the original networks on both accuracy panels ----
+
+def _plot_rows():
+    return [
+        {"epoch": 0, "models_generated": 10, "models_valid": 4, "valid_rate": 0.4,
+         "valid_rate_ci_low": 0.17, "valid_rate_ci_high": 0.69,
+         "accuracy_mean": 0.46, "accuracy_ci_low": 0.28, "accuracy_ci_high": 0.65,
+         "accuracy_max": 0.5895, "baseline_accuracy_mean": 0.54,
+         "baseline_accuracy_ci_low": 0.44, "baseline_accuracy_ci_high": 0.63,
+         "baseline_accuracy_max": 0.61},
+        # n=2: the t-interval runs outside [0, 1] and must be clipped when drawn
+        {"epoch": 1, "models_generated": 10, "models_valid": 2, "valid_rate": 0.2,
+         "valid_rate_ci_low": 0.06, "valid_rate_ci_high": 0.51,
+         "accuracy_mean": 0.44, "accuracy_ci_low": 0.29, "accuracy_ci_high": 0.59,
+         "accuracy_max": 0.4501, "baseline_accuracy_mean": 0.535,
+         "baseline_accuracy_ci_low": -0.04, "baseline_accuracy_ci_high": 1.11,
+         "baseline_accuracy_max": 0.58},
+        {"epoch": 2, "models_generated": 10, "models_valid": 0, "valid_rate": 0.0,
+         "valid_rate_ci_low": 0.0, "valid_rate_ci_high": 0.28,
+         "accuracy_mean": None, "accuracy_ci_low": None, "accuracy_ci_high": None,
+         "accuracy_max": None, "baseline_accuracy_mean": None,
+         "baseline_accuracy_ci_low": None, "baseline_accuracy_ci_high": None,
+         "baseline_accuracy_max": None},
+    ]
+
+
+def _labels(ax):
+    return ax.get_legend_handles_labels()[1]
+
+
+def test_plot_series_cover_generated_and_original_on_both_panels(tmp_path, monkeypatch):
+    plt = pytest.importorskip("matplotlib.pyplot")
+    captured = {}
+    real_close = plt.close
+
+    def _capture(fig=None):
+        if fig is not None and hasattr(fig, "axes"):
+            captured["labels"] = [_labels(ax) for ax in fig.axes]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(_plot_rows(), tmp_path / "p.png")
+
+    rate, mean_panel, max_panel = captured["labels"]
+    assert any("Wilson" in l for l in rate)
+    # mean panel: both means AND both intervals are identifiable in the legend
+    assert any(l == "generated mean" for l in mean_panel)
+    assert any(l == "generated 95% CI" for l in mean_panel)
+    assert any("original" in l and "mean" in l for l in mean_panel)
+    assert any("original" in l and "95% CI" in l for l in mean_panel)
+    # max panel: the generated maximum is shown against the original maximum
+    assert any(l == "generated max" for l in max_panel)
+    assert any("original max" in l for l in max_panel)
+
+
+def test_plot_clips_an_out_of_range_interval_to_valid_accuracies(tmp_path, monkeypatch):
+    """A t-interval on n=2 can run past 0 and 1; an accuracy cannot.
+
+    The row below carries [-0.04, 1.11]; the shaded band must stay inside
+    [0, 1]. Checked on the drawn vertices rather than the axis limits, which
+    also include matplotlib's margins.
+    """
+    plt = pytest.importorskip("matplotlib.pyplot")
+    captured = {}
+    real_close = plt.close
+
+    def _capture(fig=None):
+        if fig is not None and hasattr(fig, "axes"):
+            ys = []
+            for coll in fig.axes[1].collections:          # the fill_between bands
+                for path in coll.get_paths():
+                    ys.extend(v[1] for v in path.vertices)
+            captured["ys"] = ys
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(_plot_rows(), tmp_path / "p.png")
+
+    ys = captured["ys"]
+    assert ys, "no shaded interval was drawn"
+    assert min(ys) >= 0.0, f"band reaches {min(ys)}, below a possible accuracy"
+    assert max(ys) <= 1.0, f"band reaches {max(ys)}, above a possible accuracy"
+    # and the stored record keeps the exact, unclipped bounds
+    assert _plot_rows()[1]["baseline_accuracy_ci_low"] == -0.04
+
+
+# --- a single observation supports no interval ---------------------------
+
+def test_single_observation_yields_no_interval_not_a_zero_width_one():
+    """One model cannot support a confidence interval.
+
+    Returning the mean for both bounds draws a zero-width band, which reads as
+    perfect certainty and makes two means look significantly different when
+    nothing of the sort has been shown.
+    """
+    out = ES.mean_ci([0.1455])
+    assert out["n"] == 1
+    assert out["mean"] == pytest.approx(0.1455)
+    assert out["ci_low"] is None and out["ci_high"] is None
+    assert out["std"] is None
+    # two observations are enough for a (wide) interval
+    two = ES.mean_ci([0.45, 0.43])
+    assert two["ci_low"] is not None and two["ci_high"] > two["ci_low"]
+
+
+def test_plot_draws_the_full_range_when_the_interval_is_not_estimable(tmp_path, monkeypatch):
+    """One model gives an unbounded interval; an accuracy lives in [0, 1].
+
+    Drawing the whole feasible range states that plainly. The failure this
+    guards against is the opposite: a band collapsed onto the mean, which
+    would assert the mean is known exactly.
+    """
+    plt = pytest.importorskip("matplotlib.pyplot")
+    rows = _plot_rows()
+    rows[1].update(models_valid=1, accuracy_ci_low=None, accuracy_ci_high=None,
+                   baseline_accuracy_ci_low=None, baseline_accuracy_ci_high=None)
+    captured = {}
+    real_close = plt.close
+
+    def _capture(fig=None):
+        if fig is not None and hasattr(fig, "axes"):
+            spans = []
+            for coll in fig.axes[1].collections:
+                for path in coll.get_paths():
+                    at_x1 = [v[1] for v in path.vertices if abs(v[0] - 1.0) < 1e-9]
+                    if at_x1:
+                        spans.append((min(at_x1), max(at_x1)))
+            captured["spans"] = spans
+            captured["labels"] = fig.axes[1].get_legend_handles_labels()[1]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(rows, tmp_path / "p.png")
+
+    assert captured["spans"], "no band was drawn at the single-model epoch"
+    for low, high in captured["spans"]:
+        assert low == pytest.approx(0.0)
+        assert high == pytest.approx(1.0)
+    # no extra legend entry is needed: the band speaks for itself
+    assert not any("estimable" in l for l in captured["labels"])
+    assert sum("95% CI" in l for l in captured["labels"]) == 2
