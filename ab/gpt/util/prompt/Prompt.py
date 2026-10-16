@@ -35,7 +35,7 @@ def preprocess_batch(batch, tokenizer, max_length):
     result = tokenizer(
         batch['text'],
         truncation=True,
-        max_length=4096,
+        max_length=max_length,
     )
     # Also tokenize response to check its length
     if 'response' in batch:
@@ -106,10 +106,20 @@ class Prompt:
         )
         # Filter out samples that have input_ids exceeding max_length
         # and response tokenized length exceeding max_new_tokens
+        before_filter = len(dataset)
         dataset = dataset.filter(
             lambda sample: len(sample['input_ids']) < self.max_len
             and len(sample.get('response', [])) < max_new_tokens
         )
+        kept = len(dataset)
+        print(f"[SFT] {kept}/{before_filter} samples kept "
+              f"(dropped {before_filter - kept}: longer than max_len={self.max_len} "
+              f"or response longer than max_new_tokens={max_new_tokens})")
+        if kept == 0:
+            raise ValueError(
+                f"All samples were filtered out at max_len={self.max_len}. Raise "
+                f"context_length (and max_new_tokens) or shorten the prompts.")
+
         # Remove response_length field after filtering (it was only used for filtering)
         if 'response' in dataset.column_names:
             dataset = dataset.remove_columns(['response'])

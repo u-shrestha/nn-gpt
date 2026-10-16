@@ -43,9 +43,10 @@ def persist_llm_conf(llm_conf, enable_merge=False):
 
     print(f"Run config saved: {RUN_META}")
 # --- Default Evaluation Parameters ---
-START_LAYER = 0
-END_LAYER = 24
-TUNE_LAYERS = range(START_LAYER, END_LAYER)
+# None now means "adapt every layer"; pass -s/-e to restrict it.
+START_LAYER = None
+END_LAYER = None
+TUNE_LAYERS = None
 R = 32  # dimension of the updated matrices
 LORA_ALPHA = 32  # parameter for scaling
 LORA_DROPOUT = 0.05  # dropout probability for layers
@@ -65,6 +66,7 @@ PER_DEVICE_TRAIN_BATCH_SIZE = 1
 GRADIENT_ACCUMULATION_STEPS = 8  # Increased for better stability
 WARMUP_RATIO = 0.05  # Warmup as ratio of total steps
 TEST_NN = 10
+SFT_MAX_LENGTH = 4096  # Packing/truncation budget for supervised fine-tuning
 LOGGING_STEPS = 96  # Less frequent logging
 OPTIMIZER = 'paged_adamw_8bit'
 LLM_TUNE_CONF = 'NN_gen.json'  # 'Transform_gen.json' for transform fine-tune
@@ -88,6 +90,42 @@ PROMPT_BATCH = 2
 # --- LangGraph Agent Defaults ---
 USE_AGENTS = True
 USE_PREDICTOR = False
+
+# --- Run-mode defaults ---
+SUPPRESS_THINKING = False
+SKIP_LM_FINETUNE = False
+USE_BACKBONE = False
+CLASSIFICATION_MODE = False
+ONLY_BEST_ACCURACY = False
+LOAD_IN_4BIT = True
+LOAD_BEST_MODEL_AT_END = False
+
+# --- Iterative pipeline defaults (--run_iterative_pipeline) ---
+RUN_ITERATIVE_PIPELINE = False
+CYCLES = 5
+MODELS_PER_CYCLE = 150
+SAMPLES_PER_PROMPT = 1
+ACCURACY_THRESHOLD = 0.40
+MIN_SELECTED_K = 15
+FALLBACK_THRESHOLD = 0.35
+ADAPTIVE_THRESHOLD = False
+NOVELTY_CHECK = True
+RESUME_FROM_CYCLE = None
+MAX_RETRIES = 3
+USE_OPTIMIZED_TRAINING = True
+
+# --- LLMatic MAP-Elites seed selection ---
+LLMATIC = False
+LLMATIC_CROSSOVER_EVERY = 3
+
+# --- Mobile deployment defaults ---
+MOBILE_DEPLOYMENT = False
+MOBILE_REVAL_ONLY = False
+MOBILE_MIN_QUANTIZED_ACCURACY = None
+MOBILE_MAX_DURATION_MS = None
+MOBILE_SCORE_TOLERANCE = 0.99
+MOBILE_MIN_VALID_MODELS = 5
+MOBILE_DELEGATE_PRIORITY = 'npu,gpu,cpu'
 
 # --- Pipeline-Optimized Defaults (for iterative_finetune.py) ---
 # These defaults are optimized for multi-cycle iterative fine-tuning
@@ -148,28 +186,34 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS, warmup_ratio=WARMUP_RATIO, logging_steps=LOGGING_STEPS, optimizer=OPTIMIZER,
          report_to=None, logging_dir=None,
          max_prompts=MAX_PROMPTS, save_llm_output=SAVE_LLM_OUTPUT, max_new_tokens=None, use_deepspeed=USE_DEEPSPEED, nn_name_prefix=NN_NAME_PREFIX,
-         nn_train_epochs=NN_TRAIN_EPOCHS, temperature=TEMPERATURE, top_k=TOP_K, top_p=TOP_P, data_dir=None,base_data_dir=None,output_dir=None,
+         nn_train_epochs=NN_TRAIN_EPOCHS, temperature=TEMPERATURE, top_k=TOP_K, top_p=TOP_P, data_dir=None,
          num_cycles=None, epoch_root=None,
-         suppress_thinking=False, budget_tokens=None, skip_lm_finetune=False,
+         suppress_thinking=SUPPRESS_THINKING, budget_tokens=None, skip_lm_finetune=SKIP_LM_FINETUNE,
          # Pipeline-specific overrides (for backward compatibility with iterative_finetune.py)
          evaluation_strategy=None, eval_steps=None, save_strategy=None, save_steps=None,
-         save_total_limit=None, load_best_model_at_end=False, metric_for_best_model=None, warmup_steps=None, weight_decay=None,
+         save_total_limit=None, load_best_model_at_end=LOAD_BEST_MODEL_AT_END, metric_for_best_model=None, warmup_steps=None, weight_decay=None,
          per_device_eval_batch_size=None, onnx_run=ONNX_RUN, unsloth_opt=UNSLOTH_OPT, trans_mode=TRANS_MODE,
-         prompt_batch=PROMPT_BATCH, enable_merge=False,
+         prompt_batch=PROMPT_BATCH, enable_merge=ENABLE_MERGE,
          # --- Pipeline Hyperparameters ---
-         run_iterative_pipeline=False, cycles=5, models_per_cycle=150, samples_per_prompt=1, accuracy_threshold=0.40,
-         min_selected_k=15, fallback_threshold=0.35, adaptive_threshold=False,
-         novelty_check=True, resume_from_cycle=None, max_retries=3, use_optimized_training=True,
-         use_agents=USE_AGENTS, use_predictor=USE_PREDICTOR, use_backbone=False,
-         classification_mode=False, context_length=None, max_input_length=None,
-         only_best_accuracy=False, load_in_4bit=True,
-         mobile_deployment=False, mobile_reval_only=False,
-         mobile_min_quantized_accuracy=None, mobile_max_duration_ms=None,
-         mobile_score_tolerance=0.99, mobile_min_valid_models=5, mobile_delegate_priority="npu,gpu,cpu",
+         run_iterative_pipeline=RUN_ITERATIVE_PIPELINE, cycles=CYCLES, models_per_cycle=MODELS_PER_CYCLE,
+         samples_per_prompt=SAMPLES_PER_PROMPT, accuracy_threshold=ACCURACY_THRESHOLD,
+         min_selected_k=MIN_SELECTED_K, fallback_threshold=FALLBACK_THRESHOLD, adaptive_threshold=ADAPTIVE_THRESHOLD,
+         novelty_check=NOVELTY_CHECK, resume_from_cycle=RESUME_FROM_CYCLE, max_retries=MAX_RETRIES,
+         use_optimized_training=USE_OPTIMIZED_TRAINING,
+         use_agents=USE_AGENTS, use_predictor=USE_PREDICTOR, use_backbone=USE_BACKBONE,
+         classification_mode=CLASSIFICATION_MODE, context_length=None, max_input_length=None,
+         only_best_accuracy=ONLY_BEST_ACCURACY, load_in_4bit=LOAD_IN_4BIT, sft_max_length=SFT_MAX_LENGTH,
+         mobile_deployment=MOBILE_DEPLOYMENT, mobile_reval_only=MOBILE_REVAL_ONLY,
+         mobile_min_quantized_accuracy=MOBILE_MIN_QUANTIZED_ACCURACY, mobile_max_duration_ms=MOBILE_MAX_DURATION_MS,
+         mobile_score_tolerance=MOBILE_SCORE_TOLERANCE, mobile_min_valid_models=MOBILE_MIN_VALID_MODELS,
+         mobile_delegate_priority=MOBILE_DELEGATE_PRIORITY,
          # --- Corpus filters for the iterative pipeline's LEMUR curation ---
          dataset=DEFAULT_DATASET, nn_prefixes=DEFAULT_NN_PREFIXES,
          # --- LLMatic MAP-Elites seed selection ---
-         llmatic=False, llmatic_crossover_every=3):
+         llmatic=LLMATIC, llmatic_crossover_every=LLMATIC_CROSSOVER_EVERY):
+
+    if num_cycles is not None:
+        cycles = int(num_cycles)
 
     persist_llm_conf(llm_conf, enable_merge)
 
@@ -390,25 +434,28 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
 
     # Create TrainingArguments with all parameters at once
     training_args = TrainingArguments(**training_kwargs)
+    if sft_max_length:
+        training_args.max_length = int(sft_max_length)
     # FIX: Ensure int types for LoRA config
     peft_config = LoraConfig(
         r=int(r),
         lora_alpha=int(lora_alpha),
         target_modules=target_modules,
-        layers_to_transform=list(tune_layers),
+        layers_to_transform=list(tune_layers) if tune_layers is not None else None,
         lora_dropout=float(lora_dropout),
         bias=bias,
         task_type=task_type)
 
     print(f"[LoRA Config] target_modules={target_modules}")
-    print(f"[LoRA Config] layers_to_transform={list(tune_layers)}")
+    print(f"[LoRA Config] layers_to_transform="
+          f"{list(tune_layers) if tune_layers is not None else 'ALL'}")
     print(f"[LoRA Config] r={r}, lora_alpha={lora_alpha}, lora_dropout={lora_dropout}")
 
     try:
         import copy
         if not target_modules or len(target_modules) == 0:
             raise ValueError("target_modules cannot be empty")
-        layer_list = list(tune_layers)
+        layer_list = list(tune_layers) if tune_layers is not None else None
         if layer_list and (min(layer_list) < 0):
             raise ValueError(f"Invalid layer indices: layers must be >= 0, got {layer_list}")
         _probe = copy.deepcopy(peft_config)
@@ -514,41 +561,39 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
 
 if __name__ == '__main__':
     TARGET_MODULES_STR = ','.join(TARGET_MODULES)
+    LAYER_RANGE_STR = ('all layers' if TUNE_LAYERS is None
+                       else f'{START_LAYER}..{END_LAYER}')
     parser = argparse.ArgumentParser(description='Evaluate Neural Networks generated by NNAlter.py.')
 
     # Iterative pipeline mode flag
-    parser.add_argument('--run_iterative_pipeline', action='store_true', default=False,
+    parser.add_argument('--run_iterative_pipeline', action='store_true', default=RUN_ITERATIVE_PIPELINE,
                         help='Run the full iterative fine-tuning pipeline instead of standalone fine-tuning')
 
     # Iterative pipeline-specific arguments (only used when --run_iterative_pipeline is set)
-    parser.add_argument("--base_data_dir", type=str, default=None,
-                        help="[Pipeline] Path to original chat_data directory (required when --run_iterative_pipeline is set)")
-    parser.add_argument("--output_dir", type=str, default="out/iterative_cycles",
-                        help="[Pipeline] Output directory for all cycle results (default: out/iterative_cycles)")
-    parser.add_argument("--cycles", type=int, default=5,
-                        help="[Pipeline] Number of fine-tuning cycles to run (default: 5)")
-    parser.add_argument("--models_per_cycle", type=int, default=150,
-                        help="[Pipeline] Number of models to generate per cycle (default: 150)")
-    parser.add_argument("--samples_per_prompt", type=int, default=1,
-                        help="[Pipeline] Number of models to generate per prompt (default: 1). ")
-    parser.add_argument("--accuracy_threshold", type=float, default=0.40,
-                        help="[Pipeline] Minimum first-epoch accuracy to select models (0.0-1.0, default: 0.40)")
-    parser.add_argument("--min_selected_k", type=int, default=15,
-                        help="[Pipeline] Minimum models to select via fallback (default: 15)")
-    parser.add_argument("--fallback_threshold", type=float, default=0.35,
-                        help="[Pipeline] Lower bound accuracy for fallback selection (default: 0.35)")
-    parser.add_argument("--adaptive_threshold", action="store_true", default=False,
+    parser.add_argument("--cycles", type=int, default=CYCLES,
+                        help=f"[Pipeline] Number of fine-tuning cycles to run (default: {CYCLES})")
+    parser.add_argument("--models_per_cycle", type=int, default=MODELS_PER_CYCLE,
+                        help=f"[Pipeline] Number of models to generate per cycle (default: {MODELS_PER_CYCLE})")
+    parser.add_argument("--samples_per_prompt", type=int, default=SAMPLES_PER_PROMPT,
+                        help=f"[Pipeline] Number of models to generate per prompt (default: {SAMPLES_PER_PROMPT}). ")
+    parser.add_argument("--accuracy_threshold", type=float, default=ACCURACY_THRESHOLD,
+                        help=f"[Pipeline] Minimum first-epoch accuracy to select models (0.0-1.0, default: {ACCURACY_THRESHOLD})")
+    parser.add_argument("--min_selected_k", type=int, default=MIN_SELECTED_K,
+                        help=f"[Pipeline] Minimum models to select via fallback (default: {MIN_SELECTED_K})")
+    parser.add_argument("--fallback_threshold", type=float, default=FALLBACK_THRESHOLD,
+                        help=f"[Pipeline] Lower bound accuracy for fallback selection (default: {FALLBACK_THRESHOLD})")
+    parser.add_argument("--adaptive_threshold", action="store_true", default=ADAPTIVE_THRESHOLD,
                         help="[Pipeline] Enable adaptive threshold (60-70th percentile)")
-    parser.add_argument("--novelty_check", action="store_true", default=True,
-                        help="[Pipeline] Enable novelty checking (default: True)")
+    parser.add_argument("--novelty_check", action="store_true", default=NOVELTY_CHECK,
+                        help=f"[Pipeline] Enable novelty checking (default: {NOVELTY_CHECK})")
     parser.add_argument("--no_novelty_check", dest="novelty_check", action="store_false",
                         help="[Pipeline] Disable novelty checking")
-    parser.add_argument("--resume_from_cycle", type=int, default=None,
+    parser.add_argument("--resume_from_cycle", type=int, default=RESUME_FROM_CYCLE,
                         help="[Pipeline] Resume pipeline from a specific cycle (1-cycles)")
-    parser.add_argument("--max_retries", type=int, default=3,
-                        help="[Pipeline] Maximum retry attempts for transient failures (default: 3)")
-    parser.add_argument("--use_optimized_training", action="store_true", default=True,
-                        help="[Pipeline] Use optimized training hyperparameters for stability and quality (default: True)")
+    parser.add_argument("--max_retries", type=int, default=MAX_RETRIES,
+                        help=f"[Pipeline] Maximum retry attempts for transient failures (default: {MAX_RETRIES})")
+    parser.add_argument("--use_optimized_training", action="store_true", default=USE_OPTIMIZED_TRAINING,
+                        help=f"[Pipeline] Use optimized training hyperparameters for stability and quality (default: {USE_OPTIMIZED_TRAINING})")
     parser.add_argument("--no_optimized_training", dest="use_optimized_training", action="store_false",
                         help="[Pipeline] Use original default training hyperparameters")
     # Note: --num_train_epochs is already defined below for standalone mode, but pipeline can override it
@@ -565,9 +610,9 @@ if __name__ == '__main__':
 
     # LoRA configuration
     parser.add_argument('-s', '--start_layer', type=int, default=START_LAYER,
-                        help=f'Index of the first fine-tuned layer (default: {START_LAYER}).')
+                        help=f'Index of the first fine-tuned layer (default: {LAYER_RANGE_STR}).')
     parser.add_argument('-e', '--end_layer', type=int, default=END_LAYER,
-                        help=f'Index of the last fine-tuned layer (default: {END_LAYER}).')
+                        help=f'Exclusive index of the last fine-tuned layer (default: {LAYER_RANGE_STR}).')
     parser.add_argument('-r', '--r', type=int, default=R,
                         help=f'Dimension of the updated matrices (default: {R}).')
     parser.add_argument('-a', '--lora_alpha', type=float, default=LORA_ALPHA,
@@ -596,11 +641,11 @@ if __name__ == '__main__':
     # Training configuration
     parser.add_argument('--num_cycles', type=int, default=None,
                         help='Number of outer generate/eval/SFT cycles (default: 100).')
-    parser.add_argument('--suppress_thinking', action='store_true', default=False,
+    parser.add_argument('--suppress_thinking', action='store_true', default=SUPPRESS_THINKING,
                         help='Close OlympicCoder-7B think block before generation (reduces thinking:code ratio).')
     parser.add_argument('--max_output_tokens', type=int, default=None, dest='budget_tokens',
                         help='Override max_new_tokens; enables token-budget sweep (paper Table 2).')
-    parser.add_argument('--skip_lm_finetune', action='store_true', default=False,
+    parser.add_argument('--skip_lm_finetune', action='store_true', default=SKIP_LM_FINETUNE,
                         help='Skip LoRA fine-tuning step each cycle (generation-only run).')
     parser.add_argument('-n', '--test_nn', type=int, default=TEST_NN,
                         help=f'Count of NNs to generate (default: {TEST_NN}).')
@@ -630,7 +675,7 @@ if __name__ == '__main__':
                         help=f'Optimizer (default: {OPTIMIZER}).')
     parser.add_argument('-k', '--skip_epoches', type=int, default=SKIP_EPOCHES,
                         help='Epochs to skip NN generation.')
-    parser.add_argument('--peft', type=str, default=None, help='Path to saved LoRA layers.')
+    parser.add_argument('--peft', type=str, default=PEFT, help='Path to saved LoRA layers.')
     parser.add_argument("--data_dir", type=str, default=None,
                         help="Folder with train.jsonl/dev.jsonl/test.jsonl (produced by chat prep).")
     parser.add_argument("--epoch_root", type=str, default=None,
@@ -658,7 +703,7 @@ if __name__ == '__main__':
                         help="[Pipeline] Save checkpoint every N steps (default: None).")
     parser.add_argument('--save_total_limit', type=int, default=None,
                         help="[Pipeline] Max checkpoints to keep (default: None).")
-    parser.add_argument('--load_best_model_at_end', action=argparse.BooleanOptionalAction, default=False,
+    parser.add_argument('--load_best_model_at_end', action=argparse.BooleanOptionalAction, default=LOAD_BEST_MODEL_AT_END,
                         help="[Pipeline] Load best model at end (default: False).")
     parser.add_argument('--metric_for_best_model', type=str, default=None,
                         help="[Pipeline] Metric for best model (default: None).")
@@ -672,37 +717,40 @@ if __name__ == '__main__':
                         help=f"ONNX format (default: {ONNX_RUN}).")
     parser.add_argument('--unsloth_opt', action='store_true',
                         help=f"Use Unsloth optimizations (default: {UNSLOTH_OPT}).")
-    parser.add_argument("--enable_merge", action="store_true", default=False, help="Enable automatic merge decision after fine-tuning.")
+    parser.add_argument("--enable_merge", action="store_true", default=ENABLE_MERGE, help="Enable automatic merge decision after fine-tuning.")
     parser.add_argument('--prompt_batch', type=int, default=PROMPT_BATCH,
                         help=f"Prompt batch size (default: {PROMPT_BATCH}).")
     parser.add_argument('--use_agents', action='store_true', default=USE_AGENTS,
-                        help='Enable LangGraph multi-agent workflow (default: False).')
+                        help=f'Enable LangGraph multi-agent workflow (default: {USE_AGENTS}).')
     parser.add_argument('--no-use_agents', dest='use_agents', action='store_false',
                         help='Disable LangGraph multi-agent workflow during fine-tuning.')
     parser.add_argument('--use_predictor', action='store_true', default=USE_PREDICTOR,
                         help='Enable predictor agent.')
-    parser.add_argument('--use_backbone', action='store_true', default=False,
-                        help='Use backbone mode for code generation (default: False).')
-    parser.add_argument('--classification_mode', action='store_true', default=False,
-                        help='Enable classification-only mode (default: False).')
+    parser.add_argument('--use_backbone', action='store_true', default=USE_BACKBONE,
+                        help=f'Use backbone mode for code generation (default: {USE_BACKBONE}).')
+    parser.add_argument('--classification_mode', action='store_true', default=CLASSIFICATION_MODE,
+                        help=f'Enable classification-only mode (default: {CLASSIFICATION_MODE}).')
+    parser.add_argument('--sft_max_length', type=int, default=SFT_MAX_LENGTH,
+                        help=f'Packing/truncation budget for supervised fine-tuning '
+                             f'(default: {SFT_MAX_LENGTH}). Keep <= --context_length.')
     parser.add_argument('--context_length', type=int, default=None,
                         help='Model context length override (falls back to default_context_length in config).')
     parser.add_argument('--max_input_length', type=int, default=None,
                         help='Unsloth max input length override.')
-    parser.add_argument('--mobile_deployment', action='store_true', default=False,
-                        help='Enable standalone mobile deployment pipeline extensions (default: False).')
-    parser.add_argument('--mobile_reval_only', action='store_true', default=False,
+    parser.add_argument('--mobile_deployment', action='store_true', default=MOBILE_DEPLOYMENT,
+                        help=f'Enable standalone mobile deployment pipeline extensions (default: {MOBILE_DEPLOYMENT}).')
+    parser.add_argument('--mobile_reval_only', action='store_true', default=MOBILE_REVAL_ONLY,
                         help='[Mobile Pipeline] Re-run GPU eval + mobile for one cycle only (requires --mobile_deployment).')
-    parser.add_argument('--mobile_min_quantized_accuracy', type=float, default=None,
-                        help='[Mobile Pipeline] Minimum quantized accuracy required for selection (default: None).')
-    parser.add_argument('--mobile_max_duration_ms', type=float, default=None,
-                        help='[Mobile Pipeline] Maximum on-device duration (ms) allowed for selection (default: None).')
-    parser.add_argument('--mobile_score_tolerance', type=float, default=0.99,
-                        help='[Mobile Pipeline] Non-regression tolerance multiplier for cycle gate (default: 0.99).')
-    parser.add_argument('--mobile_min_valid_models', type=int, default=5,
-                        help='[Mobile Pipeline] Minimum valid mobile-scored models required to accept cycle (default: 5).')
-    parser.add_argument('--mobile_delegate_priority', type=str, default='npu,gpu,cpu',
-                        help='[Mobile Pipeline] Tie-break delegate priority for equal scores (default: npu,gpu,cpu).')
+    parser.add_argument('--mobile_min_quantized_accuracy', type=float, default=MOBILE_MIN_QUANTIZED_ACCURACY,
+                        help=f'[Mobile Pipeline] Minimum quantized accuracy required for selection (default: {MOBILE_MIN_QUANTIZED_ACCURACY}).')
+    parser.add_argument('--mobile_max_duration_ms', type=float, default=MOBILE_MAX_DURATION_MS,
+                        help=f'[Mobile Pipeline] Maximum on-device duration (ms) allowed for selection (default: {MOBILE_MAX_DURATION_MS}).')
+    parser.add_argument('--mobile_score_tolerance', type=float, default=MOBILE_SCORE_TOLERANCE,
+                        help=f'[Mobile Pipeline] Non-regression tolerance multiplier for cycle gate (default: {MOBILE_SCORE_TOLERANCE}).')
+    parser.add_argument('--mobile_min_valid_models', type=int, default=MOBILE_MIN_VALID_MODELS,
+                        help=f'[Mobile Pipeline] Minimum valid mobile-scored models required to accept cycle (default: {MOBILE_MIN_VALID_MODELS}).')
+    parser.add_argument('--mobile_delegate_priority', type=str, default=MOBILE_DELEGATE_PRIORITY,
+                        help=f'[Mobile Pipeline] Tie-break delegate priority for equal scores (default: {MOBILE_DELEGATE_PRIORITY}).')
 
     # Corpus filters for the iterative pipeline's LEMUR curation
     parser.add_argument('--dataset', type=str, default=DEFAULT_DATASET,
@@ -710,19 +758,20 @@ if __name__ == '__main__':
     parser.add_argument('--nn_prefixes', type=lambda s: tuple(p for p in s.split(',') if p),
                         default=DEFAULT_NN_PREFIXES,
                         help=f"[Pipeline] Comma-separated NN name prefixes to curate (default: {','.join(DEFAULT_NN_PREFIXES)}).")
-    parser.add_argument('--llmatic', action='store_true', default=False,
+    parser.add_argument('--llmatic', action='store_true', default=LLMATIC,
                         help="[Pipeline] Enable LLMatic MAP-Elites archive-driven seed "
                              "selection (mutation + periodic crossover) in nn_gen, instead "
                              "of random corpus sampling.")
-    parser.add_argument('--llmatic_crossover_every', type=int, default=3,
+    parser.add_argument('--llmatic_crossover_every', type=int, default=LLMATIC_CROSSOVER_EVERY,
                         help="[Pipeline] With --llmatic, run a crossover generation every N "
-                             "cycles (default: 3; 0 disables crossover).")
+                             f"cycles (default: {LLMATIC_CROSSOVER_EVERY}; 0 disables crossover).")
 
     args = parser.parse_args()
 
     # Convert start_layer/end_layer → tune_layers (main() expects a range, not two ints)
     kwargs = vars(args)
-    kwargs['tune_layers'] = range(kwargs.pop('start_layer'), kwargs.pop('end_layer'))
+    _sl, _el = kwargs.pop('start_layer'), kwargs.pop('end_layer')
+    kwargs['tune_layers'] = range(_sl or 0, _el) if _el is not None else None
 
     # --num_cycles in argparse maps to cycles= in main()
     num_cycles = kwargs.pop('num_cycles')
