@@ -30,6 +30,11 @@ class AgentState(BaseModel):
     skip_epoch: Optional[int] = None
     next_action: Optional[str] = None
     status: Optional[str] = None
+    # Closing generate+evaluate pass that measures the LAST fine-tuned adapter.
+    # The loop is generate -> evaluate -> fine-tune, so without it the final
+    # fine-tune of a run is never exercised and never reported.
+    final_eval: Optional[bool] = None
+    final_eval_done: Optional[bool] = None
     use_predictor: Optional[bool] = None
     use_backbone: Optional[bool] = None
     enable_merge: Optional[bool] = None

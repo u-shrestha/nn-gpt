@@ -638,12 +638,16 @@ def main(
                     cycle_time_minutes=cycle_time_minutes,
                     current_alter_epoch_path=current_alter_epoch_path,
                 )
+                # The per-epoch file is the canonical record. Previously only a
+                # single cycle_results.json was kept, and the rolling backup was
+                # named from `i-1` -- so the number on the file did not match the
+                # data inside it and it was impossible to tell which epoch a
+                # result belonged to. Name it after the epoch it describes.
+                epoch_results_path = base_nngpt_path / f"cycle_results_{current_epoch}.json"
+                save_cycle_results(cycle_results, epoch_results_path)
                 cycle_results_path = base_nngpt_path / "cycle_results.json"
-                if cycle_results_path.exists():
-                    backup_path = base_nngpt_path / f"cycle_results_{i-1}.json"
-                    shutil.copy2(cycle_results_path, backup_path)
-                    print(f"Backup saved -> {backup_path}")
                 save_cycle_results(cycle_results, cycle_results_path)
+                print(f"Per-epoch results saved -> {epoch_results_path}")
                 print(
                     f"\n--- Cycle {current_cycle} (Epoch {current_epoch}) results saved to: "
                     f"{cycle_results_path} ---"
@@ -656,6 +660,7 @@ def main(
                         "cycle": current_cycle,
                         "models_base_dir": str(models_base_dir),
                         "cycle_results_path": str(cycle_results_path),
+                        "epoch_results_path": str(epoch_results_path),
                         "model_results": sorted(epoch_results, key=lambda item: str(item.get("model_id", ""))),
                         "successful_models": len(successful_models),
                         "failed_models": len(failed_models),

@@ -500,40 +500,11 @@ def nn_gen(
                         model_dir, f"original_{origdf['nn']}.py", origdf['nn_code'])
                     origdf.to_pickle(df_file)
 
-    # Track generation-side progress even before later merge logic or external
-    # tooling reads cycle_results.json.
-    tracker_file = nngpt_dir / "epoch_tracker.json"
-    if tracker_file.exists():
-        try:
-            with open(tracker_file) as f:
-                tracker_data = json.load(f)
-        except Exception:
-            tracker_data = []
-    else:
-        tracker_data = []
-
-    accuracy = None
-    cycle_file = nngpt_dir / "cycle_results.json"
-    if cycle_file.exists():
-        try:
-            with open(cycle_file) as f:
-                cycle_data = json.load(f)
-            accuracy = cycle_data.get("evaluation", {}).get("best_accuracy")
-        except Exception:
-            pass
-
-    tracker_data.append(
-        {
-            "epoch": epoch,
-            "timestamp": datetime.now().isoformat(),
-            "models_generated": len(list(models_dir.glob("B*"))) if exists(models_dir) else 0,
-            "accuracy": accuracy,
-        }
-    )
-    tracker_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(tracker_file, "w") as f:
-        json.dump(tracker_data, f, indent=2)
-    print(f"[EPOCH TRACKER] Wrote epoch {epoch} (acc={accuracy})")
+    # NOTE: epoch statistics used to be written here. nn_gen() runs BEFORE the
+    # models are evaluated, so the accuracy it read out of cycle_results.json
+    # was always the PREVIOUS epoch's -- every row was one epoch late. The
+    # record is now produced at the end of _evaluate_epoch(), from this epoch's
+    # own artifacts. See ab/gpt/util/data/EpochStats.py.
 
     print('[DEBUG] Release memory.')
     release_memory()
@@ -702,6 +673,17 @@ def generate_step(state: AgentState) -> dict:
     if not has_output:
         print(
             f"[INFO] No code generated at epoch {epoch}, skipping evaluation")
+        # Still record the epoch. Skipping evaluation used to skip the report
+        # as well, so a collapsed epoch vanished from epoch_tracker.json
+        # entirely instead of being visible as 0 valid out of N attempts --
+        # exactly the epochs worth seeing.
+        try:
+            from ab.gpt.util.data.EpochStats import update_epoch_report
+            update_epoch_report(synth_dir(out_path), epoch, nngpt_dir)
+        except Exception as exc:
+            print(f"[EPOCH STATS] Could not record skipped epoch {epoch}: {exc}")
+        if state.get("final_eval"):
+            return {"next_action": "end", "final_eval_done": True}
         return {"next_action": "finetune"}
 
     return {"next_action": "evaluate"}
@@ -865,6 +847,16 @@ def _evaluate_epoch(
             except Exception:
                 continue
 
+    # Epoch statistics: valid-generation rate with a Wilson interval, accuracy
+    # of the generated models (mean with 95% CI, and max) and the accuracy the
+    # seed models had before modification. Written after evaluation so the row
+    # describes THIS epoch, then the plot is refreshed. Never raises.
+    if exists(models_dir):
+        from ab.gpt.util.data.EpochStats import update_epoch_report
+        epoch_stats = update_epoch_report(models_dir, epoch, nngpt_dir)
+        if epoch_stats:
+            results["epoch_stats"] = epoch_stats
+
     return results
 
 
@@ -914,7 +906,12 @@ def evaluate_step(state: AgentState) -> dict:
     has_epoch2 = has_epoch2_in_state or "epoch_2_accuracy" in updates
     has_epoch3 = has_epoch3_in_state or "epoch_3_accuracy" in updates
 
-    if use_predictor and has_epoch1 and has_epoch2 and has_epoch3:
+    if state.get("final_eval"):
+        # Closing pass: the adapter has now been validated and the epoch
+        # finalised, so the run stops here instead of fine-tuning again.
+        updates["next_action"] = "end"
+        updates["final_eval_done"] = True
+    elif use_predictor and has_epoch1 and has_epoch2 and has_epoch3:
         updates["next_action"] = "predict"
     else:
         updates["next_action"] = "finetune"
@@ -935,6 +932,7 @@ def _finetune_epoch(
     data_dir=None,
     budget_tokens=None,
     suppress_thinking=False,
+    reset_previous_results=True,
 ):
     """
     Single source of truth for one finetune epoch.
@@ -1261,7 +1259,22 @@ def tune(
         classification_mode=classification_mode,
     )
 
+    # The generated-model directories are wiped for a fresh run; the statistics
+    # files next to them have to go the same way. Left behind, a previous run's
+    # cycle_results_<epoch>.json and epoch_tracker.json rows survive into this
+    # one -- a 4-cycle run after a 20-cycle run would report 20 epochs, 16 of
+    # them stale. Resuming keeps them, since the point of a resume is to
+    # continue the same record.
     shutil.rmtree(epoch_root_path, ignore_errors=True)
+    resuming = bool(llm_path or trainer_resume_checkpoint or skip_epoch > 0)
+    if reset_previous_results and not resuming:
+        from ab.gpt.util.data.EpochStats import reset_run_artifacts
+        reset_run_artifacts(nngpt_dir)
+    elif resuming:
+        print("[RUN RESET] Resuming an existing run: previous statistics kept "
+              "(adapter, trainer checkpoint or skip_epoch is set)")
+    else:
+        print("[RUN RESET] Disabled: previous statistics kept")
 
     if use_agents:
         from ab.gpt.act.agents.run_agent import run_agent_controller
@@ -1308,3 +1321,28 @@ def tune(
                 suppress_thinking=suppress_thinking,
             )
             trainer_resume_checkpoint = None
+
+    # Closing validation pass for the classic loop, mirroring the agent path:
+    # the loop fine-tunes after evaluating, so without this the final adapter
+    # is never generated from, never validated and never recorded.
+    if not skip_lm_finetune and llm_tune_epochs > 0:
+        final_epoch = llm_tune_epochs
+        print(f'[INFO] Closing validation pass for the final adapter (epoch {final_epoch})')
+        out_path = run_epoch_dir(final_epoch)
+        if trans_mode:
+            trans_gen(final_epoch, out_path, chat_bot, conf_keys, nn_train_epochs,
+                      prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix)
+        else:
+            nn_gen(final_epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict,
+                   test_nn, max_new_tokens, save_llm_output, nn_name_prefix,
+                   unsloth_max_input_length, prompt_batch, use_backbone=use_backbone,
+                   sft_nn_prefixes=sft_nn_prefixes, sft_dataset=sft_dataset)
+        _evaluate_epoch(
+            final_epoch,
+            out_path,
+            nn_name_prefix,
+            nn_train_epochs,
+            trans_mode,
+            classification_mode,
+            custom_synth_dir=synth_dir(out_path),
+        )

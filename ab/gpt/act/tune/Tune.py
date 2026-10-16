@@ -92,6 +92,10 @@ USE_AGENTS = True
 USE_PREDICTOR = False
 
 # --- Run-mode defaults ---
+# Delete the previous run's cycle_results*.json / epoch_tracker.json /
+# epoch_statistics.png before starting, so one run's statistics cannot be read
+# as another's. Ignored when resuming.
+RESET_PREVIOUS_RESULTS = True
 SUPPRESS_THINKING = False
 SKIP_LM_FINETUNE = False
 USE_BACKBONE = False
@@ -203,6 +207,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          use_agents=USE_AGENTS, use_predictor=USE_PREDICTOR, use_backbone=USE_BACKBONE,
          classification_mode=CLASSIFICATION_MODE, context_length=None, max_input_length=None,
          only_best_accuracy=ONLY_BEST_ACCURACY, load_in_4bit=LOAD_IN_4BIT, sft_max_length=SFT_MAX_LENGTH,
+         reset_previous_results=RESET_PREVIOUS_RESULTS,
          mobile_deployment=MOBILE_DEPLOYMENT, mobile_reval_only=MOBILE_REVAL_ONLY,
          mobile_min_quantized_accuracy=MOBILE_MIN_QUANTIZED_ACCURACY, mobile_max_duration_ms=MOBILE_MAX_DURATION_MS,
          mobile_score_tolerance=MOBILE_SCORE_TOLERANCE, mobile_min_valid_models=MOBILE_MIN_VALID_MODELS,
@@ -495,6 +500,7 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
             load_in_4bit=load_in_4bit,
             data_dir=data_dir,
             epoch_root=epoch_root,
+            reset_previous_results=reset_previous_results,
             llmatic=({"crossover_every": llmatic_crossover_every} if llmatic else None),
             dataset=dataset,
             nn_prefixes=nn_prefixes,
@@ -730,6 +736,12 @@ if __name__ == '__main__':
                         help=f'Use backbone mode for code generation (default: {USE_BACKBONE}).')
     parser.add_argument('--classification_mode', action='store_true', default=CLASSIFICATION_MODE,
                         help=f'Enable classification-only mode (default: {CLASSIFICATION_MODE}).')
+    parser.add_argument('--reset_previous_results', action=argparse.BooleanOptionalAction,
+                        default=RESET_PREVIOUS_RESULTS,
+                        help=f'Delete the previous run statistics (cycle_results*.json, '
+                             f'epoch_tracker.json, epoch_statistics.png) before starting '
+                             f'(default: {RESET_PREVIOUS_RESULTS}). Always skipped when '
+                             f'resuming via --peft or --skip_epoches.')
     parser.add_argument('--sft_max_length', type=int, default=SFT_MAX_LENGTH,
                         help=f'Packing/truncation budget for supervised fine-tuning '
                              f'(default: {SFT_MAX_LENGTH}). Keep <= --context_length.')
