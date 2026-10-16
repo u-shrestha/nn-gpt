@@ -9,7 +9,7 @@
     "type": "change_parameters",
     "is_generation": false,
     "task": "img-classification",
-    "addon_task": "channel_optimization",
+    "dataset": "cifar-10",
     "input_list": [
       {
         "para": "nn_code",
