@@ -1103,6 +1103,7 @@ def tune(
     suppress_thinking=False,
     dataset=None,
     nn_prefixes=None,
+    reset_previous_results=True
 ):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
