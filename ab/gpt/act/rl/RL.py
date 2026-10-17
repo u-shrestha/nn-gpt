@@ -1026,11 +1026,11 @@ def best_mixed_precision() -> Dict[str, Any]:
     bf16_requested = os.getenv("NNGPT_RL_USE_BF16", "").strip().lower() in {"1", "true", "yes", "on"}
     bf16_ok = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
     use_bf16 = bool(bf16_requested and bf16_ok)
-    torch_dtype = torch.bfloat16 if use_bf16 else torch.float16
+    dtype = torch.bfloat16 if use_bf16 else torch.float16
     return {
         "bf16": use_bf16,
         "fp16": not use_bf16,
-        "torch_dtype": torch_dtype,
+        "dtype": dtype,
         "label": "bf16" if use_bf16 else "fp16",
     }
 
@@ -6108,7 +6108,7 @@ def main():
     if deepspeed_config_path is not None:
         print(f"[RL] DeepSpeed Config: {deepspeed_config_path}")
     print(f"[RL] Fixed training device: {train_device}")
-    print(f"[RL] Mixed precision: {precision['label']} (torch_dtype={precision['torch_dtype']})")
+    print(f"[RL] Mixed precision: {precision['label']} (dtype={precision['dtype']})")
     print(f"[RL] Current stage: {current_stage_name}")
     print(
         "[RL] Runtime limits: "
@@ -6154,7 +6154,7 @@ def main():
         )
 
     model = prepare_model_for_kbit_training(model)
-    align_generation_head_dtype(model, precision["torch_dtype"])
+    align_generation_head_dtype(model, precision["dtype"])
 
     # Apply LoRA specifically for RL phase
     peft_config = TrainerRuntime.build_lora_config(
@@ -6171,7 +6171,7 @@ def main():
         missing_adapter_message=f"Missing adapter directory under resume checkpoint: {resume_adapter_dir}",
         load_message=f"[RL] Loading RL adapter from {resume_adapter_dir}..." if resume_adapter_dir is not None else None,
     )
-    align_generation_head_dtype(model, precision["torch_dtype"])
+    align_generation_head_dtype(model, precision["dtype"])
 
     # Enable gradient checkpointing to save memory
     TrainerRuntime.enable_non_reentrant_gradient_checkpointing(

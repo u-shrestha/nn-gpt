@@ -15,8 +15,8 @@ overrides>=7.7.0
 datasketch # to check code novelty
 langgraph>=1.0.4
 
-unsloth==2026.3.4
-unsloth-zoo==2026.3.2
+unsloth==2026.10.6
+unsloth-zoo==2026.10.6
 torchao>=0.13.0,<0.16  # torchao 0.16+ targets torch 2.10+; nn-dataset pins torch 2.9.1
 triton>=3.4.0
 

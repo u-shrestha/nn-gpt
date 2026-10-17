@@ -467,6 +467,7 @@ def nn_gen(
                 print(f'[ERROR] No code generated for model B{idx}')
                 continue
 
+            warn_if_truncated(full_out, max_new_tokens, idx)
             create_file(model_dir, new_out_file, full_out)
             df_file = model_dir / 'dataframe.df'
             if origdf is None:
@@ -1347,22 +1348,11 @@ def tune(
         classification_mode=classification_mode,
     )
 
-    # The generated-model directories are wiped for a fresh run; the statistics
-    # files next to them have to go the same way. Left behind, a previous run's
-    # cycle_results_<epoch>.json and epoch_tracker.json rows survive into this
-    # one -- a 4-cycle run after a 20-cycle run would report 20 epochs, 16 of
-    # them stale. Resuming keeps them, since the point of a resume is to
-    # continue the same record.
+    # Statistics files from a previous run are cleared by the caller
+    # (ab/gpt/act/tune/Tune.py) before this function is entered; see
+    # EpochStats.reset_run_artifacts. Doing it there keeps every tune()
+    # backend -- Tune, Tune_Onnx, Tune_prun -- on the same signature.
     shutil.rmtree(epoch_root_path, ignore_errors=True)
-    resuming = bool(llm_path or trainer_resume_checkpoint or skip_epoch > 0)
-    if reset_previous_results and not resuming:
-        from ab.gpt.util.data.EpochStats import reset_run_artifacts
-        reset_run_artifacts(nngpt_dir)
-    elif resuming:
-        print("[RUN RESET] Resuming an existing run: previous statistics kept "
-              "(adapter, trainer checkpoint or skip_epoch is set)")
-    else:
-        print("[RUN RESET] Disabled: previous statistics kept")
 
     if use_agents:
         from ab.gpt.act.agents.run_agent import run_agent_controller

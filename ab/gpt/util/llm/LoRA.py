@@ -106,13 +106,13 @@ class LoRA:
         self.training_args = training_args
         self.access_token = access_token
         self._use_unsloth = use_unsloth
-        
+
         if peft_config is None:
             modules = find_all_linear_names(self.model)
             self.peft_config = create_peft_config(modules)
         else:
             self.peft_config = peft_config
-        
+
         if init_adapter and use_unsloth:
             raise ValueError("init_adapter (NNGPT_CARRY_ADAPTER) is not supported with unsloth")
 
@@ -127,7 +127,7 @@ class LoRA:
                     inner_unsloth_available = False
 
                 if not inner_unsloth_available:
-                     raise ImportError("Unsloth not installed")
+                    raise ImportError("Unsloth not installed")
 
                 self.peft_model = FastModel.get_peft_model(
                     self.model,
@@ -144,7 +144,7 @@ class LoRA:
                 print(f"[LoRA] Unsloth get_peft_model failed: {e}, falling back to standard PEFT")
                 use_unsloth = False
                 self._use_unsloth = False
-        
+
         if not use_unsloth:
             # Standard PEFT flow for non-Unsloth models
             self.model = prepare_model_for_kbit_training(self.model)
@@ -157,8 +157,8 @@ class LoRA:
                 print(f"[LoRA] Continuing adapter from {init_adapter}")
             else:
                 self.peft_model = get_peft_model(self.model, self.peft_config)
-        
-        self.peft_model._hf_peft_config_loaded = True 
+
+        self.peft_model._hf_peft_config_loaded = True
         # Log trainable parameters immediately after adapters are attached
         target_modules = getattr(self.peft_config, 'target_modules', 'N/A (prefix tuning)')
         print(f"[LoRA] Adapters attached. Effective target_modules: {target_modules}")
@@ -166,19 +166,19 @@ class LoRA:
         print_trainable_parameters(self.peft_model)
 
     def train(
-        self,
-        dataset: Dataset,
-        tokenizer,
-        output_dir: str,
-        train_on_completions_only=False,
-        response_template=None,
-        resume_from_checkpoint: Optional[str] = None,
-        runtime_state_hooks: Optional[TrainingRuntime.RuntimeStateHooks] = None,
-        checkpoint_label: str = "trainer",
+            self,
+            dataset: Dataset,
+            tokenizer,
+            output_dir: str,
+            train_on_completions_only=False,
+            response_template=None,
+            resume_from_checkpoint: Optional[str] = None,
+            runtime_state_hooks: Optional[TrainingRuntime.RuntimeStateHooks] = None,
+            checkpoint_label: str = "trainer",
     ):
         """
         Train the model using SFTTrainer.
-        
+
         Args:
             dataset: Dataset with pre-rendered text (from chat template) or raw text
             tokenizer: Tokenizer instance
@@ -187,14 +187,29 @@ class LoRA:
             response_template: String that precedes assistant answer in rendered text (e.g., "Assistant:" for DeepSeek)
         """
         self.peft_model.config.use_cache = False
-        
+
         # Check if dataset has pre-rendered text or prompt/completion pairs.
         column_names = set(dataset.column_names) if hasattr(dataset, 'column_names') else set()
         has_text_field = "text" in column_names
         has_prompt_completion = {"prompt", "completion"}.issubset(column_names)
         if has_prompt_completion:
             train_on_completions_only = True
-        
+
+        # Say plainly which branch the data selected and why. "Dataset does not
+        # have 'text' field" alone does not reveal what the dataset DID carry,
+        # which makes a half-applied change look like a change that does not work.
+        print(f"[LoRA] Dataset columns: {sorted(column_names)}")
+        if has_prompt_completion:
+            print("[LoRA] -> prompt/completion branch: loss masked to the completion")
+        elif has_text_field:
+            print("[LoRA] -> text branch: loss over the whole sequence "
+                  "(prompt included) unless a response template is found")
+        else:
+            print("[LoRA] -> NEITHER 'prompt'+'completion' NOR 'text' present. "
+                  "The loss will cover the whole sequence, prompt included. "
+                  "If you expected completion-only training, Prompt.get_dataset "
+                  "is not returning prompt/completion columns.")
+
         # Split The dataset (NNGPT_SEED_SFT_SPLIT: seeded from training_args.seed, so the
         # rows each cycle trains on can be reconstructed; unseeded otherwise)
         if os.environ.get("NNGPT_SEED_SFT_SPLIT", "").strip().lower() in {"1", "true", "yes", "on"}:
@@ -216,7 +231,7 @@ class LoRA:
                     sample_text = train_dataset[0]["text"]
                     print(f"[INFO] Inspecting sample text to detect response template:")
                     print(f"Sample (first 500 chars):\n{sample_text[:500]}")
-                    
+
                     # Common patterns for DeepSeek and similar models
                     possible_templates = ["Assistant:", "assistant:", "<|assistant|>", "### Assistant:"]
                     for template in possible_templates:
@@ -224,7 +239,7 @@ class LoRA:
                             response_template = template
                             print(f"[INFO] Auto-detected response template: '{response_template}'")
                             break
-                    
+
                     if response_template is None:
                         print("[WARN] Could not auto-detect response template. Please set response_template manually.")
                         print("[WARN] Falling back to training on all tokens.")
@@ -233,7 +248,7 @@ class LoRA:
                     print("[WARN] Cannot auto-detect response template. Dataset missing 'text' field or is empty.")
                     print("[WARN] Falling back to training on all tokens.")
                     train_on_completions_only = False
-            
+
             if train_on_completions_only and response_template and DataCollatorForCompletionOnlyLM is not None:
                 print(f"[INFO] Using completion-only training with response template: '{response_template}'")
                 collator = DataCollatorForCompletionOnlyLM(
@@ -271,18 +286,55 @@ class LoRA:
             print(f"[INFO] Packing enabled: {use_packing} ({'Simple mode: full text' if use_packing else 'Precise mode: completions only'})")
             sft_max_length = getattr(self.training_args, "max_length", None) or 4096
             print(f"[INFO] SFT max_length: {sft_max_length}")
-            
+
+            # SFTTrainer truncates prompt+completion at max_length, from the
+            # right. The completion ends with the <nn> block, so a budget below
+            # the sample length removes the network code and trains the model to
+            # emit <hp> and <tr> and then stop. Measure it rather than let it
+            # happen silently.
+            if has_prompt_completion:
+                try:
+                    over = longest = 0
+                    _sample = train_dataset.select(range(min(128, len(train_dataset))))
+                    for _p, _c in zip(_sample["prompt"], _sample["completion"]):
+                        _n = len(self.tokenizer(_p + _c, add_special_tokens=False)["input_ids"])
+                        longest = max(longest, _n)
+                        over += _n > sft_max_length
+                    if over:
+                        print(f"[CONFIG WARNING] {over}/{len(_sample)} sampled rows exceed "
+                              f"max_length={sft_max_length} (longest {longest} tokens). "
+                              f"SFTTrainer truncates from the RIGHT and the completion ends "
+                              f"with the <nn> block, so those rows are trained with the "
+                              f"network code cut off. Raise sft_max_length to at least "
+                              f"{longest}, and keep it >= context_length.")
+                    else:
+                        print(f"[INFO] No sampled row exceeds max_length "
+                              f"(longest {longest} tokens); nothing is truncated.")
+                except Exception as _exc:
+                    print(f"[INFO] Could not measure truncation: {_exc}")
+
             # Configure tokenizer for SFT: truncate from left (keep assistant response), pad on right
             # This ensures sequences are truncated correctly when SFTTrainer tokenizes
+            # Remember what we are about to overwrite. This tokenizer is SHARED
+            # with the ChatBot used for generation: leaving model_max_length at
+            # sft_max_length makes ChatBot's input budget
+            # (model_max_length - max_new_tokens) collapse to ~0 after the first
+            # fine-tune, so the prompt is truncated to almost nothing and the
+            # model free-associates instead of doing the task. Restored below.
+            self._tok_state = {
+                "truncation_side": getattr(self.tokenizer, "truncation_side", "right"),
+                "padding_side": getattr(self.tokenizer, "padding_side", "right"),
+                "model_max_length": getattr(self.tokenizer, "model_max_length", None),
+            }
             self.tokenizer.truncation_side = "left"
             self.tokenizer.padding_side = "right"
             self.tokenizer.model_max_length = sft_max_length
-            
+
             # Suppress sequence length warnings - SFTTrainer will handle truncation correctly
             import warnings
             warnings.filterwarnings("ignore", message=".*sequence length.*longer than.*maximum.*")
             warnings.filterwarnings("ignore", message=".*Token indices sequence length.*")
-            
+
             # Set packing, max_length, and dataset_text_field in SFTConfig to avoid warnings
             # Convert to SFTConfig if not already, or set attributes directly
             if isinstance(self.training_args, SFTConfig):
@@ -300,7 +352,7 @@ class LoRA:
                 if has_text_field:
                     sft_config.dataset_text_field = "text"  # Feed Dataset with {"text": ...} format
                 self.training_args = sft_config
-            
+
             # SFTTrainer will handle tokenization and truncation internally
             # Since chat_template already added special tokens, tokenizer will use add_special_tokens=False internally
             trainer = SFTTrainer(
@@ -389,4 +441,15 @@ class LoRA:
         # del self.model  (peft_model still holds a ref, so this would not free GPU memory)
         del trainer
         release_memory()
+        # Put the shared tokenizer back the way generation needs it.
+        state = getattr(self, "_tok_state", None)
+        if state:
+            for attr, value in state.items():
+                if value is not None:
+                    setattr(self.tokenizer, attr, value)
+            print(f"[INFO] Tokenizer restored after training: "
+                  f"model_max_length={self.tokenizer.model_max_length}, "
+                  f"truncation_side={self.tokenizer.truncation_side}")
+            self._tok_state = None
+
         return self.peft_model
