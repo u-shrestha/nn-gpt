@@ -1,0 +1,545 @@
+"""Per-epoch statistics for the NNGPT generate -> evaluate -> fine-tune loop.
+
+For one epoch this collects, straight from the artifacts NNEval leaves in the
+epoch's ``synth_nn`` directory:
+
+* how many models were generated and how many are *valid* (ran to completion and
+  produced an accuracy), plus the valid rate with a Wilson 95% interval;
+* accuracy of the generated models -- mean with a 95% interval, and the maximum;
+* accuracy of the seed models those were derived from, read back from the
+  ``dataframe.df`` pickle each generated model carries. That is the "before
+  modification" number from the LEMUR database, with its own mean and interval,
+  so an epoch can be compared against what it started from.
+
+One row per epoch is appended to ``epoch_tracker.json`` and a plot is refreshed.
+
+The previous implementation lived at the end of ``nn_gen()`` and read whatever
+``cycle_results.json`` happened to contain at that moment. Generation runs
+*before* evaluation, so the file still held the previous epoch's numbers and
+every accuracy was reported one epoch late. Collecting here, after evaluation,
+from this epoch's own directory removes the lag entirely.
+"""
+
+import json
+import math
+import os
+from datetime import datetime
+from pathlib import Path
+
+Z_95 = 1.96
+
+# t critical values at 95% two-sided, indexed by degrees of freedom (n-1).
+# Only used when scipy is unavailable; the normal 1.96 is far too narrow for the
+# handful of valid models a single epoch usually yields.
+_T_95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+         8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160,
+         14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093,
+         20: 2.086, 25: 2.060, 30: 2.042, 40: 2.021, 60: 2.000, 120: 1.980}
+
+
+def t_critical(df, conf=0.95):
+    """Two-sided t critical value for ``df`` degrees of freedom."""
+    if df <= 0:
+        return float('nan')
+    try:
+        from scipy import stats
+        return float(stats.t.ppf(1 - (1 - conf) / 2, df))
+    except Exception:
+        pass
+    if df in _T_95:
+        return _T_95[df]
+    for key in sorted(_T_95):
+        if df <= key:
+            return _T_95[key]
+    return Z_95
+
+
+def wilson_ci(k, n, z=Z_95):
+    """Wilson score interval for a binomial proportion.
+
+    Returns ``(p, lower, upper)``. Preferred over the normal approximation
+    because an epoch evaluates ~10 models and k is often 0 or n, where the
+    normal interval collapses to zero width or runs outside [0, 1].
+    """
+    if n == 0:
+        return 0.0, 0.0, 0.0
+    p = k / n
+    denom = 1 + z ** 2 / n
+    centre = (p + z ** 2 / (2 * n)) / denom
+    # Only the p(1-p) term is divided by n; z^2/(4n^2) is not. The copy in
+    # plot_wilson_ci.py divided the whole bracket by n, which put that term over
+    # n^3 and produced intervals that were both too narrow and misplaced -- at
+    # k=0,n=10 it reported [0.095, 0.183], claiming at least 9.5% of generations
+    # were valid when none were. That function now imports this one.
+    margin = z * math.sqrt(p * (1 - p) / n + z ** 2 / (4 * n ** 2)) / denom
+    return p, max(0.0, centre - margin), min(1.0, centre + margin)
+
+
+def mean_ci(values, conf=0.95):
+    """Mean of ``values`` with a two-sided t interval.
+
+    Returns a dict with n/mean/ci_low/ci_high/std/min/max; every numeric field
+    is None when there is nothing to report, so the JSON stays well formed.
+    """
+    vals = [float(v) for v in values if v is not None]
+    n = len(vals)
+    out = {"n": n, "mean": None, "ci_low": None, "ci_high": None,
+           "std": None, "min": None, "max": None}
+    if n == 0:
+        return out
+    mean = sum(vals) / n
+    out.update(mean=mean, min=min(vals), max=max(vals))
+    if n == 1:
+        # No interval is estimable from a single observation: the sample
+        # standard deviation is undefined and the t distribution has zero
+        # degrees of freedom, so the interval is unbounded. Returning the mean
+        # for both bounds -- as this did -- draws a zero-width band, which
+        # reads as perfect certainty and makes two means look significantly
+        # different when nothing of the sort has been shown. Left as None; the
+        # plot marks these epochs as having no estimable interval.
+        return out
+    var = sum((v - mean) ** 2 for v in vals) / (n - 1)
+    std = math.sqrt(var)
+    half = t_critical(n - 1, conf) * std / math.sqrt(n)
+    out.update(std=std, ci_low=mean - half, ci_high=mean + half)
+    return out
+
+
+def _seed_accuracy(model_dir):
+    """Pre-modification accuracy of the seed model, from its dataframe.df."""
+    df_path = Path(model_dir) / "dataframe.df"
+    if not df_path.is_file():
+        return None, None
+    try:
+        import pandas as pd
+        row = pd.read_pickle(df_path)
+        acc = row.get("accuracy")
+        name = row.get("nn")
+        return (float(acc) if acc is not None else None,
+                str(name) if name is not None else None)
+    except Exception:
+        return None, None
+
+
+def collect_epoch_stats(models_dir, epoch):
+    """Build the statistics record for one epoch from its model directories.
+
+    The baseline is PAIRED: only the seed models whose LLM-modified descendant
+    actually ran and produced an accuracy are included. Averaging the seeds of
+    every attempt, including the ones that failed to compile, would compare the
+    generated mean (computed over valid models only) against a different and
+    larger population, and the difference would partly reflect which seeds
+    happened to fail rather than what the LLM did to them.
+    """
+    from ab.gpt.util.data.CycleResults import collect_cycle_metrics
+
+    models_dir = Path(models_dir)
+    eval_results, model_dirs, successful, failed = collect_cycle_metrics(models_dir, models_dir)
+
+    generated = len(model_dirs)
+    valid = len(successful)
+
+    # A directory with neither eval_info.json nor error.txt counted as neither
+    # valid nor failed, so the three numbers did not add up and a silently
+    # empty generation looked like nothing had gone wrong -- epoch 1 of one run
+    # reported 10 generated, 2 valid, 4 failed. Anything not valid has failed.
+    failed = max(len(failed), generated - valid)
+
+    accuracies, seed_accs, seed_names, deltas = [], [], [], []
+    for r in eval_results:
+        acc = r.get("accuracy")
+        if acc is None:
+            continue
+        accuracies.append(acc)
+        seed_acc, seed_name = _seed_accuracy(r["model_dir"])
+        if seed_acc is None:
+            continue                      # no seed row on disk: cannot pair this one
+        seed_accs.append(seed_acc)
+        deltas.append(acc - seed_acc)
+        if seed_name:
+            seed_names.append(seed_name)
+
+    p, lo, hi = wilson_ci(valid, generated)
+    gen = mean_ci(accuracies)
+    base = mean_ci(seed_accs)
+    # Per-model differences, so the interval accounts for the pairing instead of
+    # treating the two means as independent samples.
+    delta = mean_ci(deltas)
+
+    return {
+        "epoch": epoch,
+        "timestamp": datetime.now().isoformat(),
+        "models_generated": generated,
+        "models_valid": valid,
+        "models_failed": failed,
+        # Wilson interval over the `models_generated` Bernoulli trials of this
+        # epoch -- the rate is one number, but it rests on n attempts.
+        "valid_rate": p,
+        "valid_rate_ci_low": lo,
+        "valid_rate_ci_high": hi,
+        "valid_rate_percent": 100.0 * p,
+        # accuracy of this epoch's valid generated models
+        "accuracy": gen["max"],          # kept: the previous schema's "accuracy" was the best one
+        "accuracy_max": gen["max"],
+        "accuracy_mean": gen["mean"],
+        "accuracy_ci_low": gen["ci_low"],
+        "accuracy_ci_high": gen["ci_high"],
+        "accuracy_std": gen["std"],
+        "accuracy_n": gen["n"],
+        # accuracy the SAME models had before the LLM modified them (LEMUR),
+        # restricted to the valid ones so the two means are comparable
+        "baseline_accuracy_mean": base["mean"],
+        "baseline_accuracy_ci_low": base["ci_low"],
+        "baseline_accuracy_ci_high": base["ci_high"],
+        "baseline_accuracy_max": base["max"],
+        "baseline_accuracy_n": base["n"],
+        "baseline_models": sorted(set(seed_names)),
+        # paired generated-minus-seed difference
+        "paired_n": delta["n"],
+        "mean_improvement": delta["mean"],
+        "improvement_ci_low": delta["ci_low"],
+        "improvement_ci_high": delta["ci_high"],
+    }
+
+
+def append_epoch_stats(tracker_path, stats):
+    """Append (or replace) this epoch's row in the tracker, keeping it sorted."""
+    tracker_path = Path(tracker_path)
+    rows = []
+    if tracker_path.exists():
+        try:
+            with open(tracker_path) as f:
+                loaded = json.load(f)
+            if isinstance(loaded, list):
+                rows = loaded
+        except Exception:
+            rows = []
+    # A re-run of the same epoch replaces its row rather than duplicating it.
+    rows = [r for r in rows if r.get("epoch") != stats["epoch"]]
+    rows.append(stats)
+    rows.sort(key=lambda r: (r.get("epoch") is None, r.get("epoch")))
+    tracker_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(tracker_path, "w") as f:
+        json.dump(rows, f, indent=2)
+    return rows
+
+
+def plot_epoch_stats(rows, out_path):
+    """Three stacked panels: valid rate, mean accuracy vs baseline, max accuracy."""
+    import matplotlib
+    matplotlib.use("Agg")          # cluster nodes have no display
+    import matplotlib.pyplot as plt
+
+    rows = [r for r in rows if r.get("epoch") is not None]
+    if not rows:
+        return None
+    ep = [r["epoch"] for r in rows]
+
+    fig, axes = plt.subplots(3, 1, figsize=(9, 11), sharex=True)
+
+    # 1 -- percentage of correctly generated models, Wilson 95%
+    pct = [100.0 * (r.get("valid_rate") or 0.0) for r in rows]
+    lo = [100.0 * (r.get("valid_rate_ci_low") or 0.0) for r in rows]
+    hi = [100.0 * (r.get("valid_rate_ci_high") or 0.0) for r in rows]
+    axes[0].plot(ep, pct, marker="o", color="#1f77b4", label="valid models")
+    axes[0].fill_between(ep, lo, hi, alpha=0.2, color="#1f77b4", label="Wilson 95% CI")
+    for x, r in zip(ep, rows):
+        axes[0].annotate(f"{r.get('models_valid', 0)}/{r.get('models_generated', 0)}",
+                         (x, 100.0 * (r.get("valid_rate") or 0.0)),
+                         textcoords="offset points", xytext=(0, 7),
+                         ha="center", fontsize=8)
+    axes[0].set_ylabel("correctly generated (%)")
+    axes[0].set_ylim(-5, 105)
+    axes[0].set_title("Valid generation rate per epoch")
+    axes[0].legend(loc="best", fontsize=8, framealpha=0.75)
+    axes[0].grid(alpha=0.3)
+
+    # Grey means "the original networks, before the LLM changed them" on every
+    # panel; green means the networks the LLM produced. Both are measurements
+    # of the same kind, so both are drawn solid and filled -- only the colour
+    # separates them.
+    GENERATED, ORIGINAL = "#2ca02c", "#7f7f7f"
+
+    def _pick(*keys):
+        """Rows where the first key is present, as parallel tuples."""
+        pts = [tuple([r["epoch"]] + [r.get(k) for k in keys])
+               for r in rows if r.get(keys[0]) is not None]
+        return list(zip(*pts)) if pts else None
+
+    # 2 -- mean accuracy with 95% CI. Both series are measurements of the same
+    # kind -- the networks before and after the LLM changed them -- so both get
+    # a solid line and a filled interval, distinguished by colour alone.
+    # Both intervals get the SAME alpha so neither is washed out by the other.
+    # A light grey at high alpha under a green band at low alpha renders as
+    # green, which is why the original interval used to be invisible wherever
+    # the two overlapped -- and they overlap almost everywhere. Equal alpha
+    # plus an opaque boundary line keeps both readable through any overlap.
+    CI_ALPHA = 0.22
+    ORIGINAL_FILL = "#4d4d4d"   # darker than the mean line, so it reads as grey
+    series_spec = (
+        ("original (before modification)", ORIGINAL, ORIGINAL_FILL, CI_ALPHA,
+         ("baseline_accuracy_mean", "baseline_accuracy_ci_low", "baseline_accuracy_ci_high")),
+        ("generated", GENERATED, GENERATED, CI_ALPHA,
+         ("accuracy_mean", "accuracy_ci_low", "accuracy_ci_high")),
+    )
+
+    drawn = {}
+    for label, line_colour, fill_colour, alpha, keys in series_spec:
+        picked = _pick(*keys)
+        if picked is None:
+            continue
+        xs, ms, ls, hs = picked
+        # Bounds are plotted AS COMPUTED. Clamping them to [0, 1] -- as this
+        # did -- turned every wide interval into a band filling the panel with
+        # a flat line along each edge, indistinguishable from an interval that
+        # genuinely spans 0 to 1, so neither series appeared to change from
+        # epoch to epoch. The view is cropped instead (see set_ylim below): a
+        # band running past an edge leaves the frame, and where each boundary
+        # exits stays visible.
+        # An epoch with a single model is the one exception: no degrees of
+        # freedom means no interval is estimable, so it spans the whole
+        # feasible range, saying the epoch pins the mean down no further.
+        lo = [0.0 if l is None else l for l in ls]
+        hi = [1.0 if h is None else h for h in hs]
+        # Put the alpha in the face colour, not in the call: a call-level alpha
+        # is applied to the edge as well and the boundary disappears exactly
+        # where the two bands cross. The edge stays fully opaque.
+        from matplotlib.colors import to_rgba
+        axes[1].fill_between(xs, lo, hi, facecolor=to_rgba(fill_colour, alpha),
+                             edgecolor="none", label=f"{label} 95% CI", zorder=2)
+        for bound in (lo, hi):
+            axes[1].plot(xs, bound, color=line_colour, linewidth=1.1,
+                         linestyle="-", alpha=0.95, zorder=3)
+        drawn[label] = (xs, ms, line_colour)
+
+    # Mean lines last so neither band hides them.
+    for label, *_ in series_spec:
+        if label not in drawn:
+            continue
+        xs, ms, colour = drawn[label]
+        axes[1].plot(xs, ms, marker="o", linestyle="-", color=colour,
+                     label=f"{label} mean", zorder=5)
+    axes[1].set_ylabel("accuracy")
+    # An accuracy cannot leave [0, 1], so the axis does not either. The bounds
+    # themselves are still plotted as computed; only the view is cropped.
+    axes[1].set_ylim(0.0, 1.0)
+    axes[1].set_title("Mean accuracy with 95% CI (generated vs. original networks)")
+    if axes[1].get_legend_handles_labels()[0]:   # nothing to label on an all-failed epoch
+        axes[1].legend(loc="best", fontsize=8, framealpha=0.75)
+    axes[1].grid(alpha=0.3)
+
+    # 3 -- best model per epoch, generated against the best of the originals.
+    # Without the original maximum the generated one has nothing to beat: the
+    # question is whether the LLM ever exceeds the networks it was given.
+    picked = _pick("accuracy_max")
+    if picked is not None:
+        xs, ys = picked
+        axes[2].plot(xs, ys, marker="s", color=GENERATED, label="generated max")
+        running, best = [], float("-inf")
+        for y in ys:
+            best = max(best, y)
+            running.append(best)
+        axes[2].plot(xs, running, linestyle=":", color=GENERATED, alpha=0.7,
+                     label="generated best so far")
+    picked = _pick("baseline_accuracy_max")
+    if picked is not None:
+        xs, ys = picked
+        axes[2].plot(xs, ys, marker="o", linestyle="-", color=ORIGINAL,
+                     label="original max (before modification)")
+    axes[2].set_ylabel("accuracy")
+    axes[2].set_xlabel("epoch")
+    axes[2].set_title("Best model per epoch (generated vs. original networks)")
+    if axes[2].get_legend_handles_labels()[0]:
+        axes[2].legend(loc="best", fontsize=8, framealpha=0.75)
+    axes[2].grid(alpha=0.3)
+
+    if ep:
+        axes[2].set_xticks(sorted(set(ep)))
+    fig.tight_layout()
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
+# Run artifacts produced by the statistics layer. Everything matching these is
+# a record OF A SINGLE RUN, so carrying it into the next one silently mixes two
+# experiments: epoch_tracker.json is keyed by epoch, and a shorter run only
+# overwrites the epochs it reaches, leaving the tail of a longer previous run
+# in the file and on the plot.
+RUN_ARTIFACT_NAMES = ("cycle_results.json", "epoch_tracker.json",
+                      "epoch_statistics.png", "generation_seeds.json")
+RUN_ARTIFACT_GLOBS = ("cycle_results_*.json",)
+
+
+def reset_run_artifacts(base_dir, dry_run=False):
+    """Delete the previous run's statistics files from ``base_dir``.
+
+    Returns the list of paths removed. Never raises: a file that cannot be
+    deleted is reported and the run continues.
+    """
+    base_dir = Path(base_dir)
+    if not base_dir.is_dir():
+        return []
+
+    targets = []
+    for name in RUN_ARTIFACT_NAMES:
+        p = base_dir / name
+        if p.is_file():
+            targets.append(p)
+    for pattern in RUN_ARTIFACT_GLOBS:
+        targets.extend(sorted(p for p in base_dir.glob(pattern) if p.is_file()))
+
+    removed = []
+    for p in dict.fromkeys(targets):          # de-duplicate, keep order
+        if dry_run:
+            removed.append(p)
+            continue
+        try:
+            p.unlink()
+            removed.append(p)
+        except Exception as exc:
+            print(f"[RUN RESET] Could not remove {p}: {exc}")
+
+    if removed:
+        print(f"[RUN RESET] Removed {len(removed)} file(s) from a previous run in {base_dir}:")
+        for p in removed:
+            print(f"[RUN RESET]   {p.name}")
+    else:
+        print(f"[RUN RESET] No previous run artifacts found in {base_dir}")
+    return removed
+
+
+def _cycle_results_from_stats(stats):
+    """Build a cycle_results payload from the collected statistics."""
+    valid = stats.get("models_valid", 0)
+    total = stats.get("models_generated", 0)
+    return {
+        "cycle": stats.get("epoch"),
+        "success": bool(valid),
+        "training": {
+            "data_dir": None,
+            "total_examples": None,
+            "new_examples_added": None,
+            "training_time_minutes": None,
+        },
+        "generation": {
+            "total_generated": total,
+            "successful": valid,
+            "novel": valid,
+        },
+        "evaluation": {
+            "models_trained": valid,
+            "best_accuracy": stats.get("accuracy_max"),
+            "avg_accuracy": stats.get("accuracy_mean"),
+            "success_rate": stats.get("valid_rate"),
+        },
+        "cycle_time_minutes": None,
+        "statistics": stats,
+    }
+
+
+def finalize_epoch_results(base_dir, epoch, stats):
+    """Make sure this epoch's results are on disk under their own name.
+
+    Called as soon as the validation phase for ``epoch`` finishes, so the record
+    is complete before the next fine-tuning cycle starts rather than at some
+    later point that may never arrive. Three cases are covered:
+
+    * NNEval already wrote ``cycle_results_<epoch>.json`` -- the statistics
+      block is merged into it;
+    * only the generic ``cycle_results.json`` exists and it describes this
+      epoch -- it is adopted under the per-epoch name (this is the run that
+      "kept the name cycle_results.json");
+    * nothing was written, because evaluation was skipped or interrupted -- the
+      record is rebuilt from the statistics so the epoch is still represented.
+    """
+    base_dir = Path(base_dir)
+    per_epoch = base_dir / f"cycle_results_{epoch}.json"
+    generic = base_dir / "cycle_results.json"
+
+    payload = None
+    for candidate in (per_epoch, generic):
+        if not candidate.is_file():
+            continue
+        try:
+            with open(candidate) as f:
+                loaded = json.load(f)
+        except Exception:
+            continue
+        # Only adopt a file that really describes this epoch; the generic one
+        # may still hold a previous cycle.
+        if isinstance(loaded, dict) and loaded.get("cycle") in (epoch, None):
+            payload = loaded
+            payload["cycle"] = epoch
+            break
+
+    if payload is None:
+        payload = _cycle_results_from_stats(stats)
+    else:
+        payload["statistics"] = stats
+
+    base_dir.mkdir(parents=True, exist_ok=True)
+    for path in (per_epoch, generic):
+        try:
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2, default=str)
+        except Exception as exc:
+            print(f"[EPOCH STATS] Could not write {path}: {exc}")
+    print(f"[EPOCH STATS] Epoch {epoch} results finalised -> {per_epoch}")
+    return per_epoch
+
+
+def update_epoch_report(models_dir, epoch, base_dir):
+    """Collect, persist and plot this epoch's statistics.
+
+    Never raises: a reporting failure must not abort a training run. Returns the
+    stats dict, or None if collection itself failed.
+    """
+    base_dir = Path(base_dir)
+    try:
+        stats = collect_epoch_stats(models_dir, epoch)
+    except Exception as exc:
+        print(f"[EPOCH STATS] Could not collect statistics for epoch {epoch}: {exc}")
+        return None
+
+    tracker_path = base_dir / "epoch_tracker.json"
+    try:
+        rows = append_epoch_stats(tracker_path, stats)
+    except Exception as exc:
+        print(f"[EPOCH STATS] Could not write {tracker_path}: {exc}")
+        rows = [stats]
+
+    def fmt(v, pct=False):
+        if v is None:
+            return "n/a"
+        return f"{100 * v:.2f}%" if pct else f"{v:.4f}"
+
+    print(
+        f"[EPOCH STATS] epoch {epoch}: "
+        f"valid {stats['models_valid']}/{stats['models_generated']} "
+        f"({fmt(stats['valid_rate'], pct=True)}, "
+        f"95% CI {fmt(stats['valid_rate_ci_low'], pct=True)}"
+        f"-{fmt(stats['valid_rate_ci_high'], pct=True)}) | "
+        f"accuracy mean {fmt(stats['accuracy_mean'])} "
+        f"[{fmt(stats['accuracy_ci_low'])}, {fmt(stats['accuracy_ci_high'])}] "
+        f"max {fmt(stats['accuracy_max'])} | "
+        f"before modification mean {fmt(stats['baseline_accuracy_mean'])} "
+        f"[{fmt(stats['baseline_accuracy_ci_low'])}, {fmt(stats['baseline_accuracy_ci_high'])}] "
+        f"(n={stats['baseline_accuracy_n']})"
+    )
+
+    try:
+        finalize_epoch_results(base_dir, epoch, stats)
+    except Exception as exc:
+        print(f"[EPOCH STATS] Could not finalise epoch results: {exc}")
+
+    try:
+        png = plot_epoch_stats(rows, base_dir / "epoch_statistics.png")
+        if png:
+            print(f"[EPOCH STATS] Plot updated -> {png}")
+    except Exception as exc:
+        print(f"[EPOCH STATS] Plot skipped: {exc}")
+
+    return stats
