@@ -84,7 +84,7 @@ TOP_K = 70
 TOP_P = 0.9
 TEST_METRIC = None  # 'bleu' or other metric for evaluation
 ONNX_RUN = False
-UNSLOTH_OPT = False
+USE_UNSLOTH = False
 TRANS_MODE = False  # only transform fine-tuning
 PROMPT_BATCH = 2
 
@@ -199,7 +199,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          # Pipeline-specific overrides (for backward compatibility with iterative_finetune.py)
          evaluation_strategy=None, eval_steps=None, save_strategy=None, save_steps=None,
          save_total_limit=None, load_best_model_at_end=LOAD_BEST_MODEL_AT_END, metric_for_best_model=None, weight_decay=None,
-         per_device_eval_batch_size=None, onnx_run=ONNX_RUN, unsloth_opt=UNSLOTH_OPT, trans_mode=TRANS_MODE,
+         per_device_eval_batch_size=None, onnx_run=ONNX_RUN, use_unsloth=USE_UNSLOTH, trans_mode=TRANS_MODE,
          prompt_batch=PROMPT_BATCH, enable_merge=ENABLE_MERGE,
          # --- Pipeline Hyperparameters ---
          run_iterative_pipeline=RUN_ITERATIVE_PIPELINE, cycles=CYCLES, models_per_cycle=MODELS_PER_CYCLE,
@@ -293,7 +293,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
         max_new_tokens = MAX_NEW_TOKENS
 
     UNSLOTH_AVAILABLE = False
-    if unsloth_opt:
+    if use_unsloth:
         try:
             import unsloth
             UNSLOTH_AVAILABLE = True
@@ -354,7 +354,7 @@ llm_conf={llm_conf}, test_nn={test_nn}, nn_train_epochs={nn_train_epochs}, peft=
 per_device_train_batch_size={per_device_train_batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}, warmup_steps={warmup_steps},
 logging_steps={logging_steps}, optimizer={optimizer}, max_prompts={max_prompts}, save_llm_output={save_llm_output}, max_new_tokens={max_new_tokens},
 use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={temperature}, top_k={top_k}, top_p={top_p}, onnx_run={onnx_run},
-unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch}, use_agents={use_agents}, use_predictor={use_predictor},
+use_unsloth={use_unsloth}, trans_mode={trans_mode}, prompt_batch={prompt_batch}, use_agents={use_agents}, use_predictor={use_predictor},
 use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={classification_mode}, pin_seeds={pin_seeds}''')
 
     test_prm = {
@@ -543,7 +543,7 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
             prompt_batch=prompt_batch,
             use_agents=use_agents,
             use_predictor=use_predictor,
-            use_unsloth=unsloth_opt,
+            use_unsloth=use_unsloth,
             enable_merge=enable_merge,
             classification_mode=classification_mode,
             use_backbone=use_backbone,
@@ -776,8 +776,8 @@ if __name__ == '__main__':
                         help=f"Transform mode only (default: {TRANS_MODE}).")
     parser.add_argument('--onnx_run', action='store_true',
                         help=f"ONNX format (default: {ONNX_RUN}).")
-    parser.add_argument('--unsloth_opt', action='store_true',
-                        help=f"Use Unsloth optimizations (default: {UNSLOTH_OPT}).")
+    parser.add_argument('--use_unsloth', action='store_true',
+                        help=f"Use Unsloth optimizations (default: {USE_UNSLOTH}).")
     parser.add_argument("--enable_merge", action="store_true", default=ENABLE_MERGE, help="Enable automatic merge decision after fine-tuning.")
     parser.add_argument('--prompt_batch', type=int, default=PROMPT_BATCH,
                         help=f"Prompt batch size (default: {PROMPT_BATCH}).")

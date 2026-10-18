@@ -20,7 +20,7 @@ def main():
         learning_rate=5e-5,
         lora_alpha=64,            # r=32 => scale 2.0 (repo default 32 gives 1.0)
         suppress_thinking=True,
-        unsloth_opt=True,
+        use_unsloth=True,
 )
 
 

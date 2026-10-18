@@ -46,7 +46,7 @@ TOP_K = 70
 TOP_P = 0.9
 TEST_METRIC = None  # 'bleu' or other metric for evaluation
 ONNX_RUN = False
-UNSLOTH_OPT = False
+USE_UNSLOTH = False
 TRANS_MODE = False  # only transform fine-tuning
 PROMPT_BATCH = 2
 CONTEXT_LENGTH = 4096
@@ -120,7 +120,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          # Pipeline-specific overrides (for backward compatibility with iterative_finetune.py)
          evaluation_strategy=None, eval_steps=None, save_strategy=None, save_steps=None,
          save_total_limit=None, load_best_model_at_end=False, metric_for_best_model=None, weight_decay=None,
-         per_device_eval_batch_size=None, onnx_run=ONNX_RUN, unsloth_opt=UNSLOTH_OPT, trans_mode=TRANS_MODE,
+         per_device_eval_batch_size=None, onnx_run=ONNX_RUN, use_unsloth=USE_UNSLOTH, trans_mode=TRANS_MODE,
          prompt_batch=PROMPT_BATCH, enable_merge=False,
          context_length=CONTEXT_LENGTH,
          # --- Pipeline Hyperparameters ---
@@ -152,7 +152,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
     # Unsloth conditional import
     # Unsloth should be imported before transformers and peft
     UNSLOTH_AVAILABLE = False
-    if unsloth_opt:
+    if use_unsloth:
         try:
             import unsloth
             UNSLOTH_AVAILABLE = True
@@ -175,7 +175,7 @@ llm_conf={llm_conf}, test_nn={test_nn}, nn_train_epochs={nn_train_epochs}, peft=
 per_device_train_batch_size={per_device_train_batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}, warmup_steps={warmup_steps},
 logging_steps={logging_steps}, optimizer={optimizer}, max_prompts={max_prompts}, save_llm_output={save_llm_output}, max_new_tokens={max_new_tokens},
 use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={temperature}, top_k={top_k}, top_p={top_p}, onnx_run={onnx_run},
-unsloth_opt={unsloth_opt},  trans_mode={trans_mode},  prompt_batch={prompt_batch}, context_length={context_length}''')
+use_unsloth={use_unsloth},  trans_mode={trans_mode},  prompt_batch={prompt_batch}, context_length={context_length}''')
 
     # Build test_prm for standalone mode (epoch-based evaluation)
     # Pipeline mode will override with step-based evaluation via evaluation_strategy
@@ -479,8 +479,8 @@ if __name__ == '__main__':
                         help=f"Run model generation for transforms only (default: {TRANS_MODE}).")
     parser.add_argument('--onnx_run', action='store_true',
                         help=f"Run model generation step with LLM in ONNX format (default: {ONNX_RUN}).")
-    parser.add_argument('--unsloth_opt', action='store_true',
-                        help=f"Use Unsloth optimizations (default: {UNSLOTH_OPT}).")
+    parser.add_argument('--use_unsloth', action='store_true',
+                        help=f"Use Unsloth optimizations (default: {USE_UNSLOTH}).")
     parser.add_argument("--enable_merge", action="store_true", default=False, help="Enable automatic merge decision after fine-tuning.")
     parser.add_argument('--prompt_batch', type=int, default=PROMPT_BATCH,
                         help=f"Batch size for prompts – Number of prompts processed simultaneously (default: {PROMPT_BATCH}).")

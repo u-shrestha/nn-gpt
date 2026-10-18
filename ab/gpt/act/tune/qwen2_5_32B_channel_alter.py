@@ -20,7 +20,7 @@ def main():
         learning_rate=1e-5,
         lora_alpha=32,
         suppress_thinking=True,
-        unsloth_opt=True,
+        use_unsloth=True,
         prompt_batch=1,
         use_vllm=False
 )

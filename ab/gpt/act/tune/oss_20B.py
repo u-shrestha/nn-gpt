@@ -171,7 +171,7 @@ if __name__ == '__main__':
          warmup_steps=args.warmup_steps,
          weight_decay=args.weight_decay,
          num_cycles=3,
-         unsloth_opt=True,
+         use_unsloth=True,
          load_in_4bit=True,
          context_length=4600,
          )
