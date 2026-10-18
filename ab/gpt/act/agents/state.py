@@ -75,6 +75,8 @@ class AgentState(BaseModel):
     model_loader: Optional[Any] = None
     lora_tuner: Optional[Any] = None
     chat_bot: Optional[Any] = None
+    vllm_engine: Optional[Any] = None
+    chat_bot_hf: Optional[Any] = None
 
     # ---- Optional outputs (predictor / metrics) ----
     accuracy: Optional[float] = None

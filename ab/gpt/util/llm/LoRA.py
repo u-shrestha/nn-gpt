@@ -36,6 +36,63 @@ except ImportError:
             DataCollatorForCompletionOnlyLM = None
 
 
+def _build_lm_collator(tokenizer, completion_only_loss=True, pad_to_multiple_of=8):
+    """Construct DataCollatorForLanguageModeling whatever signature is installed.
+
+    The name ``trl.trainer.sft_trainer.DataCollatorForLanguageModeling`` has
+    meant at least three different classes:
+
+    * TRL <=1.14   ``pad_token_id``, ``completion_only_loss``, ...
+    * newer TRL    ``pad_token_id`` (required), no ``completion_only_loss``
+    * transformers ``tokenizer``, ``mlm``, ...
+
+    Branching on one of those shapes breaks on the others, so nothing is
+    assumed: every keyword the installed class actually declares is filled from
+    a pool of known values, and anything it does not declare is dropped. A
+    required parameter with no known value is reported rather than guessed.
+
+    Where the collator has no ``completion_only_loss``, masking is not lost --
+    SFTTrainer applies it from the prompt/completion columns instead.
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(DataCollatorForLanguageModeling.__init__).parameters
+    except (TypeError, ValueError):
+        params = {}
+
+    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    known = {
+        'tokenizer': tokenizer,
+        'pad_token_id': pad_token_id,
+        'completion_only_loss': completion_only_loss,
+        'mlm': False,
+        'pad_to_multiple_of': pad_to_multiple_of,
+        'return_tensors': 'pt',
+    }
+    accepted = {name: value for name, value in known.items() if name in params}
+
+    missing = [
+        name for name, prm in params.items()
+        if name != 'self'
+        and prm.default is inspect.Parameter.empty
+        and prm.kind not in (inspect.Parameter.VAR_POSITIONAL,
+                             inspect.Parameter.VAR_KEYWORD)
+        and name not in accepted
+    ]
+    if missing:
+        print(f"[LoRA] DataCollatorForLanguageModeling requires {missing}, which "
+              f"this code has no value for. Construction will probably fail; "
+              f"the installed trl/transformers version is not one this was "
+              f"written against.")
+
+    print(f"[LoRA] Collator kwargs in use: {', '.join(sorted(accepted)) or 'none'}"
+          + ("" if 'completion_only_loss' in accepted else
+             " (no completion_only_loss on this version; SFTTrainer masks the "
+             "completion from the prompt/completion columns)"))
+    return DataCollatorForLanguageModeling(**accepted)
+
+
 # When using deepspeed, no Training arguments' initialization after model initialization, if pre-trained model is used
 # Reference: https://huggingface.co/docs/transformers/deepspeed?zero-config=ZeRO-3
 # With the claim: "The TrainingArguments object must be created before calling the model from_pretrained()"
@@ -258,23 +315,12 @@ class LoRA:
             else:
                 if train_on_completions_only and DataCollatorForCompletionOnlyLM is None:
                     print("[WARN] DataCollatorForCompletionOnlyLM not available, using DataCollatorForLanguageModeling with completion_only_loss=True")
-                # TRL's DataCollatorForLanguageModeling uses pad_token_id and completion_only_loss
-                pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
-                collator = DataCollatorForLanguageModeling(
-                    pad_token_id=pad_token_id,
-                    completion_only_loss=train_on_completions_only if train_on_completions_only else True,
-                    pad_to_multiple_of=8,
-                    return_tensors="pt"
+                collator = _build_lm_collator(
+                    self.tokenizer,
+                    completion_only_loss=bool(train_on_completions_only) or True,
                 )
         else:
-            # TRL's DataCollatorForLanguageModeling uses pad_token_id
-            pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
-            collator = DataCollatorForLanguageModeling(
-                pad_token_id=pad_token_id,
-                completion_only_loss=True,
-                pad_to_multiple_of=8,
-                return_tensors="pt"
-            )
+            collator = _build_lm_collator(self.tokenizer, completion_only_loss=True)
 
         # Use SFTTrainer for pre-rendered text or prompt/completion pairs.
         if has_text_field or has_prompt_completion:

@@ -28,7 +28,7 @@ NUM_TRAIN_EPOCHS = 3  # Standalone default
 LR_SCHEDULER = 'cosine'  # Learning rate scheduler
 PER_DEVICE_TRAIN_BATCH_SIZE = 1
 GRADIENT_ACCUMULATION_STEPS = 8  # Increased for better stability
-WARMUP_STEPS = 0.05  # Warmup as ratio of total steps
+WARMUP_STEPS = 5  # Warmup as ratio of total steps
 TEST_NN = 10
 LOGGING_STEPS = 96  # Less frequent logging
 OPTIMIZER = 'paged_adamw_8bit'
@@ -119,7 +119,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          eval_save_to_db=True,
          # Pipeline-specific overrides (for backward compatibility with iterative_finetune.py)
          evaluation_strategy=None, eval_steps=None, save_strategy=None, save_steps=None,
-         save_total_limit=None, load_best_model_at_end=False, metric_for_best_model=None, warmup_steps=None, weight_decay=None,
+         save_total_limit=None, load_best_model_at_end=False, metric_for_best_model=None, weight_decay=None,
          per_device_eval_batch_size=None, onnx_run=ONNX_RUN, unsloth_opt=UNSLOTH_OPT, trans_mode=TRANS_MODE,
          prompt_batch=PROMPT_BATCH, enable_merge=False,
          context_length=CONTEXT_LENGTH,

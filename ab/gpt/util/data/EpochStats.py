@@ -106,19 +106,34 @@ def mean_ci(values, conf=0.95):
 
 
 def _seed_accuracy(model_dir):
-    """Pre-modification accuracy of the seed model, from its dataframe.df."""
+    """Pre-modification accuracy, name and dataset of the seed, from dataframe.df.
+
+    The dataset travels with the name because an accuracy is meaningless without
+    it: 0.66 on cifar-10 and 0.66 on imagenet are not the same result, and a
+    seed list naming only architectures cannot be checked or reproduced. The
+    same row also carries the task and metric the number was measured under.
+    """
     df_path = Path(model_dir) / "dataframe.df"
     if not df_path.is_file():
-        return None, None
+        return None, None, None
     try:
         import pandas as pd
         row = pd.read_pickle(df_path)
         acc = row.get("accuracy")
         name = row.get("nn")
+        dataset = row.get("dataset")
         return (float(acc) if acc is not None else None,
-                str(name) if name is not None else None)
+                str(name) if name is not None else None,
+                str(dataset) if dataset is not None else None)
     except Exception:
-        return None, None
+        return None, None, None
+
+
+def _label(name, dataset):
+    """How a seed model is named in reports: ``architecture (dataset)``."""
+    if not name:
+        return None
+    return f"{name} ({dataset})" if dataset else str(name)
 
 
 def collect_epoch_stats(models_dir, epoch):
@@ -146,18 +161,23 @@ def collect_epoch_stats(models_dir, epoch):
     failed = max(len(failed), generated - valid)
 
     accuracies, seed_accs, seed_names, deltas = [], [], [], []
+    seed_pairs, datasets = [], []
     for r in eval_results:
         acc = r.get("accuracy")
         if acc is None:
             continue
         accuracies.append(acc)
-        seed_acc, seed_name = _seed_accuracy(r["model_dir"])
+        seed_acc, seed_name, seed_dataset = _seed_accuracy(r["model_dir"])
         if seed_acc is None:
             continue                      # no seed row on disk: cannot pair this one
         seed_accs.append(seed_acc)
         deltas.append(acc - seed_acc)
         if seed_name:
             seed_names.append(seed_name)
+            seed_pairs.append({"nn": seed_name, "dataset": seed_dataset,
+                               "baseline_accuracy": seed_acc, "accuracy": acc})
+        if seed_dataset:
+            datasets.append(seed_dataset)
 
     p, lo, hi = wilson_ci(valid, generated)
     gen = mean_ci(accuracies)
@@ -193,7 +213,15 @@ def collect_epoch_stats(models_dir, epoch):
         "baseline_accuracy_ci_high": base["ci_high"],
         "baseline_accuracy_max": base["max"],
         "baseline_accuracy_n": base["n"],
+        # Architecture names only, as before, so anything already reading this
+        # field keeps working...
         "baseline_models": sorted(set(seed_names)),
+        # ...with the dataset each was trained on alongside it. An accuracy
+        # without its dataset cannot be interpreted or reproduced.
+        "baseline_models_with_dataset": sorted(
+            {_label(p["nn"], p["dataset"]) for p in seed_pairs}),
+        "baseline_seeds": sorted(seed_pairs, key=lambda p: (p["nn"], p["dataset"] or "")),
+        "datasets": sorted(set(datasets)),
         # paired generated-minus-seed difference
         "paired_n": delta["n"],
         "mean_improvement": delta["mean"],
@@ -224,6 +252,51 @@ def append_epoch_stats(tracker_path, stats):
     return rows
 
 
+# Confidence bands are context, not a second measurement: the boundary is drawn
+# hairline and faint so it reads as the edge of a band rather than as another
+# series. At the previous 1.1pt / 0.95 alpha the two bounds were as heavy as the
+# mean line itself and the panel showed six lines where it should show two plus
+# two shaded regions.
+CI_EDGE_WIDTH = 0.5
+CI_EDGE_ALPHA = 0.35
+
+
+def _draw_band(ax, xs, lo, hi, line_colour, fill_colour, alpha, label):
+    """Shade a confidence interval and outline it with a hairline boundary.
+
+    ``fill_between`` needs two x positions to have any area, so a run with a
+    single epoch -- the first cycle of every run, and any run of one cycle --
+    drew nothing at all and the interval was invisible exactly when it matters
+    most. One point is therefore rendered as a capped vertical whisker instead:
+    the same colour, the same faint weight, the same meaning, and it appears
+    from the first epoch. From two epochs on the shaded band is drawn as before,
+    so nothing changes about how a normal run looks.
+    """
+    from matplotlib.colors import to_rgba
+
+    if len(xs) == 1:
+        x = xs[0]
+        ax.plot([x, x], [lo[0], hi[0]], color=line_colour,
+                linewidth=1.0, alpha=0.55, solid_capstyle="butt", zorder=3)
+        cap = 0.06
+        for bound in (lo[0], hi[0]):
+            ax.plot([x - cap, x + cap], [bound, bound], color=line_colour,
+                    linewidth=CI_EDGE_WIDTH + 0.3, alpha=0.55, zorder=3)
+        # A proxy artist keeps the legend identical to the multi-epoch case.
+        ax.fill_between([x, x], lo, hi, facecolor=to_rgba(fill_colour, alpha),
+                        edgecolor="none", label=label, zorder=2)
+        return
+
+    # Put the alpha in the face colour, not in the call: a call-level alpha is
+    # applied to the edge as well and the boundary disappears exactly where the
+    # two bands cross.
+    ax.fill_between(xs, lo, hi, facecolor=to_rgba(fill_colour, alpha),
+                    edgecolor="none", label=label, zorder=2)
+    for bound in (lo, hi):
+        ax.plot(xs, bound, color=line_colour, linewidth=CI_EDGE_WIDTH,
+                linestyle="-", alpha=CI_EDGE_ALPHA, zorder=3)
+
+
 def plot_epoch_stats(rows, out_path):
     """Three stacked panels: valid rate, mean accuracy vs baseline, max accuracy."""
     import matplotlib
@@ -237,12 +310,22 @@ def plot_epoch_stats(rows, out_path):
 
     fig, axes = plt.subplots(3, 1, figsize=(9, 11), sharex=True)
 
+    # Which datasets the seed networks were trained on. Accuracies across the
+    # panels are only comparable within a dataset, so the plot says which.
+    seen = []
+    for r in rows:
+        for ds in (r.get("datasets") or []):
+            if ds not in seen:
+                seen.append(ds)
+    if seen:
+        fig.suptitle(f"dataset: {', '.join(seen)}", fontsize=9, y=0.995)
+
     # 1 -- percentage of correctly generated models, Wilson 95%
     pct = [100.0 * (r.get("valid_rate") or 0.0) for r in rows]
     lo = [100.0 * (r.get("valid_rate_ci_low") or 0.0) for r in rows]
     hi = [100.0 * (r.get("valid_rate_ci_high") or 0.0) for r in rows]
-    axes[0].plot(ep, pct, marker="o", color="#1f77b4", label="valid models")
-    axes[0].fill_between(ep, lo, hi, alpha=0.2, color="#1f77b4", label="Wilson 95% CI")
+    axes[0].plot(ep, pct, marker="o", color="#1f77b4", label="valid models", zorder=5)
+    _draw_band(axes[0], ep, lo, hi, "#1f77b4", "#1f77b4", 0.20, "Wilson 95% CI")
     for x, r in zip(ep, rows):
         axes[0].annotate(f"{r.get('models_valid', 0)}/{r.get('models_generated', 0)}",
                          (x, 100.0 * (r.get("valid_rate") or 0.0)),
@@ -301,15 +384,8 @@ def plot_epoch_stats(rows, out_path):
         # feasible range, saying the epoch pins the mean down no further.
         lo = [0.0 if l is None else l for l in ls]
         hi = [1.0 if h is None else h for h in hs]
-        # Put the alpha in the face colour, not in the call: a call-level alpha
-        # is applied to the edge as well and the boundary disappears exactly
-        # where the two bands cross. The edge stays fully opaque.
-        from matplotlib.colors import to_rgba
-        axes[1].fill_between(xs, lo, hi, facecolor=to_rgba(fill_colour, alpha),
-                             edgecolor="none", label=f"{label} 95% CI", zorder=2)
-        for bound in (lo, hi):
-            axes[1].plot(xs, bound, color=line_colour, linewidth=1.1,
-                         linestyle="-", alpha=0.95, zorder=3)
+        _draw_band(axes[1], xs, lo, hi, line_colour, fill_colour, alpha,
+                   f"{label} 95% CI")
         drawn[label] = (xs, ms, line_colour)
 
     # Mean lines last so neither band hides them.
@@ -355,6 +431,11 @@ def plot_epoch_stats(rows, out_path):
 
     if ep:
         axes[2].set_xticks(sorted(set(ep)))
+        if len(set(ep)) == 1:
+            # A single epoch leaves matplotlib to invent an x range; fix it so
+            # the whiskers drawn by _draw_band sit at a sensible width.
+            only = ep[0]
+            axes[2].set_xlim(only - 0.5, only + 0.5)
     fig.tight_layout()
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -371,6 +452,40 @@ def plot_epoch_stats(rows, out_path):
 RUN_ARTIFACT_NAMES = ("cycle_results.json", "epoch_tracker.json",
                       "epoch_statistics.png", "generation_seeds.json")
 RUN_ARTIFACT_GLOBS = ("cycle_results_*.json",)
+
+
+def reset_run_dir(base_dir, dry_run=False):
+    """Delete the whole run directory so a new run starts from nothing.
+
+    The per-file list below is what this used to do, and keeping it correct
+    meant extending RUN_ARTIFACT_NAMES every time the pipeline learned to write
+    something new -- generation_seeds.json was added late, epoch directories
+    were never covered at all and were removed separately inside tune(). Every
+    file under ``out/nngpt`` belongs to one run, so removing the directory is
+    both simpler and complete: statistics, pinned seeds, per-epoch model
+    directories and adapters all go in one step, and nothing from a previous
+    run can be mistaken for this one's.
+
+    Returns the path when it was removed, else None. Never raises.
+    """
+    base_dir = Path(base_dir)
+    if not base_dir.exists():
+        print(f"[RUN RESET] Nothing to remove: {base_dir} does not exist")
+        return None
+    if dry_run:
+        return base_dir
+    import shutil
+    try:
+        shutil.rmtree(base_dir)
+        print(f"[RUN RESET] Removed the previous run directory: {base_dir}")
+    except Exception as exc:
+        print(f"[RUN RESET] Could not remove {base_dir}: {exc}")
+        return None
+    try:
+        base_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        print(f"[RUN RESET] Could not recreate {base_dir}: {exc}")
+    return base_dir
 
 
 def reset_run_artifacts(base_dir, dry_run=False):
@@ -528,7 +643,14 @@ def update_epoch_report(models_dir, epoch, base_dir):
         f"before modification mean {fmt(stats['baseline_accuracy_mean'])} "
         f"[{fmt(stats['baseline_accuracy_ci_low'])}, {fmt(stats['baseline_accuracy_ci_high'])}] "
         f"(n={stats['baseline_accuracy_n']})"
+        + (f" | datasets {', '.join(stats.get('datasets') or [])}"
+           if stats.get("datasets") else "")
     )
+
+    seeds = stats.get("baseline_models_with_dataset") or []
+    if seeds:
+        print(f"[EPOCH STATS] epoch {epoch} seed models (architecture + dataset "
+              f"they were trained on): {', '.join(seeds)}")
 
     try:
         finalize_epoch_results(base_dir, epoch, stats)

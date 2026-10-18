@@ -1,6 +1,7 @@
 import argparse
-from typing import Literal
+import os
 import sys
+from typing import Literal
 
 import torch
 from ab.gpt.util.Const import nngpt_dir, NN_TRAIN_EPOCHS, DEFAULT_DATASET, DEFAULT_NN_PREFIXES
@@ -64,7 +65,7 @@ NUM_TRAIN_EPOCHS = 3  # Standalone default
 LR_SCHEDULER = 'cosine'  # Learning rate scheduler
 PER_DEVICE_TRAIN_BATCH_SIZE = 1
 GRADIENT_ACCUMULATION_STEPS = 8  # Increased for better stability
-WARMUP_STEPS = 0.05  # Warmup as ratio of total steps
+WARMUP_STEPS = 5  # Warmup as ratio of total steps
 TEST_NN = 10
 SFT_MAX_LENGTH = 4096  # Packing/truncation budget for supervised fine-tuning
 LOGGING_STEPS = 96  # Less frequent logging
@@ -96,6 +97,7 @@ USE_PREDICTOR = False
 # epoch_statistics.png before starting, so one run's statistics cannot be read
 # as another's. Ignored when resuming.
 RESET_PREVIOUS_RESULTS = True
+USE_VLLM = True
 from ab.gpt.util.eval.Seed import PIN_SEEDS
 SUPPRESS_THINKING = False
 SKIP_LM_FINETUNE = False
@@ -209,6 +211,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          classification_mode=CLASSIFICATION_MODE, context_length=None, max_input_length=None,
          only_best_accuracy=ONLY_BEST_ACCURACY, load_in_4bit=LOAD_IN_4BIT, sft_max_length=SFT_MAX_LENGTH,
          reset_previous_results=RESET_PREVIOUS_RESULTS, pin_seeds=PIN_SEEDS,
+         use_vllm=USE_VLLM,
          mobile_deployment=MOBILE_DEPLOYMENT, mobile_reval_only=MOBILE_REVAL_ONLY,
          mobile_min_quantized_accuracy=MOBILE_MIN_QUANTIZED_ACCURACY, mobile_max_duration_ms=MOBILE_MAX_DURATION_MS,
          mobile_score_tolerance=MOBILE_SCORE_TOLERANCE, mobile_min_valid_models=MOBILE_MIN_VALID_MODELS,
@@ -218,8 +221,14 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          # --- LLMatic MAP-Elites seed selection ---
          llmatic=LLMATIC, llmatic_crossover_every=LLMATIC_CROSSOVER_EVERY):
 
+    from ab.gpt.util.Logs import start_run_log
+    start_run_log()
+
     if num_cycles is not None:
         cycles = int(num_cycles)
+
+    import os
+    os.environ["NNGPT_VLLM_SLEEP"] = "1" if use_vllm else "0"
 
     persist_llm_conf(llm_conf, enable_merge)
 
@@ -502,8 +511,11 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
 
     if reset_previous_results and not resuming:
         try:
-            from ab.gpt.util.data.EpochStats import reset_run_artifacts
-            reset_run_artifacts(nngpt_dir)
+            from ab.gpt.util.data.EpochStats import reset_run_dir
+            reset_run_dir(nngpt_dir)
+            # run_config.json was written into this directory before the reset,
+            # so it has to be written again now that the directory is new.
+            persist_llm_conf(llm_conf, enable_merge)
         except Exception as exc:
             print(f"[RUN RESET] Skipped: {exc}")
     elif resuming:
@@ -781,10 +793,16 @@ if __name__ == '__main__':
                         help=f'Enable classification-only mode (default: {CLASSIFICATION_MODE}).')
     parser.add_argument('--reset_previous_results', action=argparse.BooleanOptionalAction,
                         default=RESET_PREVIOUS_RESULTS,
-                        help=f'Delete the previous run statistics (cycle_results*.json, '
-                             f'epoch_tracker.json, epoch_statistics.png) before starting '
-                             f'(default: {RESET_PREVIOUS_RESULTS}). Always skipped when '
-                             f'resuming via --peft or --skip_epoches.')
+                        help=f'Delete the whole out/nngpt run directory before starting '
+                             f'(default: {RESET_PREVIOUS_RESULTS}), so no statistics, '
+                             f'pinned seeds, epoch directories or adapters of a previous '
+                             f'run survive into this one. Always skipped when resuming '
+                             f'via --peft or --skip_epoches.')
+    parser.add_argument('--use_vllm', action=argparse.BooleanOptionalAction,
+                        default=USE_VLLM,
+                        help=f'Generate with an in-process vLLM engine in sleep mode '
+                             f'(default: {USE_VLLM}). Use --no-use_vllm for the '
+                             f'HuggingFace generation path.')
     parser.add_argument('--pin_seeds', action=argparse.BooleanOptionalAction,
                         default=PIN_SEEDS,
                         help=f'Draw the generation seeds once and reuse them for '

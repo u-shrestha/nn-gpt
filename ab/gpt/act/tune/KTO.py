@@ -51,7 +51,6 @@ LR_SCHEDULER = "cosine"
 MAX_GRAD_NORM = 1.0
 PER_DEVICE_TRAIN_BATCH_SIZE = 2   # KTO requires actual batch size > 1 for valid KL estimation
 GRADIENT_ACCUMULATION_STEPS = 4
-WARMUP_STEPS = 0.05
 LOGGING_STEPS = 10
 LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 0.01
@@ -257,7 +256,6 @@ def run_kto(
     learning_rate: float = LEARNING_RATE,
     weight_decay: float = WEIGHT_DECAY,
     warmup_steps: Optional[int] = WARMUP_STEPS,
-    warmup_steps: float = WARMUP_STEPS,
     max_grad_norm: float = MAX_GRAD_NORM,
     per_device_train_batch_size: int = PER_DEVICE_TRAIN_BATCH_SIZE,
     per_device_eval_batch_size: Optional[int] = 1,
@@ -555,7 +553,6 @@ def main():
         num_train_epochs=args.num_train_epochs,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
-        warmup_steps=args.warmup_steps,
         warmup_steps=args.warmup_steps,
         max_grad_norm=args.max_grad_norm,
         per_device_train_batch_size=args.per_device_train_batch_size,

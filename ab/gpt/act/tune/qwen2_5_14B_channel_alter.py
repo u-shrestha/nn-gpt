@@ -11,9 +11,9 @@ def main():
         test_nn=16,
         skip_epoches=-1,          # generate at epoch 0 => pre-fine-tuning baseline
         nn_name_prefix='chn',
-        context_length=4 * 1024,
+        context_length=8 * 1024,
         sft_max_length=4 * 1024,  # packing block size; keep <= context_length
-        max_new_tokens=4 * 1024,
+        max_new_tokens=8 * 1024,
         cycles=4,
         num_train_epochs=1,
         max_prompts=512,

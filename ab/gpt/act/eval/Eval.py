@@ -663,6 +663,13 @@ def main(
                 cycle_results_path = base_nngpt_path / "cycle_results.json"
                 save_cycle_results(cycle_results, cycle_results_path)
                 print(f"Per-epoch results saved -> {epoch_results_path}")
+
+                try:
+                    from ab.gpt.util.data.EpochStats import update_epoch_report
+                    update_epoch_report(models_base_dir, current_epoch, base_nngpt_path)
+                except Exception as exc:
+                    print(f"[EPOCH STATS] Could not update the epoch report: {exc}")
+
                 print(
                     f"\n--- Cycle {current_cycle} (Epoch {current_epoch}) results saved to: "
                     f"{cycle_results_path} ---"

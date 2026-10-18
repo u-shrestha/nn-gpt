@@ -317,12 +317,12 @@ class ChatBot:
         if not self.suppress_thinking or not templated:
             return templated
         if templated.rstrip().endswith('<think>'):
-            return templated.rstrip() + '</think>\n\n<hp>'
+            return templated.rstrip() + '</think>'
         # Strip only spaces/tabs, never the newline: the chat template emits
         # "<|im_start|>assistant\n" and a bare rstrip() deleted that newline,
         # producing "<|im_start|>assistant<think>" -- a header shape the model
         # has never seen in training.
-        return templated.rstrip(' \t') + '<think></think>\n\n<hp>'
+        return templated.rstrip(' \t') + '<think></think>'
 
     def _templated_from_messages(self, messages, fallback_text=None):
         """Render a messages list to a prompt string, suppression included."""

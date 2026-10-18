@@ -377,3 +377,148 @@ def test_plot_draws_the_full_range_when_the_interval_is_not_estimable(tmp_path, 
     # no extra legend entry is needed: the band speaks for itself
     assert not any("estimable" in l for l in captured["labels"])
     assert sum("95% CI" in l for l in captured["labels"]) == 2
+
+
+# --- the confidence boundary must read as a band edge, not a second series ---
+
+
+def test_ci_boundary_is_hairline_and_faint_next_to_the_mean_line(tmp_path, monkeypatch):
+    """The CI edge used to be as heavy as the mean, so panel 2 showed six lines.
+
+    It is context, not a measurement: thinner than the mean line and well below
+    full opacity.
+    """
+    plt = pytest.importorskip("matplotlib.pyplot")
+    captured = {}
+    real_close = plt.close
+
+    def _capture(fig=None):
+        if fig is not None and hasattr(fig, "axes"):
+            captured["lines"] = [(round(l.get_linewidth(), 3), l.get_alpha())
+                                 for l in fig.axes[1].lines]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(_plot_rows(), tmp_path / "p.png")
+
+    edges = [(w, a) for w, a in captured["lines"] if a is not None]
+    means = [(w, a) for w, a in captured["lines"] if a is None]
+    assert edges, "no CI boundary was drawn"
+    assert means, "no mean line was drawn"
+    mean_width = max(w for w, _ in means)
+    for width, alpha in edges:
+        assert width < mean_width, "boundary is as heavy as the mean line"
+        assert width <= ES.CI_EDGE_WIDTH
+        assert alpha <= ES.CI_EDGE_ALPHA, "boundary is too opaque to read as an edge"
+
+
+def test_a_single_epoch_still_shows_its_interval(tmp_path, monkeypatch):
+    """fill_between needs two x positions, so one cycle drew no interval at all.
+
+    The first cycle of every run is exactly that case. One epoch is rendered as
+    a capped whisker instead, with the band kept for two epochs or more.
+    """
+    plt = pytest.importorskip("matplotlib.pyplot")
+    captured = {}
+    real_close = plt.close
+
+    def _capture(fig=None):
+        if fig is not None and hasattr(fig, "axes"):
+            captured["segments"] = [
+                (l.get_xdata(), l.get_ydata()) for l in fig.axes[1].lines
+                if l.get_alpha() is not None
+            ]
+            captured["labels"] = fig.axes[1].get_legend_handles_labels()[1]
+            captured["wilson"] = [
+                l for l in fig.axes[0].lines if l.get_alpha() is not None
+            ]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(_plot_rows()[:1], tmp_path / "p.png")
+
+    verticals = [(xs, ys) for xs, ys in captured["segments"]
+                 if len(ys) == 2 and ys[0] != ys[1]]
+    assert verticals, "a single epoch drew no visible interval"
+    for _xs, ys in verticals:
+        assert ys[1] > ys[0], "the whisker has no extent"
+    # The legend is unchanged, so the panel reads the same as a longer run's.
+    assert sum("95% CI" in l for l in captured["labels"]) == 2
+    assert captured["wilson"], "the valid-rate panel lost its interval too"
+
+
+def test_many_epochs_keep_the_shaded_band(tmp_path, monkeypatch):
+    plt = pytest.importorskip("matplotlib.pyplot")
+    captured = {}
+    real_close = plt.close
+
+    def _capture(fig=None):
+        if fig is not None and hasattr(fig, "axes"):
+            captured["areas"] = [
+                max(v[1] for v in p.vertices) - min(v[1] for v in p.vertices)
+                for coll in fig.axes[1].collections for p in coll.get_paths()
+            ]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(_plot_rows(), tmp_path / "p.png")
+    assert captured["areas"] and max(captured["areas"]) > 0
+
+
+# --- seed models are reported together with the dataset they were trained on --
+
+
+def test_seed_models_carry_their_dataset(tmp_path):
+    pd = pytest.importorskip("pandas")
+    d = tmp_path / "A0" / "synth_nn"
+    d.mkdir(parents=True)
+    for i, ds in enumerate(("cifar-10", "cifar-100")):
+        md = d / f"B{i}"
+        md.mkdir()
+        pd.Series({"nn": f"seed-{i}", "accuracy": 0.3, "dataset": ds}).to_pickle(
+            md / "dataframe.df")
+        (md / "eval_info.json").write_text(
+            json.dumps({"eval_results": {"accuracy": 0.4}}))
+
+    stats = ES.collect_epoch_stats(d, 0)
+
+    assert stats["baseline_models"] == ["seed-0", "seed-1"]
+    assert stats["baseline_models_with_dataset"] == [
+        "seed-0 (cifar-10)", "seed-1 (cifar-100)"]
+    assert stats["datasets"] == ["cifar-10", "cifar-100"]
+    assert {s["nn"]: s["dataset"] for s in stats["baseline_seeds"]} == {
+        "seed-0": "cifar-10", "seed-1": "cifar-100"}
+
+
+def test_a_seed_without_a_dataset_is_still_named(tmp_path):
+    pd = pytest.importorskip("pandas")
+    d = tmp_path / "A0" / "synth_nn"
+    (d / "B0").mkdir(parents=True)
+    pd.Series({"nn": "seed-0", "accuracy": 0.3}).to_pickle(d / "B0" / "dataframe.df")
+    (d / "B0" / "eval_info.json").write_text(
+        json.dumps({"eval_results": {"accuracy": 0.4}}))
+
+    stats = ES.collect_epoch_stats(d, 0)
+    assert stats["baseline_models_with_dataset"] == ["seed-0"]
+    assert stats["datasets"] == []
+
+
+# --- a new run starts from an empty directory -------------------------------
+
+
+def test_reset_run_dir_removes_the_whole_previous_run(tmp_path):
+    run = tmp_path / "nngpt"
+    run.mkdir()
+    _seed_run_dir(run, epochs=range(3))
+    (run / "generation_seeds.json").write_text('{"nn": ["a"]}')
+    (run / "llm" / "epoch" / "A0" / "synth_nn" / "B0").mkdir(parents=True)
+    (run / "llm" / "epoch" / "A0" / "synth_nn" / "B0" / "new_nn.py").write_text("x = 1")
+
+    assert ES.reset_run_dir(run) == run
+
+    assert run.is_dir()                      # recreated, so the run can write
+    assert list(run.iterdir()) == []         # and nothing of the old run is left
+
+
+def test_reset_run_dir_is_a_noop_on_a_missing_directory(tmp_path):
+    assert ES.reset_run_dir(tmp_path / "absent") is None

@@ -86,7 +86,6 @@ def train_model(
         // (batch_size * gradient_accumulation_steps),
     )
     total_steps = MAX_STEPS if MAX_STEPS > 0 else steps_per_epoch * num_epochs
-    warmup_steps = max(1, int(total_steps * warmup_steps))
     if MAX_STEPS > 0 and warmup_steps >= MAX_STEPS:
         warmup_steps = max(1, MAX_STEPS // 10)
 
