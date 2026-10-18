@@ -1,6 +1,10 @@
 import argparse
-from typing import Literal
+import os
 import sys
+from typing import Literal
+
+from ab.gpt.util.Caches import setup_caches
+setup_caches()
 
 import torch
 from ab.gpt.util.Const import nngpt_dir, NN_TRAIN_EPOCHS, DEFAULT_DATASET, DEFAULT_NN_PREFIXES
@@ -13,8 +17,18 @@ from ab.gpt.util.Const import conf_llm_dir
 RUN_META = out_dir / 'nngpt' / 'run_config.json'
 
 
-def persist_llm_conf(llm_conf, enable_merge=False):
-    """Save run configuration including llm_conf, base_model_name, and enable_merge."""
+def persist_llm_conf(llm_conf, enable_merge=False, params=None,
+                     nn_gen_conf=None, nn_gen_conf_id=None):
+    """Save run configuration including llm_conf, base_model_name, and enable_merge.
+
+    ``params`` carries the fine-tuning settings so the plot can state which model
+    and which hyper-parameters produced it. Statistics without the configuration
+    that produced them cannot be compared between runs.
+
+    ``nn_gen_conf`` names the generation prompt config, which is where the task
+    and the dataset are recorded. They are copied in under the keys the dataset
+    itself uses, so the figure can be matched against the database.
+    """
 
     RUN_META.parent.mkdir(parents=True, exist_ok=True)
 
@@ -37,6 +51,21 @@ def persist_llm_conf(llm_conf, enable_merge=False):
     }
     if base_model_name:
         run_config["base_model_name"] = base_model_name
+    if params:
+        run_config["training"] = {k: v for k, v in params.items() if v is not None}
+    if nn_gen_conf:
+        try:
+            from ab.gpt.util.Const import conf_test_dir
+            with open(conf_test_dir / nn_gen_conf) as f:
+                gen_cfg = json.load(f)
+            key = nn_gen_conf_id if isinstance(nn_gen_conf_id, str) else None
+            entry = gen_cfg.get(key) if key else next(iter(gen_cfg.values()), None)
+            if isinstance(entry, dict):
+                for field in ("task", "dataset"):
+                    if entry.get(field):
+                        run_config[field] = entry[field]
+        except Exception as e:
+            print(f"Failed to read task/dataset from {nn_gen_conf}: {e}")
 
     with open(RUN_META, "w") as f:
         json.dump(run_config, f, indent=2)
@@ -64,7 +93,7 @@ NUM_TRAIN_EPOCHS = 3  # Standalone default
 LR_SCHEDULER = 'cosine'  # Learning rate scheduler
 PER_DEVICE_TRAIN_BATCH_SIZE = 1
 GRADIENT_ACCUMULATION_STEPS = 8  # Increased for better stability
-WARMUP_RATIO = 0.05  # Warmup as ratio of total steps
+WARMUP_STEPS = 5  # Warmup as ratio of total steps
 TEST_NN = 10
 SFT_MAX_LENGTH = 4096  # Packing/truncation budget for supervised fine-tuning
 LOGGING_STEPS = 96  # Less frequent logging
@@ -83,7 +112,7 @@ TOP_K = 70
 TOP_P = 0.9
 TEST_METRIC = None  # 'bleu' or other metric for evaluation
 ONNX_RUN = False
-UNSLOTH_OPT = False
+USE_UNSLOTH = False
 TRANS_MODE = False  # only transform fine-tuning
 PROMPT_BATCH = 2
 
@@ -96,6 +125,8 @@ USE_PREDICTOR = False
 # epoch_statistics.png before starting, so one run's statistics cannot be read
 # as another's. Ignored when resuming.
 RESET_PREVIOUS_RESULTS = True
+USE_VLLM = True
+from ab.gpt.util.eval.Seed import PIN_SEEDS
 SUPPRESS_THINKING = False
 SKIP_LM_FINETUNE = False
 USE_BACKBONE = False
@@ -187,7 +218,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          tune_layers=TUNE_LAYERS, r=R, lora_alpha=LORA_ALPHA, lora_dropout=LORA_DROPOUT, target_modules=TARGET_MODULES,
          task_type=TASK_TYPE, bias=BIAS, learning_rate=LEARNING_RATE, llm_tune_conf=LLM_TUNE_CONF, nn_gen_conf=None, nn_gen_conf_id=NN_GEN_CONF_ID,
          llm_conf=LLM_CONF, test_nn=TEST_NN, peft=PEFT, skip_epoches=SKIP_EPOCHES, per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
-         gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS, warmup_ratio=WARMUP_RATIO, logging_steps=LOGGING_STEPS, optimizer=OPTIMIZER,
+         gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS, warmup_steps=WARMUP_STEPS, logging_steps=LOGGING_STEPS, optimizer=OPTIMIZER,
          report_to=None, logging_dir=None,
          max_prompts=MAX_PROMPTS, save_llm_output=SAVE_LLM_OUTPUT, max_new_tokens=None, use_deepspeed=USE_DEEPSPEED, nn_name_prefix=NN_NAME_PREFIX,
          nn_train_epochs=NN_TRAIN_EPOCHS, temperature=TEMPERATURE, top_k=TOP_K, top_p=TOP_P, data_dir=None,
@@ -195,8 +226,8 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          suppress_thinking=SUPPRESS_THINKING, budget_tokens=None, skip_lm_finetune=SKIP_LM_FINETUNE,
          # Pipeline-specific overrides (for backward compatibility with iterative_finetune.py)
          evaluation_strategy=None, eval_steps=None, save_strategy=None, save_steps=None,
-         save_total_limit=None, load_best_model_at_end=LOAD_BEST_MODEL_AT_END, metric_for_best_model=None, warmup_steps=None, weight_decay=None,
-         per_device_eval_batch_size=None, onnx_run=ONNX_RUN, unsloth_opt=UNSLOTH_OPT, trans_mode=TRANS_MODE,
+         save_total_limit=None, load_best_model_at_end=LOAD_BEST_MODEL_AT_END, metric_for_best_model=None, weight_decay=None,
+         per_device_eval_batch_size=None, onnx_run=ONNX_RUN, use_unsloth=USE_UNSLOTH, trans_mode=TRANS_MODE,
          prompt_batch=PROMPT_BATCH, enable_merge=ENABLE_MERGE,
          # --- Pipeline Hyperparameters ---
          run_iterative_pipeline=RUN_ITERATIVE_PIPELINE, cycles=CYCLES, models_per_cycle=MODELS_PER_CYCLE,
@@ -207,7 +238,8 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          use_agents=USE_AGENTS, use_predictor=USE_PREDICTOR, use_backbone=USE_BACKBONE,
          classification_mode=CLASSIFICATION_MODE, context_length=None, max_input_length=None,
          only_best_accuracy=ONLY_BEST_ACCURACY, load_in_4bit=LOAD_IN_4BIT, sft_max_length=SFT_MAX_LENGTH,
-         reset_previous_results=RESET_PREVIOUS_RESULTS,
+         reset_previous_results=RESET_PREVIOUS_RESULTS, pin_seeds=PIN_SEEDS,
+         use_vllm=USE_VLLM,
          mobile_deployment=MOBILE_DEPLOYMENT, mobile_reval_only=MOBILE_REVAL_ONLY,
          mobile_min_quantized_accuracy=MOBILE_MIN_QUANTIZED_ACCURACY, mobile_max_duration_ms=MOBILE_MAX_DURATION_MS,
          mobile_score_tolerance=MOBILE_SCORE_TOLERANCE, mobile_min_valid_models=MOBILE_MIN_VALID_MODELS,
@@ -217,10 +249,39 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          # --- LLMatic MAP-Elites seed selection ---
          llmatic=LLMATIC, llmatic_crossover_every=LLMATIC_CROSSOVER_EVERY):
 
+    from ab.gpt.util.Logs import start_run_log
+    start_run_log()
+
     if num_cycles is not None:
         cycles = int(num_cycles)
 
-    persist_llm_conf(llm_conf, enable_merge)
+    import os
+    os.environ["NNGPT_VLLM_SLEEP"] = "1" if use_vllm else "0"
+
+    run_params = {
+        'learning_rate': learning_rate,
+        'lr_scheduler': lr_scheduler,
+        'num_train_epochs': num_train_epochs,
+        'cycles': cycles,
+        'max_prompts': max_prompts,
+        'lora_r': r,
+        'lora_alpha': lora_alpha,
+        'lora_dropout': lora_dropout,
+        'optimizer': optimizer,
+        'warmup_steps': warmup_steps,
+        'per_device_train_batch_size': per_device_train_batch_size,
+        'gradient_accumulation_steps': gradient_accumulation_steps,
+        'context_length': context_length,
+        'sft_max_length': sft_max_length,
+        'max_new_tokens': max_new_tokens,
+        'test_nn': test_nn,
+        'load_in_4bit': load_in_4bit,
+        'unsloth': use_unsloth,
+        'vllm_sleep': use_vllm,
+    }
+    persist_llm_conf(llm_conf, enable_merge, params=run_params,
+                     nn_gen_conf=nn_gen_conf or NN_GEN_CONF,
+                     nn_gen_conf_id=nn_gen_conf_id)
 
     if run_iterative_pipeline:
         print("--- Initiating Iterative Fine-Tuning Pipeline ---")
@@ -283,7 +344,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
         max_new_tokens = MAX_NEW_TOKENS
 
     UNSLOTH_AVAILABLE = False
-    if unsloth_opt:
+    if use_unsloth:
         try:
             import unsloth
             UNSLOTH_AVAILABLE = True
@@ -341,11 +402,11 @@ num_train_epochs={num_train_epochs}, lr_scheduler={lr_scheduler}, max_grad_norm=
 r={r}, lora_alpha={lora_alpha}, lora_dropout={lora_dropout}, target_modules={target_modules}, task_type={task_type}, bias={bias},
 learning_rate={learning_rate}, llm_tune_conf={llm_tune_conf}, nn_gen_conf={nn_gen_conf}, nn_gen_conf_id={nn_gen_conf_id},
 llm_conf={llm_conf}, test_nn={test_nn}, nn_train_epochs={nn_train_epochs}, peft={peft}, skip_epoches={skip_epoches},
-per_device_train_batch_size={per_device_train_batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}, warmup_ratio={warmup_ratio},
+per_device_train_batch_size={per_device_train_batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}, warmup_steps={warmup_steps},
 logging_steps={logging_steps}, optimizer={optimizer}, max_prompts={max_prompts}, save_llm_output={save_llm_output}, max_new_tokens={max_new_tokens},
 use_deepspeed={use_deepspeed}, nn_name_prefix={nn_name_prefix}, temperature={temperature}, top_k={top_k}, top_p={top_p}, onnx_run={onnx_run},
-unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch}, use_agents={use_agents}, use_predictor={use_predictor},
-use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={classification_mode}''')
+use_unsloth={use_unsloth}, trans_mode={trans_mode}, prompt_batch={prompt_batch}, use_agents={use_agents}, use_predictor={use_predictor},
+use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={classification_mode}, pin_seeds={pin_seeds}''')
 
     test_prm = {
         'metric_for_best_model': test_metric,
@@ -388,11 +449,11 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
         if logging_dir_path:
             training_kwargs['logging_dir'] = logging_dir_path
 
-        # Add warmup - pipeline may pass warmup_steps (override) or use warmup_ratio
+        # Add warmup - pipeline may pass warmup_steps (override) or use warmup_steps
         if warmup_steps is not None:
             training_kwargs['warmup_steps'] = warmup_steps
         else:
-            training_kwargs['warmup_ratio'] = warmup_ratio
+            training_kwargs['warmup_steps'] = warmup_steps
 
         # Add weight_decay if provided by pipeline
         if weight_decay is not None:
@@ -422,7 +483,7 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
             'report_to': report_to_list,
             'per_device_train_batch_size': per_device_train_batch_size,
             'gradient_accumulation_steps': gradient_accumulation_steps,
-            'warmup_ratio': warmup_ratio,
+            'warmup_steps': warmup_steps,
             'learning_rate': learning_rate,
             'logging_steps': logging_steps,
             'output_dir': nngpt_dir / 'outputs',
@@ -468,6 +529,53 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
     except Exception as e:
         print(f"[WARN] peft_config validation warning: {e}")
 
+    # Clear the previous run's statistics before anything writes new ones.
+    # This used to be a keyword argument to tune(), but this module dispatches
+    # to several tune() implementations (Tune, Tune_Onnx, Tune_prun) that do
+    # not share a signature, so passing it raised
+    #   TypeError: tune() got an unexpected keyword argument
+    # for any of them that had not been updated. Doing it at the call site
+    # keeps every backend working and needs no signature change.
+    import os
+    resuming = bool(peft or (skip_epoches or 0) > 0
+                    or os.environ.get("NNGPT_TRAIN_RESUME_TRAINER_CHECKPOINT"))
+    # Seed pinning is configured here for the same reason: nn_gen() reads it,
+    # but tune() cannot carry a new keyword without breaking the Tune_Onnx and
+    # Tune_prun backends, which do not share its signature. An environment
+    # variable reaches nn_gen() through every backend and through the worker
+    # processes it spawns.
+    try:
+        from ab.gpt.util.eval.Seed import set_pinning, reset_pinned_seeds
+        set_pinning(pin_seeds)
+        if pin_seeds:
+            # A new run draws its own seeds; resuming keeps the pinned set so
+            # the epochs before and after the break stay comparable.
+            if not resuming:
+                reset_pinned_seeds()
+            print("[SEEDS] Generation seeds are pinned for this run"
+                  + ("" if not resuming else " (resuming: keeping the existing set)"))
+        else:
+            print("[SEEDS] Generation seeds are redrawn every epoch "
+                  "(--no-pin_seeds): epochs are not directly comparable")
+    except Exception as exc:
+        print(f"[SEEDS] Could not configure seed pinning: {exc}")
+
+    if reset_previous_results and not resuming:
+        try:
+            from ab.gpt.util.data.EpochStats import reset_run_dir
+            reset_run_dir(nngpt_dir)
+            # run_config.json was written into this directory before the reset
+            persist_llm_conf(llm_conf, enable_merge, params=run_params,
+                             nn_gen_conf=nn_gen_conf or NN_GEN_CONF,
+                             nn_gen_conf_id=nn_gen_conf_id)
+        except Exception as exc:
+            print(f"[RUN RESET] Skipped: {exc}")
+    elif resuming:
+        print("[RUN RESET] Resuming an existing run: previous statistics kept "
+              "(--peft, --skip_epoches or a trainer checkpoint is set)")
+    else:
+        print("[RUN RESET] Disabled: previous statistics kept")
+
     try:
         tune(
             test_nn, nn_train_epochs, skip_epoches, peft,
@@ -487,7 +595,7 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
             prompt_batch=prompt_batch,
             use_agents=use_agents,
             use_predictor=use_predictor,
-            use_unsloth=unsloth_opt,
+            use_unsloth=use_unsloth,
             enable_merge=enable_merge,
             classification_mode=classification_mode,
             use_backbone=use_backbone,
@@ -500,7 +608,6 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
             load_in_4bit=load_in_4bit,
             data_dir=data_dir,
             epoch_root=epoch_root,
-            reset_previous_results=reset_previous_results,
             llmatic=({"crossover_every": llmatic_crossover_every} if llmatic else None),
             dataset=dataset,
             nn_prefixes=nn_prefixes,
@@ -545,7 +652,7 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
 
     # Show warmup based on what was actually used
     if evaluation_strategy is not None:
-        warmup_display = f"warmup_steps={warmup_steps}" if warmup_steps is not None else f"warmup_ratio={warmup_ratio}"
+        warmup_display = f"warmup_steps={warmup_steps}" if warmup_steps is not None else f"warmup_steps={warmup_steps}"
         wd_display = f", wd={weight_decay}" if weight_decay is not None else ""
         print(
             f"✓ Training (PIPELINE): {warmup_display}, lr={learning_rate}{wd_display}, batch={per_device_train_batch_size}×{gradient_accumulation_steps}={per_device_train_batch_size * gradient_accumulation_steps}")
@@ -556,7 +663,7 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
     else:
         # Standalone mode
         print(
-            f"✓ Training (STANDALONE): epochs={num_train_epochs}, scheduler={lr_scheduler}, warmup_ratio={warmup_ratio}, lr={learning_rate}, batch={per_device_train_batch_size}×{gradient_accumulation_steps}={per_device_train_batch_size * gradient_accumulation_steps}")
+            f"✓ Training (STANDALONE): epochs={num_train_epochs}, scheduler={lr_scheduler}, warmup_steps={warmup_steps}, lr={learning_rate}, batch={per_device_train_batch_size}×{gradient_accumulation_steps}={per_device_train_batch_size * gradient_accumulation_steps}")
         if test_metric:
             print(f"✓ Test metric: {test_metric} (epoch-based evaluation)")
 
@@ -667,8 +774,8 @@ if __name__ == '__main__':
                         help=f'Per device train batch size (default: {PER_DEVICE_TRAIN_BATCH_SIZE}).')
     parser.add_argument('--gradient_accumulation_steps', type=int, default=GRADIENT_ACCUMULATION_STEPS,
                         help=f'Gradient accumulation steps (default: {GRADIENT_ACCUMULATION_STEPS}).')
-    parser.add_argument('--warmup_ratio', type=float, default=WARMUP_RATIO,
-                        help=f'Warmup ratio (default: {WARMUP_RATIO}).')
+    parser.add_argument('--warmup_steps', type=float, default=WARMUP_STEPS,
+                        help=f'Warmup ratio (default: {WARMUP_STEPS}).')
     parser.add_argument('--logging_steps', type=int, default=LOGGING_STEPS,
                         help=f'Logging steps (default: {LOGGING_STEPS}).')
     parser.add_argument('--report_to', type=str, default=None,
@@ -721,8 +828,8 @@ if __name__ == '__main__':
                         help=f"Transform mode only (default: {TRANS_MODE}).")
     parser.add_argument('--onnx_run', action='store_true',
                         help=f"ONNX format (default: {ONNX_RUN}).")
-    parser.add_argument('--unsloth_opt', action='store_true',
-                        help=f"Use Unsloth optimizations (default: {UNSLOTH_OPT}).")
+    parser.add_argument('--use_unsloth', action='store_true',
+                        help=f"Use Unsloth optimizations (default: {USE_UNSLOTH}).")
     parser.add_argument("--enable_merge", action="store_true", default=ENABLE_MERGE, help="Enable automatic merge decision after fine-tuning.")
     parser.add_argument('--prompt_batch', type=int, default=PROMPT_BATCH,
                         help=f"Prompt batch size (default: {PROMPT_BATCH}).")
@@ -738,10 +845,23 @@ if __name__ == '__main__':
                         help=f'Enable classification-only mode (default: {CLASSIFICATION_MODE}).')
     parser.add_argument('--reset_previous_results', action=argparse.BooleanOptionalAction,
                         default=RESET_PREVIOUS_RESULTS,
-                        help=f'Delete the previous run statistics (cycle_results*.json, '
-                             f'epoch_tracker.json, epoch_statistics.png) before starting '
-                             f'(default: {RESET_PREVIOUS_RESULTS}). Always skipped when '
-                             f'resuming via --peft or --skip_epoches.')
+                        help=f'Delete the whole out/nngpt run directory before starting '
+                             f'(default: {RESET_PREVIOUS_RESULTS}), so no statistics, '
+                             f'pinned seeds, epoch directories or adapters of a previous '
+                             f'run survive into this one. Always skipped when resuming '
+                             f'via --peft or --skip_epoches.')
+    parser.add_argument('--use_vllm', action=argparse.BooleanOptionalAction,
+                        default=USE_VLLM,
+                        help=f'Generate with an in-process vLLM engine in sleep mode '
+                             f'(default: {USE_VLLM}). Use --no-use_vllm for the '
+                             f'HuggingFace generation path.')
+    parser.add_argument('--pin_seeds', action=argparse.BooleanOptionalAction,
+                        default=PIN_SEEDS,
+                        help=f'Draw the generation seeds once and reuse them for '
+                             f'the whole run (default: {PIN_SEEDS}). The LEMUR pool '
+                             f'grows as evaluated candidates are written back, so '
+                             f'redrawing every epoch makes the epochs incomparable. '
+                             f'Use --no-pin_seeds for the previous behaviour.')
     parser.add_argument('--sft_max_length', type=int, default=SFT_MAX_LENGTH,
                         help=f'Packing/truncation budget for supervised fine-tuning '
                              f'(default: {SFT_MAX_LENGTH}). Keep <= --context_length.')
