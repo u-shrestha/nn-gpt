@@ -488,6 +488,22 @@ CI_EDGE_ALPHA = 0.35
 #: interval reads the same way on both panels.
 CI_ALPHA = 0.22
 
+#: Marker size and stacking order of the two accuracy series, in the order the
+#: series are listed (original first, then generated), for the mean and for the
+#: best model.
+#:
+#: The generated networks are the result the figure is about, so they carry the
+#: larger marker; the networks they were derived from carry the smaller one and
+#: are stacked ON TOP of it. Both values are accuracies on one axis and can land
+#: within a marker width of each other -- which is precisely what a cycle that
+#: changed nothing produces, the case most worth seeing -- and at equal size the
+#: marker drawn second covered the first outright, so one series simply vanished
+#: while its legend entry stayed. Sized and stacked this way, a coincidence
+#: reads as a small grey marker centred on a larger coloured one.
+MEAN_MARKER = ((5.5, 6), (9.0, 5))
+BEST_MARKER = ((5.0, 7), (8.0, 6))
+MARKER_EDGE = dict(markeredgecolor="white", markeredgewidth=0.7)
+
 
 def _draw_band(ax, xs, lo, hi, line_colour, fill_colour, alpha, label):
     """Shade a confidence interval and outline it with a hairline boundary.
@@ -641,13 +657,18 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
                    f"{label} 95% CI")
         drawn[label] = (xs, ms, line_colour)
 
-    # Mean lines last so neither band hides them.
-    for label, *_ in series_spec:
+    # Mean lines last so neither band hides them. Size and stacking come from
+    # MEAN_MARKER: the series are plotted in their listed order so the legend
+    # keeps reading original-then-generated, and which one ends up on top is
+    # settled by zorder rather than by call order.
+    for i, (label, *_) in enumerate(series_spec):
         if label not in drawn:
             continue
         xs, ms, colour = drawn[label]
-        axes[1].plot(xs, ms, marker="o", linestyle="-", linewidth=1.6, color=colour,
-                     label=f"{label} mean", zorder=5)
+        size, z = MEAN_MARKER[min(i, len(MEAN_MARKER) - 1)]
+        axes[1].plot(xs, ms, marker="o", markersize=size, **MARKER_EDGE,
+                     linestyle="-", linewidth=1.6, color=colour,
+                     label=f"{label} mean", zorder=z)
 
     # Best model per epoch, formerly its own panel. Same quantity, same scale as
     # the mean, so it belongs on the same axes: the question "does the best
@@ -667,14 +688,17 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
     picked = _pick("baseline_accuracy_max")
     if picked is not None:
         xs, ys = picked
-        axes[1].plot(xs, ys, marker="s", markersize=5, linestyle="--", linewidth=1.1,
-                     color=ORIGINAL, alpha=0.9, zorder=6,
+        axes[1].plot(xs, ys, marker="s", markersize=BEST_MARKER[0][0], **MARKER_EDGE,
+                     linestyle="--", linewidth=1.1,
+                     color=ORIGINAL, alpha=0.9, zorder=BEST_MARKER[0][1],
                      label="original best")
     picked = _pick("accuracy_max")
     if picked is not None:
         xs, ys = picked
-        axes[1].plot(xs, ys, marker="s", markersize=5, linestyle="--", linewidth=1.3,
-                     color=BEST, alpha=0.95, zorder=6, label="generated best")
+        axes[1].plot(xs, ys, marker="s", markersize=BEST_MARKER[1][0], **MARKER_EDGE,
+                     linestyle="--", linewidth=1.3,
+                     color=BEST, alpha=0.95, zorder=BEST_MARKER[1][1],
+                     label="generated best")
         running, best = [], float("-inf")
         for y in ys:
             best = max(best, y)
@@ -761,6 +785,8 @@ def reset_run_dir(base_dir, dry_run=False):
     import shutil
     from ab.gpt.util.data.LemurSubmission import archive_submission
     archive_submission(base_dir)
+    from ab.gpt.util.data.RunArchive import archive_run_results
+    archive_run_results(base_dir)
     try:
         shutil.rmtree(base_dir)
         print(f"[RUN RESET] Removed the previous run directory: {base_dir}")

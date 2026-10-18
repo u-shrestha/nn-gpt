@@ -76,6 +76,15 @@ def _restore_alloc_conf(saved):
         os.environ[var] = value
 
 
+#: Destroy the engine when an epoch's generation is done, instead of parking it
+#: with sleep(). A parked engine keeps the CUDA context, the compiled graphs and
+#: the pool reserved through gpu_memory_utilization, which is most of the card --
+#: memory the evaluator needs to train the networks that were just generated.
+#: The cost is one engine build per epoch; set NNGPT_VLLM_TEARDOWN=0 to trade
+#: that memory back for the faster wake-up.
+TEARDOWN_BETWEEN_EPOCHS = _env_flag("NNGPT_VLLM_TEARDOWN", True)
+
+
 def sleep_mode_enabled():
     return _env_flag("NNGPT_VLLM_SLEEP", True)
 
@@ -271,13 +280,52 @@ class VLLMSleepEngine:
         print(f"[vLLM] Adapter v{self._adapter_version} <- {path}", flush=True)
 
     def shutdown(self):
+        """Destroy the engine outright and give the whole card back.
+
+        sleep() keeps the process able to generate again in milliseconds, but
+        the engine still owns its CUDA context, its compiled graphs and the
+        pool it reserved through gpu_memory_utilization -- most of the card.
+        Evaluating the generated networks needs that memory, so between epochs
+        the engine is destroyed rather than parked, and rebuilt when the next
+        epoch generates. Never raises: a failure to tear down must not take
+        the run with it.
+        """
+        before, total = _free_gpu()
+        llm, self.llm = getattr(self, "llm", None), None
+        engine = getattr(llm, "llm_engine", None)
+        for owner in (getattr(engine, "engine_core", None), engine, llm):
+            if owner is None:
+                continue
+            for name in ("shutdown", "close"):
+                fn = getattr(owner, name, None)
+                if callable(fn):
+                    try:
+                        fn()
+                    except Exception:
+                        pass
+        del llm, engine
+        # The next build initialises the model-parallel group again; leaving
+        # the old one registered makes that build fail outright, so a torn-down
+        # engine that was not unregistered here can never be replaced.
         try:
-            del self.llm
+            from vllm.distributed.parallel_state import (
+                destroy_distributed_environment, destroy_model_parallel)
+            destroy_model_parallel()
+            destroy_distributed_environment()
         except Exception:
             pass
+        self._asleep = False
         gc.collect()
         if torch.cuda.is_available():
+            try:
+                torch.cuda.synchronize()
+            except Exception:
+                pass
             torch.cuda.empty_cache()
+        after, _ = _free_gpu()
+        print(f"[vLLM] Engine destroyed; {after / GIB:.1f} GiB of "
+              f"{total / GIB:.1f} GiB free "
+              f"(+{(after - before) / GIB:.1f} GiB released).", flush=True)
 
     def _lora_request(self):
         if self._adapter_path is None:
@@ -427,8 +475,19 @@ class VLLMGeneration:
         self.engine.wake_up(adapter_path)
 
     def release(self, trainer_model):
+        """Called once generation for the epoch is finished.
+
+        The evaluator trains every generated network on the same GPU, so the
+        engine is destroyed here and rebuilt by the next prepare(). Set
+        NNGPT_VLLM_TEARDOWN=0 to park it with sleep() instead, which wakes
+        faster but leaves the reserved pool in place for the whole evaluation.
+        """
         if self.engine is not None:
-            self.engine.sleep(level=1)
+            if TEARDOWN_BETWEEN_EPOCHS:
+                self.engine.shutdown()
+                self.engine = None
+            else:
+                self.engine.sleep(level=1)
         if self._parked_device is not None:
             unpark_trainer(trainer_model, self._parked_device)
             self._parked_device = None
@@ -443,14 +502,29 @@ class VLLMGeneration:
             self.engine = None
 
     def token_length(self, prompt_text):
+        """Prompt length in tokens, with or without a live engine.
+
+        Between epochs the engine is torn down, but the prompt-fitting pass
+        still has to measure prompts. Measuring needs the tokenizer only, so
+        it is done here rather than delegated to an engine that may be gone --
+        returning None instead would make every prompt look unmeasurable and
+        the epoch would generate nothing.
+        """
         if self.engine is not None:
             return self.engine.token_length(prompt_text)
         target = self.fallback
-        if target is None:
-            return None
-        rendered = target._templated_from_messages(
-            target._build_messages(prompt_text))
-        return len(self.tokenizer(rendered, add_special_tokens=False)["input_ids"])
+        if target is not None:
+            rendered = target._templated_from_messages(
+                target._build_messages(prompt_text))
+            return len(self.tokenizer(rendered, add_special_tokens=False)["input_ids"])
+        messages = self._build_messages(prompt_text)
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            return len(self.tokenizer.apply_chat_template(
+                messages, tokenize=True, add_generation_prompt=True))
+        body = "\n".join(f"{m['role'].capitalize()}: {m['content']}"
+                          for m in messages)
+        return len(self.tokenizer(f"{body}\nAssistant:",
+                                  add_special_tokens=False)["input_ids"])
 
     def output_budget(self, in_len, max_new_tokens):
         if self.engine is not None:

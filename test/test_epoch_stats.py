@@ -665,3 +665,52 @@ def test_brand_sits_in_the_top_right_corner(tmp_path, monkeypatch):
     (x, y), ha, va = marks[0]
     assert x > 0.9 and y > 0.9, f"mark at {(x, y)}, not the top-right corner"
     assert ha == "right" and va == "top"
+
+
+@pytest.mark.parametrize("pair, suffix", [
+    (("accuracy_mean", "baseline_accuracy_mean"), "mean"),
+    (("accuracy_max", "baseline_accuracy_max"), "best"),
+])
+def test_both_series_stay_visible_where_their_values_coincide(
+        pair, suffix, tmp_path, monkeypatch):
+    """Equal values must not render as a single marker.
+
+    Both series are accuracies on one axis, so they can land within a marker
+    width of each other -- which is what a cycle that changed nothing produces,
+    the case most worth seeing. At equal size the marker drawn second covered
+    the first outright and one series vanished while its legend entry stayed.
+    The generated value takes the larger marker and the original is stacked on
+    top of it, so a coincidence reads as a small marker centred on a large one.
+    """
+    plt = pytest.importorskip("matplotlib.pyplot")
+    generated_key, original_key = pair
+    captured = {}
+    real_close = plt.close
+
+    def _capture(fig=None):
+        if fig is not None and hasattr(fig, "axes"):
+            captured["drawn"] = {
+                l.get_label(): (l.get_markersize(), l.get_zorder(),
+                                tuple(l.get_ydata()))
+                for l in fig.axes[1].lines if l.get_label().endswith(suffix)}
+        return real_close(fig)
+
+    rows = _plot_rows()[:1]
+    rows[0][original_key] = rows[0][generated_key]
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(rows, tmp_path / "p.png")
+
+    drawn = captured["drawn"]
+    original = next(v for k, v in drawn.items() if k.startswith("original"))
+    generated = next(v for k, v in drawn.items() if k.startswith("generated"))
+    assert original[2] == generated[2], "the fixture no longer makes them coincide"
+    assert generated[0] > original[0], "the generated marker is not the larger one"
+    assert original[1] > generated[1], \
+        "the smaller marker is stacked underneath, so the larger one hides it"
+
+
+def test_the_legend_still_reads_original_before_generated():
+    """Stacking is settled by zorder, so the listed order is free to stay."""
+    assert ES.MEAN_MARKER[0][0] < ES.MEAN_MARKER[1][0]
+    assert ES.BEST_MARKER[0][0] < ES.BEST_MARKER[1][0]
