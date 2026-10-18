@@ -291,12 +291,14 @@ def test_plot_series_cover_generated_and_original_on_both_panels(tmp_path, monke
     assert any(l == "original best" for l in accuracy)
 
 
-def test_plot_clips_an_out_of_range_interval_to_valid_accuracies(tmp_path, monkeypatch):
-    """A t-interval on n=2 can run past 0 and 1; an accuracy cannot.
+def test_plot_draws_intervals_as_computed_and_frames_on_measured_values(tmp_path, monkeypatch):
+    """Bounds are drawn as computed; the VIEW is framed on the measured values.
 
-    The row below carries [-0.04, 1.11]; the shaded band must stay inside
-    [0, 1]. Checked on the drawn vertices rather than the axis limits, which
-    also include matplotlib's margins.
+    A t-interval on n=2 can run past 0 and 1. Clamping it to [0, 1] turned every
+    wide interval into a band filling the panel, so no series appeared to move
+    between epochs. The band is therefore drawn where it was computed and simply
+    leaves the frame, while the axis is framed on the means and best values that
+    were actually observed -- which is what a reader is comparing.
     """
     plt = pytest.importorskip("matplotlib.pyplot")
     captured = {}
@@ -309,17 +311,26 @@ def test_plot_clips_an_out_of_range_interval_to_valid_accuracies(tmp_path, monke
                 for path in coll.get_paths():
                     ys.extend(v[1] for v in path.vertices)
             captured["ys"] = ys
+            captured["ylim"] = fig.axes[1].get_ylim()
         return real_close(fig)
 
     monkeypatch.setattr(plt, "close", _capture)
-    ES.plot_epoch_stats(_plot_rows(), tmp_path / "p.png")
+    rows = _plot_rows()
+    ES.plot_epoch_stats(rows, tmp_path / "p.png")
 
     ys = captured["ys"]
     assert ys, "no shaded interval was drawn"
-    assert min(ys) >= 0.0, f"band reaches {min(ys)}, below a possible accuracy"
-    assert max(ys) <= 1.0, f"band reaches {max(ys)}, above a possible accuracy"
+    assert min(ys) == pytest.approx(-0.04), "lower bound was altered, not drawn as computed"
+
+    lo, hi = captured["ylim"]
+    measured = [v for r in rows
+                for v in (r.get("accuracy_mean"), r.get("baseline_accuracy_mean"),
+                          r.get("accuracy_max"), r.get("baseline_accuracy_max"))
+                if v is not None]
+    assert lo > min(ys), "the view was framed on the interval, not the measurements"
+    assert lo <= min(measured) and hi >= max(measured), "a measured value fell outside the view"
     # and the stored record keeps the exact, unclipped bounds
-    assert _plot_rows()[1]["baseline_accuracy_ci_low"] == -0.04
+    assert rows[1]["baseline_accuracy_ci_low"] == -0.04
 
 
 # --- a single observation supports no interval ---------------------------
@@ -527,3 +538,130 @@ def test_reset_run_dir_removes_the_whole_previous_run(tmp_path):
 
 def test_reset_run_dir_is_a_noop_on_a_missing_directory(tmp_path):
     assert ES.reset_run_dir(tmp_path / "absent") is None
+
+
+# --- the caption: what was run, stated once ------------------------------
+
+_FULL_TRAINING = {
+    "learning_rate": 1e-05, "lr_scheduler": "cosine", "warmup_steps": 5,
+    "num_train_epochs": 1, "cycles": 4, "optimizer": "paged_adamw_8bit",
+    "lora_r": 32, "lora_alpha": 32, "lora_dropout": 0.05,
+    "per_device_train_batch_size": 1, "gradient_accumulation_steps": 8,
+    "max_prompts": 512, "sft_max_length": 4096, "context_length": 8192,
+    "max_new_tokens": 8192, "test_nn": 16, "load_in_4bit": True,
+    "unsloth": True, "vllm_sleep": True,
+}
+
+
+def test_param_block_states_every_hyper_parameter_on_one_line():
+    """All of them, once -- a setting left out cannot be recovered by a reader."""
+    lines = ES._param_block(_FULL_TRAINING)
+    assert len(lines) == 1, f"configuration spread over {len(lines)} lines"
+    text = lines[0]
+    for key, value in _FULL_TRAINING.items():
+        if key in ES.PARAM_SKIP or isinstance(value, bool):
+            continue
+        assert f"{ES.PARAM_LABEL.get(key, key)}={ES._fmt_value(value)}" in text, key
+    assert len(text) <= ES.PARAM_MAX_CHARS
+
+
+def test_param_block_omits_what_the_figure_already_shows():
+    """cycles is the x axis and test_nn is every label's denominator."""
+    text = " ".join(ES._param_block(_FULL_TRAINING))
+    for key in ("cycles", "test_nn", "unsloth", "vllm_sleep"):
+        assert ES.PARAM_LABEL.get(key, key) not in text, f"{key} is still shown"
+
+
+def test_a_flag_is_named_when_set_and_absent_when_not():
+    assert "4bit" in " ".join(ES._param_block(_FULL_TRAINING))
+    off = dict(_FULL_TRAINING, load_in_4bit=False)
+    assert "4bit" not in " ".join(ES._param_block(off))
+
+
+def test_named_values_are_collected_after_the_numbers():
+    """Numbers are compared against their neighbours; a name breaks the run."""
+    cells = ES._param_block(_FULL_TRAINING)[0].split()
+    named = [i for i, c in enumerate(cells)
+             if not ES._is_numeric(c.split("=", 1)[-1])]
+    assert named, "no named setting in the fixture"
+    assert named == list(range(min(named), len(cells))), \
+        f"a named setting sits among the numbers: {cells}"
+
+
+def test_param_block_keeps_an_unrecognised_setting():
+    """A setting added to run_config.json later still reaches the figure."""
+    assert "rope_scaling=yarn" in " ".join(
+        ES._param_block(dict(_FULL_TRAINING, rope_scaling="yarn")))
+
+
+def test_param_block_wraps_rather_than_truncating():
+    lines = ES._param_block(_FULL_TRAINING, max_chars=40)
+    assert len(lines) == 2
+    assert "opt=paged_adamw_8bit" in " ".join(lines)
+
+
+def test_study_sentence_uses_the_names_the_dataset_records():
+    """Verbatim, so the figure can be matched against the database."""
+    assert ES._study_sentence({"task": "img-classification", "dataset": "cifar-10"}, []) == (
+        "Automated generation of neural network architectures "
+        "for img-classification on cifar-10")
+
+
+def test_study_sentence_takes_the_dataset_from_the_rows_when_absent():
+    sentence = ES._study_sentence({"task": "img-classification"},
+                                  [{"datasets": ["cifar-10"]}, {"datasets": ["cifar-10"]}])
+    assert sentence.endswith("for img-classification on cifar-10")
+
+
+def test_study_sentence_survives_a_task_it_has_never_seen():
+    sentence = ES._study_sentence({"task": "depth-estimation", "dataset": "nyu-v2"}, [])
+    assert "depth-estimation" in sentence and "nyu-v2" in sentence
+
+
+def test_study_sentence_without_a_configuration_still_reads_as_a_sentence():
+    assert ES._study_sentence({}, []) == \
+        "Automated generation of neural network architectures"
+
+
+def test_legend_corners_are_square(tmp_path, monkeypatch):
+    plt = pytest.importorskip("matplotlib.pyplot")
+    captured = {}
+    real_close = plt.close
+
+    def _capture(fig=None):
+        if fig is not None and hasattr(fig, "axes"):
+            captured["rounded"] = [
+                ax.get_legend().legendPatch.get_boxstyle().__class__.__name__
+                for ax in fig.axes if ax.get_legend() is not None]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(_plot_rows(), tmp_path / "p.png")
+    assert captured["rounded"], "no legend was drawn"
+    assert all(name == "Square" for name in captured["rounded"]), captured["rounded"]
+
+
+def test_brand_sits_in_the_top_right_corner(tmp_path, monkeypatch):
+    """Top-right, so a crop that removes it also removes the run's identity.
+
+    The title and the configuration occupy the same band; the mark cannot be
+    cropped away without taking part of them with it.
+    """
+    plt = pytest.importorskip("matplotlib.pyplot")
+    captured = {}
+    real_close = plt.close
+
+    def _capture(fig=None):
+        if fig is not None and hasattr(fig, "texts"):
+            captured["marks"] = [(t.get_position(), t.get_ha(), t.get_va())
+                                 for t in fig.texts if t.get_text() == ES.BRAND_TEXT]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(_plot_rows(), tmp_path / "p.png")
+
+    marks = captured.get("marks")
+    assert marks and len(marks) == 1, "the project mark was not drawn exactly once"
+    (x, y), ha, va = marks[0]
+    assert x > 0.9 and y > 0.9, f"mark at {(x, y)}, not the top-right corner"
+    assert ha == "right" and va == "top"

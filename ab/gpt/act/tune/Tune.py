@@ -17,12 +17,17 @@ from ab.gpt.util.Const import conf_llm_dir
 RUN_META = out_dir / 'nngpt' / 'run_config.json'
 
 
-def persist_llm_conf(llm_conf, enable_merge=False, params=None):
+def persist_llm_conf(llm_conf, enable_merge=False, params=None,
+                     nn_gen_conf=None, nn_gen_conf_id=None):
     """Save run configuration including llm_conf, base_model_name, and enable_merge.
 
     ``params`` carries the fine-tuning settings so the plot can state which model
     and which hyper-parameters produced it. Statistics without the configuration
     that produced them cannot be compared between runs.
+
+    ``nn_gen_conf`` names the generation prompt config, which is where the task
+    and the dataset are recorded. They are copied in under the keys the dataset
+    itself uses, so the figure can be matched against the database.
     """
 
     RUN_META.parent.mkdir(parents=True, exist_ok=True)
@@ -48,6 +53,19 @@ def persist_llm_conf(llm_conf, enable_merge=False, params=None):
         run_config["base_model_name"] = base_model_name
     if params:
         run_config["training"] = {k: v for k, v in params.items() if v is not None}
+    if nn_gen_conf:
+        try:
+            from ab.gpt.util.Const import conf_test_dir
+            with open(conf_test_dir / nn_gen_conf) as f:
+                gen_cfg = json.load(f)
+            key = nn_gen_conf_id if isinstance(nn_gen_conf_id, str) else None
+            entry = gen_cfg.get(key) if key else next(iter(gen_cfg.values()), None)
+            if isinstance(entry, dict):
+                for field in ("task", "dataset"):
+                    if entry.get(field):
+                        run_config[field] = entry[field]
+        except Exception as e:
+            print(f"Failed to read task/dataset from {nn_gen_conf}: {e}")
 
     with open(RUN_META, "w") as f:
         json.dump(run_config, f, indent=2)
@@ -240,7 +258,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
     import os
     os.environ["NNGPT_VLLM_SLEEP"] = "1" if use_vllm else "0"
 
-    persist_llm_conf(llm_conf, enable_merge, params={
+    run_params = {
         'learning_rate': learning_rate,
         'lr_scheduler': lr_scheduler,
         'num_train_epochs': num_train_epochs,
@@ -260,7 +278,10 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
         'load_in_4bit': load_in_4bit,
         'unsloth': use_unsloth,
         'vllm_sleep': use_vllm,
-    })
+    }
+    persist_llm_conf(llm_conf, enable_merge, params=run_params,
+                     nn_gen_conf=nn_gen_conf or NN_GEN_CONF,
+                     nn_gen_conf_id=nn_gen_conf_id)
 
     if run_iterative_pipeline:
         print("--- Initiating Iterative Fine-Tuning Pipeline ---")
@@ -543,9 +564,10 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
         try:
             from ab.gpt.util.data.EpochStats import reset_run_dir
             reset_run_dir(nngpt_dir)
-            # run_config.json was written into this directory before the reset,
-            # so it has to be written again now that the directory is new.
-            persist_llm_conf(llm_conf, enable_merge)
+            # run_config.json was written into this directory before the reset
+            persist_llm_conf(llm_conf, enable_merge, params=run_params,
+                             nn_gen_conf=nn_gen_conf or NN_GEN_CONF,
+                             nn_gen_conf_id=nn_gen_conf_id)
         except Exception as exc:
             print(f"[RUN RESET] Skipped: {exc}")
     elif resuming:

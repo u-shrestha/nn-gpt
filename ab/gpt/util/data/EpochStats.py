@@ -262,72 +262,203 @@ def _run_config(base_dir):
         return {}
 
 
-def _fmt_lr(value):
+#: Display order for the fine-tuning settings. Anything in run_config.json that
+#: is not listed is appended, so a newly recorded setting still appears.
+PARAM_ORDER = (
+    "learning_rate", "lr_scheduler", "warmup_steps", "num_train_epochs", "cycles",
+    "optimizer", "lora_r", "lora_alpha", "lora_dropout",
+    "per_device_train_batch_size", "gradient_accumulation_steps",
+    "max_prompts", "sft_max_length", "context_length", "max_new_tokens",
+    "test_nn", "load_in_4bit", "unsloth", "vllm_sleep",
+)
+
+#: Short labels so the whole configuration fits on one line; the settings
+#: themselves are unabridged.
+PARAM_LABEL = {
+    "learning_rate": "lr",
+    "lr_scheduler": "sched",
+    "warmup_steps": "warmup",
+    "warmup_ratio": "warmup",
+    "num_train_epochs": "ep/cyc",
+    "optimizer": "opt",
+    "lora_r": "r",
+    "lora_alpha": "alpha",
+    "lora_dropout": "dropout",
+    "per_device_train_batch_size": "batch",
+    "gradient_accumulation_steps": "accum",
+    "max_prompts": "prompts",
+    "context_length": "ctx",
+    "max_new_tokens": "new_tok",
+    "sft_max_length": "sft_len",
+    "load_in_4bit": "4bit",
+}
+
+#: Recorded settings that are not hyper-parameters of the fine-tuning, or that
+#: the figure already states. ``cycles`` is the length of the x axis and
+#: ``test_nn`` is the denominator of every label on the upper panel, so naming
+#: them again in the caption only costs line width. The runtime switches say
+#: nothing about the optimisation that produced these curves.
+PARAM_SKIP = ("cycles", "test_nn", "unsloth", "vllm_sleep")
+
+#: Settings whose value is a plain on/off. Shown by name when enabled and left
+#: out entirely when not: "4bit=no" is the default state and reads as a
+#: parameter that was chosen, which it was not.
+PARAM_FLAGS = ("load_in_4bit",)
+
+PARAM_MAX_CHARS = 170
+
+#: Clearance between the caption and the first panel's title. Enough to
+#: separate them, not enough to read as a break in the figure.
+HEADER_GAP = 0.006
+
+
+def _fmt_value(value):
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _is_numeric(value):
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
     try:
-        return f"{float(value):g}"
+        float(str(value))
+        return True
     except (TypeError, ValueError):
-        return str(value)
+        return False
+
+
+def _param_block(training, max_chars=PARAM_MAX_CHARS):
+    """The fine-tuning hyper-parameters, on one line.
+
+    Settings with a numeric value come first, in the order of PARAM_ORDER, and
+    the named ones -- the schedule, the optimiser, the quantisation -- are
+    collected at the end. A number is read by comparing it with its neighbours,
+    which only works while the numbers sit together; a name interrupting the
+    run forces the eye to re-anchor on every value after it.
+    """
+    if not training:
+        return []
+    keys = [k for k in PARAM_ORDER if k in training and k not in PARAM_SKIP]
+    keys += [k for k in training if k not in PARAM_ORDER and k not in PARAM_SKIP]
+
+    numeric, named = [], []
+    for k in keys:
+        value = training[k]
+        label = PARAM_LABEL.get(k, k)
+        if k in PARAM_FLAGS or isinstance(value, bool):
+            if value:
+                named.append(label)
+            continue
+        cell = f"{label}={_fmt_value(value)}"
+        (numeric if _is_numeric(value) else named).append(cell)
+
+    cells = numeric + named
+    if not cells:
+        return []
+    line = " ".join(cells)
+    if len(line) <= max_chars:
+        return [line]
+    half = -(-len(cells) // 2)
+    return [" ".join(cells[:half]), " ".join(cells[half:])]
+
+
+def _dataset_phrase(names):
+    """The dataset identifiers exactly as the dataset records them.
+
+    The caption has to be matched against the database by whoever reads it, so
+    the keys are carried through unchanged rather than prettified: a figure
+    naming "CIFAR-10" cannot be looked up, one naming "cifar-10" can.
+    """
+    seen = []
+    for n in names:
+        n = str(n).strip()
+        if n and n not in seen:
+            seen.append(n)
+    if not seen:
+        return ""
+    if len(seen) == 1:
+        return seen[0]
+    return ", ".join(seen[:-1]) + " and " + seen[-1]
+
+
+def _study_sentence(config, rows):
+    """One-sentence statement of what the figure reports.
+
+    A reader meeting the figure in a paper or a report needs the object of study
+    before the axes mean anything: which problem the architectures are generated
+    for, and on which data they are measured.
+    """
+    task = str(config.get("task") or "").strip()
+    datasets = config.get("dataset")
+    datasets = [datasets] if isinstance(datasets, str) else list(datasets or [])
+    if not datasets:
+        for r in rows:
+            datasets.extend(r.get("datasets") or [])
+    data = _dataset_phrase(datasets)
+
+    subject = "Automated generation of neural network architectures"
+    if task and data:
+        return f"{subject} for {task} on {data}"
+    if task:
+        return f"{subject} for {task}"
+    if data:
+        return f"{subject} evaluated on {data}"
+    return subject
 
 
 def _run_caption(config, rows):
-    """Two lines naming the fine-tuned model and the settings behind the numbers.
+    """Model name, the statement of the study, and the fine-tuning configuration.
 
-    A plot of accuracies is not interpretable without them: the same pipeline at a
-    different learning rate, rank or prompt count produces a different curve, and
-    nothing else on the figure records which one this is.
+    A plot of accuracies is not interpretable without the configuration: the
+    same pipeline at a different learning rate, rank or prompt count produces a
+    different curve, and nothing else on the figure records which one this is.
+    Every setting recorded in run_config.json is shown rather than a chosen few,
+    so two runs can be told apart by looking at them.
     """
     model = config.get("base_model_name") or config.get("llm_conf") or ""
     model = str(model).rstrip("/").split("/")[-1].replace(".json", "")
-    t = config.get("training") or {}
+    return (model, _study_sentence(config, rows),
+            _param_block(config.get("training") or {}))
 
-    bits = []
-    if t.get("lora_r") or t.get("lora_alpha"):
-        bits.append(f"LoRA r={t.get('lora_r', '?')} alpha={t.get('lora_alpha', '?')}"
-                    + (f" drop={t['lora_dropout']}" if t.get("lora_dropout") is not None else ""))
-    if t.get("learning_rate"):
-        bits.append(f"lr={_fmt_lr(t['learning_rate'])}"
-                    + (f" {t['lr_scheduler']}" if t.get("lr_scheduler") else ""))
-    if t.get("num_train_epochs") or t.get("max_prompts"):
-        bits.append(f"{t.get('num_train_epochs', '?')} epoch x "
-                    f"{t.get('max_prompts', '?')} prompts")
-    if t.get("optimizer"):
-        bits.append(str(t["optimizer"]))
-    if t.get("context_length"):
-        bits.append(f"ctx {t['context_length']}"
-                    + (f" / gen {t['max_new_tokens']}" if t.get("max_new_tokens") else ""))
-    if t.get("load_in_4bit"):
-        bits.append("4-bit")
 
-    import textwrap
-    head = " | ".join([b for b in [model] + bits if b])
-    # A single line runs off both edges of the figure once the settings are
-    # spelled out; wrap it rather than shrink it to illegibility.
-    head = "\n".join(textwrap.wrap(head, width=108, break_long_words=False)) if head else ""
+#: Project mark set in the top-right corner, on the band occupied by the title
+#: and the configuration. Letterspaced and in a light grey so it reads as a
+#: quiet imprint rather than a watermark over the data, and placed where it
+#: cannot be cropped away without also removing the run's identification.
+BRAND_TEXT = "N N G P T"
+BRAND_COLOR = "#a9b0b8"
+BRAND_ACCENT = "#2ca02c"
 
-    seen = []
-    for r in rows:
-        for ds in (r.get("datasets") or []):
-            if ds not in seen:
-                seen.append(ds)
-    tail = []
-    if seen:
-        tail.append(f"dataset: {', '.join(seen)}")
-    if t.get("test_nn"):
-        tail.append(f"{t['test_nn']} generations/epoch")
-    valid = sum(r.get("models_valid") or 0 for r in rows)
-    total = sum(r.get("models_generated") or 0 for r in rows)
-    if total:
-        tail.append(f"{valid}/{total} valid over {len(rows)} epoch(s)")
-    return head, "   ".join(tail)
+
+def _draw_brand(fig, text=BRAND_TEXT):
+    """Quiet project imprint, top-right, clear of the axes."""
+    if not text:
+        return
+    from matplotlib.patches import Rectangle
+    right, top = 0.9885, 0.9955
+    fig.text(right, top, text, ha="right", va="top",
+             fontsize=7.5, fontweight="bold", color=BRAND_COLOR,
+             family="sans-serif", zorder=0)
+    rule = 0.047
+    fig.patches.append(Rectangle(
+        (right - rule, top - 0.0135), rule, 0.0016,
+        transform=fig.transFigure, facecolor=BRAND_ACCENT,
+        edgecolor="none", alpha=0.55, zorder=0))
 
 
 def _value_limits(values, lo_bound=0.0, hi_bound=1.0, headroom=0.18):
     """View limits framed on the MEASURED VALUES, with room for point labels.
 
     Framing on confidence bounds instead compresses every line into the middle
-    of the panel: a 95% interval over four models can be several times wider
-    than any value actually observed. The intervals are still drawn as computed
-    -- they simply leave the frame, and where each one exits stays visible.
+    of the panel: a 95% interval over a handful of models can be several times
+    wider than any value actually observed. The intervals are still drawn as
+    computed -- they simply leave the frame, and where each one exits stays
+    visible.
 
     ``headroom`` is extra padding at the top only, so a label sitting above the
     highest point is never clipped by the spine.
@@ -416,12 +547,25 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
 
     # Which model and which fine-tuning settings produced these numbers, and on
     # which dataset. Without them the curves cannot be compared between runs.
-    head, tail = _run_caption(_run_config(base_dir) if base_dir else {}, rows)
+    head, tail, params = _run_caption(_run_config(base_dir) if base_dir else {}, rows)
+    y = 0.995
     if head:
-        fig.suptitle(head, fontsize=9.5, y=0.992, va="top", fontweight="bold")
+        # Drawn as figure text rather than through suptitle: tight_layout
+        # reserves a band of its own for a suptitle, which reappeared as a gap
+        # between the caption and the first panel that no spacing value here
+        # could close.
+        fig.text(0.5, y, head, ha="center", va="top", fontsize=11,
+                 fontweight="bold")
+        y -= 0.026
     if tail:
-        fig.text(0.5, 0.992 - 0.026 * (head.count("\n") + 1), tail,
-                 ha="center", va="top", fontsize=8.5, color="#555555")
+        fig.text(0.5, y, tail, ha="center", va="top", fontsize=8.8,
+                 color="#44474b", style="italic")
+        y -= 0.0275
+    if params:
+        fig.text(0.5, y, "\n".join(params), ha="center", va="top",
+                 fontsize=7.0, family="monospace", color="#333333", linespacing=1.5)
+        y -= 0.013 * len(params)
+    header_bottom = y - HEADER_GAP
 
     # 1 -- percentage of correctly generated models, Wilson 95%
     pct = [100.0 * (r.get("valid_rate") or 0.0) for r in rows]
@@ -442,7 +586,7 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
     # movement in the rate itself. Headroom leaves room for the n/N labels.
     axes[0].set_ylim(*_value_limits(pct, 0.0, 100.0))
     axes[0].set_title("Valid generation rate per epoch")
-    axes[0].legend(loc="best", fontsize=8, framealpha=0.75)
+    axes[0].legend(loc="best", fontsize=8, framealpha=0.75, fancybox=False)
     axes[0].grid(alpha=0.3)
 
     # Grey means "the original networks, before the LLM changed them" on every
@@ -565,7 +709,7 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
     axes[1].set_title("Accuracy per epoch: mean with 95% CI, and best model "
                       "(generated vs. original networks)")
     if axes[1].get_legend_handles_labels()[0]:   # nothing to label on an all-failed epoch
-        axes[1].legend(loc="best", fontsize=8, framealpha=0.75, ncol=2)
+        axes[1].legend(loc="best", fontsize=8, framealpha=0.75, ncol=2, fancybox=False)
     axes[1].grid(alpha=0.3)
 
     if ep:
@@ -575,7 +719,8 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
             # the whiskers drawn by _draw_band sit at a sensible width.
             only = ep[0]
             axes[1].set_xlim(only - 0.5, only + 0.5)
-    fig.tight_layout(rect=(0, 0, 1, 0.985 - 0.021 * (head.count("\n") + 2)))
+    _draw_brand(fig)
+    fig.tight_layout(rect=(0, 0.022, 1, max(0.70, header_bottom)), pad=0.6)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150)
@@ -614,6 +759,8 @@ def reset_run_dir(base_dir, dry_run=False):
     if dry_run:
         return base_dir
     import shutil
+    from ab.gpt.util.data.LemurSubmission import archive_submission
+    archive_submission(base_dir)
     try:
         shutil.rmtree(base_dir)
         print(f"[RUN RESET] Removed the previous run directory: {base_dir}")

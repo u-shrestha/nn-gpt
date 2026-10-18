@@ -10,7 +10,7 @@ def main():
         nn_gen_conf_id='optimal_channel_configuration_test',
         test_nn=16,
         skip_epoches=-1,          # generate at epoch 0 => pre-fine-tuning baseline
-        nn_name_prefix='chn',
+        nn_name_prefix='ast-dimension',
         context_length=8 * 1024,
         sft_max_length=4 * 1024,  # packing block size; keep <= context_length
         max_new_tokens=8 * 1024,
@@ -21,6 +21,7 @@ def main():
         lora_alpha=64,            # r=32 => scale 2.0 (repo default 32 gives 1.0)
         suppress_thinking=True,
         use_unsloth=True,
+        use_vllm=True
 )
 
 
