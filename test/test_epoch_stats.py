@@ -279,16 +279,16 @@ def test_plot_series_cover_generated_and_original_on_both_panels(tmp_path, monke
     monkeypatch.setattr(plt, "close", _capture)
     ES.plot_epoch_stats(_plot_rows(), tmp_path / "p.png")
 
-    rate, mean_panel, max_panel = captured["labels"]
+    rate, accuracy = captured["labels"]
     assert any("Wilson" in l for l in rate)
-    # mean panel: both means AND both intervals are identifiable in the legend
-    assert any(l == "generated mean" for l in mean_panel)
-    assert any(l == "generated 95% CI" for l in mean_panel)
-    assert any("original" in l and "mean" in l for l in mean_panel)
-    assert any("original" in l and "95% CI" in l for l in mean_panel)
-    # max panel: the generated maximum is shown against the original maximum
-    assert any(l == "generated max" for l in max_panel)
-    assert any("original max" in l for l in max_panel)
+    # accuracy panel: both means AND both intervals stay identifiable...
+    assert any(l == "generated mean" for l in accuracy)
+    assert any(l == "generated 95% CI" for l in accuracy)
+    assert any("original" in l and "mean" in l for l in accuracy)
+    assert any("original" in l and "95% CI" in l for l in accuracy)
+    # ...and the maxima, folded in from the former third panel, are on it too
+    assert any(l == "generated best" for l in accuracy)
+    assert any(l == "original best" for l in accuracy)
 
 
 def test_plot_clips_an_out_of_range_interval_to_valid_accuracies(tmp_path, monkeypatch):
@@ -396,13 +396,18 @@ def test_ci_boundary_is_hairline_and_faint_next_to_the_mean_line(tmp_path, monke
         if fig is not None and hasattr(fig, "axes"):
             captured["lines"] = [(round(l.get_linewidth(), 3), l.get_alpha())
                                  for l in fig.axes[1].lines]
+            # CI edges are the hairlines drawn at exactly CI_EDGE_WIDTH; the
+            # accuracy panel also carries max/best-so-far lines that have an
+            # alpha but are not interval boundaries.
+            captured["edges"] = [(w, a) for w, a in captured["lines"]
+                                 if w == round(ES.CI_EDGE_WIDTH, 3)]
+            captured["means"] = [(w, a) for w, a in captured["lines"] if a is None]
         return real_close(fig)
 
     monkeypatch.setattr(plt, "close", _capture)
     ES.plot_epoch_stats(_plot_rows(), tmp_path / "p.png")
 
-    edges = [(w, a) for w, a in captured["lines"] if a is not None]
-    means = [(w, a) for w, a in captured["lines"] if a is None]
+    edges, means = captured["edges"], captured["means"]
     assert edges, "no CI boundary was drawn"
     assert means, "no mean line was drawn"
     mean_width = max(w for w, _ in means)

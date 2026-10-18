@@ -348,6 +348,7 @@ def nn_gen(
                 task=key_config["task"],
                 dataset=gen_dataset,
                 nn_prefixes=gen_nn_prefixes,
+                epoch=key_config.get("epoch"),
                 sql=JoinConf(
                     num_joint_nns=num_joint_nns,
                     same_columns=tuple(key_config.get("keep_same", [])),
@@ -368,6 +369,9 @@ def nn_gen(
                 # Pin generation seeds to the configured corpus (default cifar-10 / ga-)
                 data_kwargs["dataset"] = gen_dataset
                 data_kwargs["nn_prefixes"] = gen_nn_prefixes
+            gen_epoch = key_config.get("epoch")
+            if gen_epoch is not None:
+                data_kwargs["epoch"] = gen_epoch
             data = lemur.data(**data_kwargs)
             if data.empty or "nn" not in data.columns:
                 raise ValueError(

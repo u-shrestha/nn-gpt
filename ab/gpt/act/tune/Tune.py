@@ -3,6 +3,9 @@ import os
 import sys
 from typing import Literal
 
+from ab.gpt.util.Caches import setup_caches
+setup_caches()
+
 import torch
 from ab.gpt.util.Const import nngpt_dir, NN_TRAIN_EPOCHS, DEFAULT_DATASET, DEFAULT_NN_PREFIXES
 
@@ -14,8 +17,13 @@ from ab.gpt.util.Const import conf_llm_dir
 RUN_META = out_dir / 'nngpt' / 'run_config.json'
 
 
-def persist_llm_conf(llm_conf, enable_merge=False):
-    """Save run configuration including llm_conf, base_model_name, and enable_merge."""
+def persist_llm_conf(llm_conf, enable_merge=False, params=None):
+    """Save run configuration including llm_conf, base_model_name, and enable_merge.
+
+    ``params`` carries the fine-tuning settings so the plot can state which model
+    and which hyper-parameters produced it. Statistics without the configuration
+    that produced them cannot be compared between runs.
+    """
 
     RUN_META.parent.mkdir(parents=True, exist_ok=True)
 
@@ -38,6 +46,8 @@ def persist_llm_conf(llm_conf, enable_merge=False):
     }
     if base_model_name:
         run_config["base_model_name"] = base_model_name
+    if params:
+        run_config["training"] = {k: v for k, v in params.items() if v is not None}
 
     with open(RUN_META, "w") as f:
         json.dump(run_config, f, indent=2)
@@ -230,7 +240,27 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
     import os
     os.environ["NNGPT_VLLM_SLEEP"] = "1" if use_vllm else "0"
 
-    persist_llm_conf(llm_conf, enable_merge)
+    persist_llm_conf(llm_conf, enable_merge, params={
+        'learning_rate': learning_rate,
+        'lr_scheduler': lr_scheduler,
+        'num_train_epochs': num_train_epochs,
+        'cycles': cycles,
+        'max_prompts': max_prompts,
+        'lora_r': r,
+        'lora_alpha': lora_alpha,
+        'lora_dropout': lora_dropout,
+        'optimizer': optimizer,
+        'warmup_steps': warmup_steps,
+        'per_device_train_batch_size': per_device_train_batch_size,
+        'gradient_accumulation_steps': gradient_accumulation_steps,
+        'context_length': context_length,
+        'sft_max_length': sft_max_length,
+        'max_new_tokens': max_new_tokens,
+        'test_nn': test_nn,
+        'load_in_4bit': load_in_4bit,
+        'unsloth': use_unsloth,
+        'vllm_sleep': use_vllm,
+    })
 
     if run_iterative_pipeline:
         print("--- Initiating Iterative Fine-Tuning Pipeline ---")

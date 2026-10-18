@@ -10,6 +10,7 @@
     "is_generation": false,
     "task": "img-classification",
     "dataset": "cifar-10",
+    "epoch": 1,
     "min_accuracy": 0.25,
     "input_list": [
       {

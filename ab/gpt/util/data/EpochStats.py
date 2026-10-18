@@ -252,6 +252,96 @@ def append_epoch_stats(tracker_path, stats):
     return rows
 
 
+def _run_config(base_dir):
+    """The run's model and fine-tuning settings, from run_config.json."""
+    try:
+        with open(Path(base_dir) / "run_config.json") as f:
+            loaded = json.load(f)
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
+def _fmt_lr(value):
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _run_caption(config, rows):
+    """Two lines naming the fine-tuned model and the settings behind the numbers.
+
+    A plot of accuracies is not interpretable without them: the same pipeline at a
+    different learning rate, rank or prompt count produces a different curve, and
+    nothing else on the figure records which one this is.
+    """
+    model = config.get("base_model_name") or config.get("llm_conf") or ""
+    model = str(model).rstrip("/").split("/")[-1].replace(".json", "")
+    t = config.get("training") or {}
+
+    bits = []
+    if t.get("lora_r") or t.get("lora_alpha"):
+        bits.append(f"LoRA r={t.get('lora_r', '?')} alpha={t.get('lora_alpha', '?')}"
+                    + (f" drop={t['lora_dropout']}" if t.get("lora_dropout") is not None else ""))
+    if t.get("learning_rate"):
+        bits.append(f"lr={_fmt_lr(t['learning_rate'])}"
+                    + (f" {t['lr_scheduler']}" if t.get("lr_scheduler") else ""))
+    if t.get("num_train_epochs") or t.get("max_prompts"):
+        bits.append(f"{t.get('num_train_epochs', '?')} epoch x "
+                    f"{t.get('max_prompts', '?')} prompts")
+    if t.get("optimizer"):
+        bits.append(str(t["optimizer"]))
+    if t.get("context_length"):
+        bits.append(f"ctx {t['context_length']}"
+                    + (f" / gen {t['max_new_tokens']}" if t.get("max_new_tokens") else ""))
+    if t.get("load_in_4bit"):
+        bits.append("4-bit")
+
+    import textwrap
+    head = " | ".join([b for b in [model] + bits if b])
+    # A single line runs off both edges of the figure once the settings are
+    # spelled out; wrap it rather than shrink it to illegibility.
+    head = "\n".join(textwrap.wrap(head, width=108, break_long_words=False)) if head else ""
+
+    seen = []
+    for r in rows:
+        for ds in (r.get("datasets") or []):
+            if ds not in seen:
+                seen.append(ds)
+    tail = []
+    if seen:
+        tail.append(f"dataset: {', '.join(seen)}")
+    if t.get("test_nn"):
+        tail.append(f"{t['test_nn']} generations/epoch")
+    valid = sum(r.get("models_valid") or 0 for r in rows)
+    total = sum(r.get("models_generated") or 0 for r in rows)
+    if total:
+        tail.append(f"{valid}/{total} valid over {len(rows)} epoch(s)")
+    return head, "   ".join(tail)
+
+
+def _value_limits(values, lo_bound=0.0, hi_bound=1.0, headroom=0.18):
+    """View limits framed on the MEASURED VALUES, with room for point labels.
+
+    Framing on confidence bounds instead compresses every line into the middle
+    of the panel: a 95% interval over four models can be several times wider
+    than any value actually observed. The intervals are still drawn as computed
+    -- they simply leave the frame, and where each one exits stays visible.
+
+    ``headroom`` is extra padding at the top only, so a label sitting above the
+    highest point is never clipped by the spine.
+    """
+    values = [v for v in values if v is not None]
+    if not values:
+        return lo_bound, hi_bound
+    lo, hi = min(values), max(values)
+    span = hi - lo
+    pad = max(0.02 * (hi_bound - lo_bound), 0.08 * span)
+    return (max(lo_bound, lo - pad),
+            min(hi_bound, hi + pad + headroom * max(span, pad)))
+
+
 # Confidence bands are context, not a second measurement: the boundary is drawn
 # hairline and faint so it reads as the edge of a band rather than as another
 # series. At the previous 1.1pt / 0.95 alpha the two bounds were as heavy as the
@@ -259,6 +349,13 @@ def append_epoch_stats(tracker_path, stats):
 # two shaded regions.
 CI_EDGE_WIDTH = 0.5
 CI_EDGE_ALPHA = 0.35
+#: Fill weight of every confidence band, on every panel. Both accuracy
+#: intervals get the SAME alpha so neither is washed out by the other: a light
+#: grey at high alpha under a green band at low alpha renders as green, which is
+#: why the original interval used to vanish wherever the two overlapped -- and
+#: they overlap almost everywhere. The valid-rate band uses it too, so an
+#: interval reads the same way on both panels.
+CI_ALPHA = 0.22
 
 
 def _draw_band(ax, xs, lo, hi, line_colour, fill_colour, alpha, label):
@@ -297,8 +394,15 @@ def _draw_band(ax, xs, lo, hi, line_colour, fill_colour, alpha, label):
                 linestyle="-", alpha=CI_EDGE_ALPHA, zorder=3)
 
 
-def plot_epoch_stats(rows, out_path):
-    """Three stacked panels: valid rate, mean accuracy vs baseline, max accuracy."""
+def plot_epoch_stats(rows, out_path, base_dir=None):
+    """Two stacked panels: valid generation rate, and accuracy (mean CI + max).
+
+    The former third panel (best model per epoch) is folded into the accuracy
+    panel: max is the same quantity on the same scale as the mean, so splitting
+    them forced a reader to compare across axes with different y ranges. Colour
+    stays with the entity -- green generated, grey original -- and the statistic
+    is carried by marker and line style, so the two never rely on colour alone.
+    """
     import matplotlib
     matplotlib.use("Agg")          # cluster nodes have no display
     import matplotlib.pyplot as plt
@@ -308,31 +412,35 @@ def plot_epoch_stats(rows, out_path):
         return None
     ep = [r["epoch"] for r in rows]
 
-    fig, axes = plt.subplots(3, 1, figsize=(9, 11), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(10, 9), sharex=True)
 
-    # Which datasets the seed networks were trained on. Accuracies across the
-    # panels are only comparable within a dataset, so the plot says which.
-    seen = []
-    for r in rows:
-        for ds in (r.get("datasets") or []):
-            if ds not in seen:
-                seen.append(ds)
-    if seen:
-        fig.suptitle(f"dataset: {', '.join(seen)}", fontsize=9, y=0.995)
+    # Which model and which fine-tuning settings produced these numbers, and on
+    # which dataset. Without them the curves cannot be compared between runs.
+    head, tail = _run_caption(_run_config(base_dir) if base_dir else {}, rows)
+    if head:
+        fig.suptitle(head, fontsize=9.5, y=0.992, va="top", fontweight="bold")
+    if tail:
+        fig.text(0.5, 0.992 - 0.026 * (head.count("\n") + 1), tail,
+                 ha="center", va="top", fontsize=8.5, color="#555555")
 
     # 1 -- percentage of correctly generated models, Wilson 95%
     pct = [100.0 * (r.get("valid_rate") or 0.0) for r in rows]
     lo = [100.0 * (r.get("valid_rate_ci_low") or 0.0) for r in rows]
     hi = [100.0 * (r.get("valid_rate_ci_high") or 0.0) for r in rows]
     axes[0].plot(ep, pct, marker="o", color="#1f77b4", label="valid models", zorder=5)
-    _draw_band(axes[0], ep, lo, hi, "#1f77b4", "#1f77b4", 0.20, "Wilson 95% CI")
+    # Same fill weight as the accuracy bands below, so an interval reads the
+    # same way on both panels.
+    _draw_band(axes[0], ep, lo, hi, "#1f77b4", "#1f77b4", CI_ALPHA, "Wilson 95% CI")
     for x, r in zip(ep, rows):
         axes[0].annotate(f"{r.get('models_valid', 0)}/{r.get('models_generated', 0)}",
                          (x, 100.0 * (r.get("valid_rate") or 0.0)),
                          textcoords="offset points", xytext=(0, 7),
                          ha="center", fontsize=8)
     axes[0].set_ylabel("correctly generated (%)")
-    axes[0].set_ylim(-5, 105)
+    # Framed on the observed rates, not the Wilson band, for the same reason as
+    # the accuracy panel below: at 4/16 the interval runs 10-49% and swamps the
+    # movement in the rate itself. Headroom leaves room for the n/N labels.
+    axes[0].set_ylim(*_value_limits(pct, 0.0, 100.0))
     axes[0].set_title("Valid generation rate per epoch")
     axes[0].legend(loc="best", fontsize=8, framealpha=0.75)
     axes[0].grid(alpha=0.3)
@@ -342,6 +450,12 @@ def plot_epoch_stats(rows, out_path):
     # of the same kind, so both are drawn solid and filled -- only the colour
     # separates them.
     GENERATED, ORIGINAL = "#2ca02c", "#7f7f7f"
+    # The best generated network is the headline number, so it gets its own
+    # colour rather than sharing green with the mean. A mid red sits ~ΔE 4 from
+    # this green under deuteranopia -- the classic red/green confusion -- so the
+    # red is taken dark enough to clear the threshold: #9d0208 separates at
+    # ΔE 10.5, leaving grey-vs-green as the worst pair on the panel.
+    BEST = "#9d0208"
 
     def _pick(*keys):
         """Rows where the first key is present, as parallel tuples."""
@@ -352,12 +466,7 @@ def plot_epoch_stats(rows, out_path):
     # 2 -- mean accuracy with 95% CI. Both series are measurements of the same
     # kind -- the networks before and after the LLM changed them -- so both get
     # a solid line and a filled interval, distinguished by colour alone.
-    # Both intervals get the SAME alpha so neither is washed out by the other.
-    # A light grey at high alpha under a green band at low alpha renders as
-    # green, which is why the original interval used to be invisible wherever
-    # the two overlapped -- and they overlap almost everywhere. Equal alpha
-    # plus an opaque boundary line keeps both readable through any overlap.
-    CI_ALPHA = 0.22
+    # Equal alpha plus an opaque boundary keeps both readable through overlap.
     ORIGINAL_FILL = "#4d4d4d"   # darker than the mean line, so it reads as grey
     series_spec = (
         ("original (before modification)", ORIGINAL, ORIGINAL_FILL, CI_ALPHA,
@@ -393,50 +502,80 @@ def plot_epoch_stats(rows, out_path):
         if label not in drawn:
             continue
         xs, ms, colour = drawn[label]
-        axes[1].plot(xs, ms, marker="o", linestyle="-", color=colour,
+        axes[1].plot(xs, ms, marker="o", linestyle="-", linewidth=1.6, color=colour,
                      label=f"{label} mean", zorder=5)
-    axes[1].set_ylabel("accuracy")
-    # An accuracy cannot leave [0, 1], so the axis does not either. The bounds
-    # themselves are still plotted as computed; only the view is cropped.
-    axes[1].set_ylim(0.0, 1.0)
-    axes[1].set_title("Mean accuracy with 95% CI (generated vs. original networks)")
-    if axes[1].get_legend_handles_labels()[0]:   # nothing to label on an all-failed epoch
-        axes[1].legend(loc="best", fontsize=8, framealpha=0.75)
-    axes[1].grid(alpha=0.3)
 
-    # 3 -- best model per epoch, generated against the best of the originals.
-    # Without the original maximum the generated one has nothing to beat: the
-    # question is whether the LLM ever exceeds the networks it was given.
+    # Best model per epoch, formerly its own panel. Same quantity, same scale as
+    # the mean, so it belongs on the same axes: the question "does the best
+    # generated network beat the best it started from" is read against the means
+    # rather than across two panels with different y ranges. Colour still marks
+    # the entity; the square marker and dashed line mark the statistic, so mean
+    # and max never depend on colour alone to be told apart.
+    # The y view is settled BEFORE the best-model label is placed, so the label
+    # can be positioned against limits that are already known and is never
+    # clipped by a spine.
+    accuracy_lo, accuracy_hi = _value_limits([
+        v for r in rows
+        for v in (r.get("accuracy_mean"), r.get("baseline_accuracy_mean"),
+                  r.get("accuracy_max"), r.get("baseline_accuracy_max"))
+    ])
+
+    picked = _pick("baseline_accuracy_max")
+    if picked is not None:
+        xs, ys = picked
+        axes[1].plot(xs, ys, marker="s", markersize=5, linestyle="--", linewidth=1.1,
+                     color=ORIGINAL, alpha=0.9, zorder=6,
+                     label="original best")
     picked = _pick("accuracy_max")
     if picked is not None:
         xs, ys = picked
-        axes[2].plot(xs, ys, marker="s", color=GENERATED, label="generated max")
+        axes[1].plot(xs, ys, marker="s", markersize=5, linestyle="--", linewidth=1.3,
+                     color=BEST, alpha=0.95, zorder=6, label="generated best")
         running, best = [], float("-inf")
         for y in ys:
             best = max(best, y)
             running.append(best)
-        axes[2].plot(xs, running, linestyle=":", color=GENERATED, alpha=0.7,
-                     label="generated best so far")
-    picked = _pick("baseline_accuracy_max")
-    if picked is not None:
-        xs, ys = picked
-        axes[2].plot(xs, ys, marker="o", linestyle="-", color=ORIGINAL,
-                     label="original max (before modification)")
-    axes[2].set_ylabel("accuracy")
-    axes[2].set_xlabel("epoch")
-    axes[2].set_title("Best model per epoch (generated vs. original networks)")
-    if axes[2].get_legend_handles_labels()[0]:
-        axes[2].legend(loc="best", fontsize=8, framealpha=0.75)
-    axes[2].grid(alpha=0.3)
+        axes[1].plot(xs, running, linestyle=":", linewidth=1.2, color=BEST,
+                     alpha=0.6, zorder=4, label="generated best so far")
+
+        # The best network of the whole run: the one number a reader looks for.
+        # Placed against the settled limits so it stays on the panel wherever
+        # the peak falls -- below the marker when the peak is near the top,
+        # pushed inward at the first and last epoch where a centred label would
+        # cross a spine.
+        peak = max(range(len(ys)), key=lambda i: ys[i])
+        span = max(accuracy_hi - accuracy_lo, 1e-9)
+        near_top = (ys[peak] - accuracy_lo) / span > 0.82
+        if peak == len(xs) - 1:
+            dx, ha = -9, "right"
+        elif peak == 0:
+            dx, ha = 9, "left"
+        else:
+            dx, ha = 0, "center"
+        dy, va = (-10, "top") if near_top else (9, "bottom")
+        axes[1].annotate(
+            f"best {ys[peak]:.4f}", (xs[peak], ys[peak]),
+            textcoords="offset points", xytext=(dx, dy), ha=ha, va=va,
+            fontsize=8, color=BEST, fontweight="bold", zorder=7,
+            annotation_clip=False)
+
+    axes[1].set_ylabel("accuracy")
+    axes[1].set_xlabel("epoch")
+    axes[1].set_ylim(accuracy_lo, accuracy_hi)
+    axes[1].set_title("Accuracy per epoch: mean with 95% CI, and best model "
+                      "(generated vs. original networks)")
+    if axes[1].get_legend_handles_labels()[0]:   # nothing to label on an all-failed epoch
+        axes[1].legend(loc="best", fontsize=8, framealpha=0.75, ncol=2)
+    axes[1].grid(alpha=0.3)
 
     if ep:
-        axes[2].set_xticks(sorted(set(ep)))
+        axes[1].set_xticks(sorted(set(ep)))
         if len(set(ep)) == 1:
             # A single epoch leaves matplotlib to invent an x range; fix it so
             # the whiskers drawn by _draw_band sit at a sensible width.
             only = ep[0]
-            axes[2].set_xlim(only - 0.5, only + 0.5)
-    fig.tight_layout()
+            axes[1].set_xlim(only - 0.5, only + 0.5)
+    fig.tight_layout(rect=(0, 0, 1, 0.985 - 0.021 * (head.count("\n") + 2)))
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150)
@@ -658,7 +797,7 @@ def update_epoch_report(models_dir, epoch, base_dir):
         print(f"[EPOCH STATS] Could not finalise epoch results: {exc}")
 
     try:
-        png = plot_epoch_stats(rows, base_dir / "epoch_statistics.png")
+        png = plot_epoch_stats(rows, base_dir / "epoch_statistics.png", base_dir=base_dir)
         if png:
             print(f"[EPOCH STATS] Plot updated -> {png}")
     except Exception as exc:
