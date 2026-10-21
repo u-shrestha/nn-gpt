@@ -1612,7 +1612,12 @@ def tune(
     # Closing validation pass for the classic loop, mirroring the agent path:
     # the loop fine-tunes after evaluating, so without this the final adapter
     # is never generated from, never validated and never recorded.
-    if not skip_lm_finetune and llm_tune_epochs > 0:
+    # NNGPT_SKIP_CLOSING_EVAL=1 skips it (the iterative pipeline evaluates the
+    # adapter in the next cycle's generation anyway).
+    skip_closing = _env_on("NNGPT_SKIP_CLOSING_EVAL")
+    if skip_closing and not skip_lm_finetune and llm_tune_epochs > 0:
+        print(f'[INFO] Closing validation pass skipped (NNGPT_SKIP_CLOSING_EVAL=1)')
+    if not skip_lm_finetune and llm_tune_epochs > 0 and not skip_closing:
         final_epoch = llm_tune_epochs
         print(f'[INFO] Closing validation pass for the final adapter (epoch {final_epoch})')
         out_path = run_epoch_dir(final_epoch)
