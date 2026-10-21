@@ -265,13 +265,29 @@ def _run_config(base_dir):
 #: Display order for the fine-tuning settings. Anything in run_config.json that
 #: is not listed is appended, so a newly recorded setting still appears.
 PARAM_ORDER = (
-    "learning_rate", "lr_scheduler", "warmup_steps", "num_train_epochs", "cycles",
-    "optimizer", "lora_r", "lora_alpha", "lora_dropout",
-    "per_device_train_batch_size", "gradient_accumulation_steps",
+    "learning_rate", "lora_dropout", "per_device_train_batch_size",
+    "lr_scheduler", "warmup_steps", "num_train_epochs", "cycles",
+    "optimizer", "lora_r", "lora_alpha",
+    "gradient_accumulation_steps",
     "max_prompts", "sft_max_length", "context_length", "max_new_tokens",
-    "temperature", "top_p",
     "test_nn", "load_in_4bit", "unsloth", "vllm_sleep",
 )
+
+#: The budgets measured in tokens: what a training example is truncated to,
+#: what the model is given, and what it may produce. One quantity in three
+#: places, and only meaningful against each other -- a context of 8192 says
+#: nothing until it is read next to an output budget of the same size.
+PARAM_TOKENS = ("sft_max_length", "context_length", "max_new_tokens")
+
+#: Sampling is not fine-tuning: temperature and top_p act on the finished model
+#: at generation time, and standing among the optimiser's numbers they invite a
+#: reader to compare them with a learning rate or a rank.
+PARAM_TAIL = ("temperature", "top_p")
+
+#: Groups lifted out of the main ordering and set down at the end of the line,
+#: in this order, after the named settings. Each is a block that is read as a
+#: block, which the one-per-setting ordering above cannot express.
+PARAM_TRAILING = (PARAM_TOKENS, PARAM_TAIL)
 
 #: Short labels so the whole configuration fits on one line; the settings
 #: themselves are unabridged.
@@ -308,7 +324,16 @@ PARAM_SKIP = ("cycles", "test_nn", "unsloth", "vllm_sleep")
 #: parameter that was chosen, which it was not.
 PARAM_FLAGS = ("load_in_4bit",)
 
-PARAM_MAX_CHARS = 170
+#: Width budget for the configuration line, in characters, paired with the
+#: point size it is drawn at: at 6.2pt monospace, 182 characters span ~94% of
+#: the 10in figure, which clears the panels on both sides. Changing one without
+#: the other either wraps the line or lets it run past the axes.
+PARAM_MAX_CHARS = 182
+PARAM_FONTSIZE = 6.2
+
+#: Near-black rather than a grey: the line is the only record of what produced
+#: the curves, and at this size a lightened grey stops being legible in print.
+PARAM_COLOR = "#111111"
 
 #: Clearance between the caption and the first panel's title. Enough to
 #: separate them, not enough to read as a break in the figure.
@@ -342,12 +367,16 @@ def _param_block(training, max_chars=PARAM_MAX_CHARS):
     the named ones -- the schedule, the optimiser, the quantisation -- are
     collected at the end. A number is read by comparing it with its neighbours,
     which only works while the numbers sit together; a name interrupting the
-    run forces the eye to re-anchor on every value after it.
+    run forces the eye to re-anchor on every value after it. The PARAM_TRAILING
+    groups come last of all, after the names, each kept whole: they are read
+    against their own members rather than against the optimiser's settings.
     """
     if not training:
         return []
-    keys = [k for k in PARAM_ORDER if k in training and k not in PARAM_SKIP]
-    keys += [k for k in training if k not in PARAM_ORDER and k not in PARAM_SKIP]
+    trailing_keys = {k for group in PARAM_TRAILING for k in group}
+    skip = set(PARAM_SKIP) | trailing_keys
+    keys = [k for k in PARAM_ORDER if k in training and k not in skip]
+    keys += [k for k in training if k not in PARAM_ORDER and k not in skip]
 
     numeric, named = [], []
     for k in keys:
@@ -360,7 +389,11 @@ def _param_block(training, max_chars=PARAM_MAX_CHARS):
         cell = f"{label}={_fmt_value(value)}"
         (numeric if _is_numeric(value) else named).append(cell)
 
-    cells = numeric + named
+    trailing = [f"{PARAM_LABEL.get(k, k)}={_fmt_value(training[k])}"
+                for group in PARAM_TRAILING for k in group
+                if k in training and training[k] is not None]
+
+    cells = numeric + named + trailing
     if not cells:
         return []
     line = " ".join(cells)
@@ -582,7 +615,8 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
         y -= 0.0275
     if params:
         fig.text(0.5, y, "\n".join(params), ha="center", va="top",
-                 fontsize=7.0, family="monospace", color="#333333", linespacing=1.5)
+                 fontsize=PARAM_FONTSIZE, family="monospace",
+                 color=PARAM_COLOR, linespacing=1.5)
         y -= 0.013 * len(params)
     header_bottom = y - HEADER_GAP
 

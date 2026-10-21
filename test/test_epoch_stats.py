@@ -553,6 +553,10 @@ _FULL_TRAINING = {
 }
 
 
+#: The same run with the sampling settings recorded, as Tune.py writes them.
+_SAMPLING_TRAINING = dict(_FULL_TRAINING, temperature=0.8, top_p=0.9)
+
+
 def test_param_block_states_every_hyper_parameter_on_one_line():
     """All of them, once -- a setting left out cannot be recovered by a reader."""
     lines = ES._param_block(_FULL_TRAINING)
@@ -568,10 +572,59 @@ def test_param_block_states_every_hyper_parameter_on_one_line():
 def test_param_block_states_the_sampling_settings():
     """temperature and top_p decide what the LLM emits, so the curves move with
     them; a figure that leaves them out cannot be reproduced from its caption."""
-    text = " ".join(ES._param_block(
-        dict(_FULL_TRAINING, temperature=0.8, top_p=0.9)))
+    text = " ".join(ES._param_block(_SAMPLING_TRAINING))
     assert "temp=0.8" in text
     assert "top_p=0.9" in text
+
+
+def test_the_line_opens_on_what_is_tuned_first():
+    """lr, dropout and batch size are the three a reader reaches for first, so
+    they open the line instead of being hunted for in the middle of it."""
+    cells = ES._param_block(_SAMPLING_TRAINING)[0].split()
+    assert [c.split("=", 1)[0] for c in cells[:3]] == ["lr", "dropout", "batch"]
+
+
+def test_the_token_budgets_stand_together_before_the_sampling_settings():
+    """They are one quantity in three places and only mean anything read
+    against each other, so they are not scattered through the line."""
+    cells = ES._param_block(_SAMPLING_TRAINING)[0].split()
+    names = [c.split("=", 1)[0] for c in cells]
+    where = [names.index(ES.PARAM_LABEL.get(k, k)) for k in ES.PARAM_TOKENS]
+    assert where == list(range(where[0], where[0] + len(ES.PARAM_TOKENS))), \
+        f"the token budgets are split apart: {cells}"
+    assert where[-1] < names.index("temp")
+
+
+def test_the_sampling_settings_come_last():
+    """They act at generation time, not during fine-tuning, so they sit after
+    every training setting instead of among the optimiser's numbers."""
+    lines = ES._param_block(_SAMPLING_TRAINING)
+    assert len(lines) == 1, f"configuration spread over {len(lines)} lines"
+    assert lines[0].endswith("temp=0.8 top_p=0.9")
+
+
+def test_the_full_configuration_including_sampling_stays_on_one_line():
+    """Two lines read as two unrelated statements; the configuration is one."""
+    lines = ES._param_block(_SAMPLING_TRAINING)
+    assert len(lines) == 1
+    assert len(lines[0]) <= ES.PARAM_MAX_CHARS
+
+
+def test_the_configuration_line_clears_the_panels():
+    """PARAM_MAX_CHARS is a width budget, so it is only correct paired with the
+    size the line is drawn at. A full-width line must stay inside the figure."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig = plt.figure(figsize=(10, 9))
+    try:
+        text = fig.text(0.5, 0.5, "x" * ES.PARAM_MAX_CHARS, ha="center",
+                        family="monospace", fontsize=ES.PARAM_FONTSIZE)
+        width = text.get_window_extent(
+            renderer=fig.canvas.get_renderer()).width / fig.bbox.width
+    finally:
+        plt.close(fig)
+    assert width <= 0.96, f"a full line spans {width:.0%} of the figure"
 
 
 def test_param_block_omits_what_the_figure_already_shows():
@@ -588,13 +641,23 @@ def test_a_flag_is_named_when_set_and_absent_when_not():
 
 
 def test_named_values_are_collected_after_the_numbers():
-    """Numbers are compared against their neighbours; a name breaks the run."""
+    """Numbers are compared against their neighbours; a name breaks the run.
+
+    The names are contiguous rather than last: the trailing groups are numbers
+    too, and they are set down after the names on purpose.
+    """
     cells = ES._param_block(_FULL_TRAINING)[0].split()
     named = [i for i, c in enumerate(cells)
              if not ES._is_numeric(c.split("=", 1)[-1])]
     assert named, "no named setting in the fixture"
-    assert named == list(range(min(named), len(cells))), \
+    assert named == list(range(named[0], named[-1] + 1)), \
         f"a named setting sits among the numbers: {cells}"
+    trailing = {k for group in ES.PARAM_TRAILING for k in group}
+    after = cells[named[-1] + 1:]
+    assert after, "nothing follows the names"
+    labels = {ES.PARAM_LABEL.get(k, k) for k in trailing}
+    assert all(c.split("=", 1)[0] in labels for c in after), \
+        f"a plain setting sits after the names: {after}"
 
 
 def test_param_block_keeps_an_unrecognised_setting():
