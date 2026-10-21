@@ -98,59 +98,572 @@ def _free_gpu():
     return free, total
 
 
-def park_trainer(model):
-    """Move the HF training model to host memory. Returns its previous device.
+# ---------------------------------------------------------------------------
+# Parking the trainer
+#
+# The engine runs in its own OS process, so it cannot borrow the trainer's
+# weights: CUDA memory is not shared across processes and vLLM builds the model
+# from the checkpoint with its own layer implementations. Generating therefore
+# needs the card to itself, and the trainer has to leave it first.
+#
+# Two things made that fail silently before:
+#
+#   1. The model's device was read from next(model.parameters()).device.
+#      Unsloth offloads embed_tokens to host RAM ("Offloading embeddings to RAM
+#      to save 2.37 GB") and that tensor can come first in iteration order, so
+#      the first parameter reads as cpu while ~15 GiB of quantized layers sit on
+#      the card. park_trainer concluded the trainer was already parked and
+#      returned without moving anything or logging anything.
+#
+#   2. Even when it did run, Module.to("cpu") is not enough for a bitsandbytes
+#      4-bit model. The packed uint8 .data may move while the QuantState
+#      (absmax / code / offset, and a nested state2 under double quantization)
+#      stays on the device, so little is freed -- and a weight whose quant_state
+#      is elsewhere cannot be used.
+#
+# Both are addressed by measuring bytes instead of trusting a device attribute,
+# and by moving the tensors explicitly.
+# ---------------------------------------------------------------------------
 
-    Returns None when nothing actually left the card, so the caller does not
-    later "restore" a model that never moved, and so the engine sizes itself
-    against the memory that is really free.
+#: QuantState fields that are tensors. shape/dtype/blocksize/quant_type are not.
+_QUANT_STATE_TENSOR_ATTRS = ("absmax", "code", "offset")
+
+#: Set NNGPT_VLLM_FORCE_PARK=0 to go back to a plain Module.to("cpu"), which on
+#: a 4-bit model frees little and leaves the engine sharing the card.
+FORCE_PARK = _env_flag("NNGPT_VLLM_FORCE_PARK", True)
+
+#: Checksum a sample of every moved tensor before parking and after restoring.
+#: Cheap (64 elements per tensor) and it is the only thing that would catch a
+#: quant_state left behind on the device, which corrupts weights silently
+#: instead of raising. OFF by default: it costs a sampling pass over every
+#: tensor twice per cycle, and the failure it guards is specific to quantized
+#: parking. Set NNGPT_VLLM_PARK_VERIFY=1 for the first run on a new model, or
+#: after a bitsandbytes / unsloth upgrade.
+PARK_VERIFY = _env_flag("NNGPT_VLLM_PARK_VERIFY", False)
+
+
+def _tensor_bytes(t):
+    try:
+        return t.numel() * t.element_size()
+    except Exception:
+        return 0
+
+
+def _iter_quant_states(tensor):
+    """Yield the QuantState of a bitsandbytes parameter and any nested states.
+
+    Plain tensors have no quant_state and yield nothing, so this is safe to call
+    on every parameter and buffer.
+    """
+    seen = set()
+    stack = [getattr(tensor, "quant_state", None)]
+    while stack:
+        state = stack.pop()
+        if state is None or id(state) in seen:
+            continue
+        seen.add(id(state))
+        yield state
+        stack.append(getattr(state, "state2", None))
+
+
+def _iter_model_tensors(model):
+    """Yield (store, key, tensor) for every parameter and buffer of the model.
+
+    Iterating the _parameters / _buffers dicts rather than named_parameters()
+    gives the container, which is what makes an in-place swap possible.
     """
     if model is None:
-        return None
+        return
     try:
-        device = next(model.parameters()).device
-    except (StopIteration, AttributeError):
+        modules = list(model.modules())
+    except Exception:
+        return
+    for module in modules:
+        for store_name in ("_parameters", "_buffers"):
+            store = getattr(module, store_name, None)
+            if not store:
+                continue
+            for key, tensor in list(store.items()):
+                if tensor is None or not torch.is_tensor(tensor):
+                    continue
+                yield store, key, tensor
+
+
+def _model_gpu_bytes(model):
+    """GPU bytes the model really holds: parameters, buffers and quant states.
+
+    This replaces "is the first parameter on cuda?" as the test for whether the
+    trainer is on the card. Shared tensors are counted once.
+    """
+    total = 0
+    seen = set()
+    for _store, _key, tensor in _iter_model_tensors(model):
+        if tensor.device.type == "cuda" and id(tensor) not in seen:
+            seen.add(id(tensor))
+            total += _tensor_bytes(tensor)
+        for state in _iter_quant_states(tensor):
+            for attr in _QUANT_STATE_TENSOR_ATTRS:
+                q = getattr(state, attr, None)
+                if (torch.is_tensor(q) and q.device.type == "cuda"
+                        and id(q) not in seen):
+                    seen.add(id(q))
+                    total += _tensor_bytes(q)
+    return total
+
+
+def _move_quant_state(tensor, device):
+    """Move a bitsandbytes quant_state to `device`, nested states included.
+
+    bitsandbytes' own QuantState.to() is preferred when present, because it
+    knows the layout of the version actually installed; the attribute walk is
+    the fallback for versions that do not define it.
+    """
+    for state in _iter_quant_states(tensor):
+        to_fn = getattr(state, "to", None)
+        if callable(to_fn):
+            try:
+                to_fn(device)
+                continue
+            except Exception:
+                pass
+        for attr in _QUANT_STATE_TENSOR_ATTRS:
+            q = getattr(state, attr, None)
+            if torch.is_tensor(q) and q.device != device:
+                try:
+                    setattr(state, attr, q.to(device))
+                except Exception as exc:
+                    print(f"[vLLM] quant_state.{attr} could not be moved to "
+                          f"{device}: {type(exc).__name__}: {exc}", flush=True)
+
+
+def _fingerprint(model):
+    """Cheap checksum over a sample of every GPU-or-host tensor of the model.
+
+    64 elements per tensor, plus the full absmax/code/offset sums, which is
+    where a dropped quant_state would show up.
+    """
+    import hashlib
+    h = hashlib.blake2b(digest_size=16)
+    try:
+        for _store, key, tensor in _iter_model_tensors(model):
+            h.update(key.encode())
+            flat = tensor.detach().reshape(-1)
+            sample = flat[:64].to("cpu", copy=True)
+            h.update(sample.float().numpy().tobytes())
+            h.update(str(tuple(tensor.shape)).encode())
+            for state in _iter_quant_states(tensor):
+                for attr in _QUANT_STATE_TENSOR_ATTRS:
+                    q = getattr(state, attr, None)
+                    if torch.is_tensor(q):
+                        h.update(attr.encode())
+                        h.update(q.detach().reshape(-1)[:64]
+                                 .to("cpu", copy=True).float().numpy().tobytes())
+        return h.hexdigest()
+    except Exception as exc:
+        print(f"[vLLM] park fingerprint unavailable "
+              f"({type(exc).__name__}: {exc}); the park/restore round trip "
+              f"will not be verified.", flush=True)
         return None
-    if device.type == "cpu":
-        return device
+
+
+class ParkedTrainer:
+    """Where every tensor of the trainer was, so the move can be undone exactly.
+
+    Carries gpu_bytes so the engine can refuse to build when the card cannot
+    hold the weights, instead of discovering it 25 seconds into loading.
+    """
+
+    def __init__(self, entries, gpu_bytes, fingerprint=None):
+        self.entries = entries
+        self.gpu_bytes = gpu_bytes
+        self.fingerprint = fingerprint
+
+    def __bool__(self):
+        return bool(self.entries)
+
+    @property
+    def type(self):
+        # park_trainer used to return a torch.device and release() checked
+        # .type; keep that working for any caller still doing so.
+        return "cuda"
+
+
+def _force_park(model, fingerprint=None):
+    """Move every GPU tensor of the model to the host, in place.
+
+    Assignment is to .data, and to the quant_state attributes, rather than
+    through Module.to() or Parameter.to(). Two reasons:
+
+      * Parameter objects keep their identity, so optimizer state, the LoRA
+        wiring and anything else holding a reference stays valid.
+      * Nothing re-enters bitsandbytes' quantization path. The packed uint8
+        .data is already quantized; a .to("cuda") that decided to quantize it
+        again would corrupt the weights rather than fail.
+    """
+    entries = []
+    host = torch.device("cpu")
+    for store, key, tensor in _iter_model_tensors(model):
+        if tensor.device.type != "cuda":
+            continue
+        origin = tensor.device
+        try:
+            tensor.data = tensor.data.to(host)
+        except Exception as exc:
+            print(f"[vLLM] {key} could not be parked "
+                  f"({type(exc).__name__}: {exc}); rolling back.", flush=True)
+            _force_unpark(ParkedTrainer(entries, 0))
+            return None
+        _move_quant_state(tensor, host)
+        entries.append((tensor, origin))
+    return entries
+
+
+def _force_unpark(parked):
+    """Put every parked tensor back on the device it came from."""
+    for tensor, origin in parked.entries:
+        try:
+            tensor.data = tensor.data.to(origin)
+        except Exception as exc:
+            print(f"[vLLM] a parked tensor could not be restored to {origin} "
+                  f"({type(exc).__name__}: {exc}).", flush=True)
+            raise
+        _move_quant_state(tensor, origin)
+
+
+def park_trainer(model):
+    """Move the trainer off the GPU so the engine can have the card.
+
+    Returns a ParkedTrainer on success and None when the card was not freed, so
+    the caller neither restores a model that never moved nor builds an engine
+    that cannot fit. Every exit logs, because a silent return here is what made
+    this fail invisibly: the engine was then sized against 8 GiB of free memory
+    for a 16 GiB model.
+    """
+    if model is None:
+        print("[vLLM] prepare() was given no trainer model, so nothing was "
+              "parked. If the trainer is resident the engine cannot fit; pass "
+              "the model to prepare() or set NNGPT_VLLM_SLEEP=0.", flush=True)
+        return None
 
     before, total = _free_gpu()
-    try:
-        model.to("cpu")
-    except Exception as exc:
-        print(f"[vLLM] Trainer could not be parked on the host ({exc}); "
-              f"the engine will share the card with it.", flush=True)
+    resident = _model_gpu_bytes(model)
+    if resident < MIN_PARK_FREED:
+        print(f"[vLLM] Trainer holds only {resident / GIB:.2f} GiB on the card; "
+              f"treating it as already parked ({before / GIB:.1f} GiB of "
+              f"{total / GIB:.1f} GiB free).", flush=True)
         return None
+
+    print(f"[vLLM] Parking trainer: {resident / GIB:.2f} GiB resident on the "
+          f"card, {before / GIB:.1f} GiB of {total / GIB:.1f} GiB free.",
+          flush=True)
+
+    fingerprint = _fingerprint(model) if PARK_VERIFY else None
+
+    if FORCE_PARK:
+        entries = _force_park(model, fingerprint)
+        if entries is None:
+            return None
+    else:
+        # Legacy path. Module.to("cpu") leaves bitsandbytes quant_states on the
+        # device and frees little; kept only as an escape hatch.
+        try:
+            model.to("cpu")
+        except Exception as exc:
+            print(f"[vLLM] Trainer could not be parked on the host ({exc}); "
+                  f"the engine will share the card with it.", flush=True)
+            return None
+        entries = []
 
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     after, _ = _free_gpu()
     freed = after - before
+    still_resident = _model_gpu_bytes(model)
+
+    if still_resident >= MIN_PARK_FREED:
+        # The tensors did not leave. Either the move was refused or something
+        # holds them on the device.
+        print(f"[vLLM] Parking did not move the trainer off the card: "
+              f"{still_resident / GIB:.2f} GiB is still resident "
+              f"({after / GIB:.1f} GiB of {total / GIB:.1f} GiB free). The "
+              f"engine needs about {resident / GIB:.1f} GiB of its own, so it "
+              f"is not built; generation uses the HuggingFace path.", flush=True)
+        if entries:
+            _force_unpark(ParkedTrainer(entries, resident, fingerprint))
+        return None
 
     if freed < MIN_PARK_FREED:
-        print(f"[vLLM] Parking the trainer freed only {freed / GIB:.2f} GiB "
-              f"({after / GIB:.1f} GiB free of {total / GIB:.1f} GiB). Quantized "
-              f"weights normally stay on the device, so the engine will share "
-              f"the card with the trainer.", flush=True)
+        # The model's tensors did leave, but the driver still reports the memory
+        # as taken, so this process's caching allocator is holding it. The engine
+        # is a separate process and allocates from the driver, so it cannot use
+        # pooled memory no matter how much this process has freed internally.
+        # expandable_segments:True (which unsloth sets during training) is the
+        # usual reason empty_cache() cannot hand the pages back.
+        print(f"[vLLM] The trainer's tensors left the card "
+              f"({still_resident / GIB:.2f} GiB resident) but the driver still "
+              f"reports only {after / GIB:.1f} GiB of {total / GIB:.1f} GiB "
+              f"free, so this process's allocator is holding about "
+              f"{resident / GIB:.1f} GiB in its pool. The engine is a separate "
+              f"process and cannot allocate from that pool. Try running the "
+              f"trainer without expandable_segments "
+              f"(PYTORCH_ALLOC_CONF without it), which lets empty_cache() "
+              f"return the pages. Restoring the trainer and using the "
+              f"HuggingFace path.", flush=True)
+        if entries:
+            _force_unpark(ParkedTrainer(entries, resident, fingerprint))
         return None
 
     print(f"[vLLM] Trainer parked on the host; freed {freed / GIB:.1f} GiB "
-          f"({after / GIB:.1f} GiB of {total / GIB:.1f} GiB free).", flush=True)
-    return device
+          f"({after / GIB:.1f} GiB of {total / GIB:.1f} GiB free, "
+          f"{still_resident / GIB:.2f} GiB left on the card).", flush=True)
+    return ParkedTrainer(entries, resident, fingerprint)
 
 
-def unpark_trainer(model, device):
-    if model is None or device is None or device.type == "cpu":
+def unpark_trainer(model, parked):
+    """Restore a parked trainer. Accepts a ParkedTrainer or a torch.device."""
+    if model is None or parked is None:
         return
-    try:
-        model.to(device)
-        gc.collect()
+    if isinstance(parked, torch.device):
+        # Legacy signature: park_trainer used to return the previous device.
+        if parked.type == "cpu":
+            return
+        try:
+            model.to(parked)
+            gc.collect()
+            torch.cuda.empty_cache()
+            print(f"[vLLM] Trainer restored to {parked}.", flush=True)
+        except Exception as exc:
+            print(f"[vLLM] Could not restore the trainer to {parked}: {exc}",
+                  flush=True)
+            raise
+        return
+
+    if not parked.entries:
+        try:
+            model.to("cuda")
+        except Exception as exc:
+            print(f"[vLLM] Could not restore the trainer: {exc}", flush=True)
+            raise
+    else:
+        _force_unpark(parked)
+
+    gc.collect()
+    if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        print(f"[vLLM] Trainer restored to {device}.", flush=True)
-    except Exception as exc:
-        print(f"[vLLM] Could not restore the trainer to {device}: {exc}", flush=True)
-        raise
+    free, total = _free_gpu()
+    resident = _model_gpu_bytes(model)
+    print(f"[vLLM] Trainer restored to the card ({resident / GIB:.2f} GiB "
+          f"resident, {free / GIB:.1f} GiB of {total / GIB:.1f} GiB free).",
+          flush=True)
+
+    if parked.fingerprint is not None:
+        now = _fingerprint(model)
+        if now is None:
+            pass
+        elif now != parked.fingerprint:
+            raise RuntimeError(
+                "[vLLM] The trainer's weights changed across the park/restore "
+                "round trip: a quantization state was probably left behind on "
+                "the device. Training from here would use corrupted weights, "
+                "so the run stops. Set NNGPT_VLLM_FORCE_PARK=0 to disable "
+                "parking (the engine then cannot fit and generation falls back "
+                "to the HuggingFace path).")
+        else:
+            print("[vLLM] Park/restore verified: weights unchanged.", flush=True)
+
+
+def _unwrap_tokenizer(tokenizer_or_processor):
+    """Return the real tokenizer behind a multimodal processor.
+
+    Qwen3.x VL checkpoints load as Qwen3VLProcessor. Its __call__ takes images
+    first and it treats its input as a batch, so it cannot be used as a
+    tokenizer. Plain tokenizers have no .tokenizer attribute and pass through.
+    """
+    inner = getattr(tokenizer_or_processor, "tokenizer", None)
+    if inner is not None and hasattr(inner, "convert_tokens_to_ids"):
+        return inner
+    return tokenizer_or_processor
+
+
+def _flatten_token_ids(obj):
+    """Coerce whatever a tokenizer or processor returned into a flat [int].
+
+    A multimodal processor treats one conversation as a batch of one, so it
+    hands back [[id, id, ...]]. vLLM then runs min(prompt_ids) over a list of
+    lists and dies with "'<' not supported between instances of 'list' and
+    'int'" -- and before that, len(ids) reads as 1, so the output budget is
+    computed from a one-token prompt. Tensors, BatchEncoding and plain dicts
+    all turn up here too, depending on the transformers version.
+    """
+    if obj is None:
+        return []
+    if hasattr(obj, "keys") and "input_ids" in obj:
+        return _flatten_token_ids(obj["input_ids"])
+    if hasattr(obj, "tolist") and not isinstance(obj, (list, tuple)):
+        return _flatten_token_ids(obj.tolist())
+    if isinstance(obj, int):
+        return [obj]
+    if isinstance(obj, (list, tuple)):
+        if not obj:
+            return []
+        if all(isinstance(x, int) and not isinstance(x, bool) for x in obj):
+            return list(obj)
+        # Nested: one conversation rendered as a batch of one. Take the row.
+        return _flatten_token_ids(obj[0])
+    raise TypeError(f"cannot read token ids from {type(obj).__name__}")
+
+
+def _render_messages(tok, messages, suppress_thinking=False):
+    """Render a messages list to a prompt string.
+
+    Two steps, text first and then encoding, rather than tokenize=True: a
+    processor's tokenize=True return shape is batched and version-dependent,
+    and rendering to text keeps this prompt identical to the one the
+    HuggingFace path builds, so output from the two paths stays comparable.
+    """
+    apply = getattr(tok, "apply_chat_template", None)
+    if callable(apply):
+        # Qwen3.x is a hybrid thinking model with thinking ON by default. The
+        # HuggingFace path asks for non-thinking mode via the template flag, so
+        # this path must too: otherwise the same run suppresses reasoning
+        # traces on one path and not the other, and the <think> block breaks
+        # code extraction from the vLLM output.
+        attempts = []
+        if suppress_thinking:
+            attempts.append({"enable_thinking": False})
+            attempts.append({"chat_template_kwargs": {"enable_thinking": False}})
+        attempts.append({})
+        rendered = None
+        for extra in attempts:
+            try:
+                rendered = apply(messages, tokenize=False,
+                                 add_generation_prompt=True, **extra)
+                break
+            except TypeError:
+                continue
+            except Exception:
+                rendered = None
+                break
+        try:
+            if rendered is None:
+                raise ValueError("apply_chat_template produced nothing")
+            if not isinstance(rendered, str):
+                # Batched processors return a list of strings.
+                rendered = rendered[0] if rendered else ""
+            if rendered:
+                return rendered
+        except Exception as exc:
+            print(f"[vLLM] apply_chat_template failed "
+                  f"({type(exc).__name__}: {exc}); using the plain "
+                  f"User/Assistant format.", flush=True)
+    body = "\n".join(f"{m['role'].capitalize()}: {m['content']}"
+                      for m in messages)
+    return f"{body}\nAssistant:"
+
+
+def _encode_prompt(tok, messages, suppress_thinking=False):
+    """Flat token ids for one conversation, processor or tokenizer alike."""
+    rendered = _render_messages(tok, messages, suppress_thinking)
+    try:
+        encoded = tok(text=rendered, add_special_tokens=False)
+    except TypeError:
+        encoded = tok(rendered, add_special_tokens=False)
+    ids = _flatten_token_ids(encoded)
+    if not ids:
+        raise ValueError("the prompt encoded to zero tokens")
+    return ids
+
+
+def _engine_window(max_model_len):
+    """The sequence window the engine should use, which may be below the trainer's.
+
+    KV cache is linear in max_model_len, and on a card where the weights eat
+    most of the budget that single number decides whether anything can batch.
+    The trainer's context_length is the wrong value to inherit: it has to cover
+    the longest prompt plus a generous answer, while the engine only has to
+    cover the longest prompt plus the answer actually produced. Measured output
+    in this pipeline is ~700-1400 tokens, so reserving 6000 per sequence buys
+    nothing and costs concurrency.
+
+    NNGPT_VLLM_MAX_MODEL_LEN caps it; 0 or unset keeps the value passed in. The
+    cap is never allowed to raise the window above what the caller asked for.
+    """
+    want = int(max_model_len)
+    cap = _env_int("NNGPT_VLLM_MAX_MODEL_LEN", 0)
+    if cap > 0 and cap < want:
+        print(f"[vLLM] engine window capped to {cap} tokens "
+              f"(trainer context is {want}); KV per sequence scales with this.",
+              flush=True)
+        return cap
+    return want
+
+
+def _speculative_config():
+    """n-gram speculative decoding config, or None.
+
+    Speculation multiplies single-stream throughput, which is the regime this
+    card is stuck in: with the weights taking most of the budget there is KV
+    for only a few sequences, so continuous batching cannot help and per-token
+    speed is all that is left.
+
+    The n-gram method is used rather than a draft model or MTP because it needs
+    no extra weights: it proposes continuations by matching n-grams already in
+    the prompt and the text generated so far. MTP would be stronger but does
+    not fit in what is left of a 24 GiB card. Generated code is unusually
+    repetitive (import blocks, nn.Conv2d(, self., indentation), which is the
+    case n-gram speculation is good at; where it misses, the proposals are
+    simply rejected and little is lost.
+
+    OFF by default, because the trade depends on how much batching the card can
+    do. Speculation wins when few sequences are in flight and the GPU sits idle
+    waiting on a serial decode -- the 27B case. At high concurrency the GPU is
+    already saturated and every rejected draft token is wasted compute, so on a
+    model that actually fills max_num_seqs it can be a net loss. Set
+    NNGPT_VLLM_SPEC_TOKENS=4 where it helps.
+    """
+    n = _env_int("NNGPT_VLLM_SPEC_TOKENS", 0)
+    if n <= 0:
+        return None
+    return {
+        "method": "ngram",
+        "num_speculative_tokens": n,
+        "prompt_lookup_max": _env_int("NNGPT_VLLM_SPEC_LOOKUP_MAX", 4),
+        "prompt_lookup_min": _env_int("NNGPT_VLLM_SPEC_LOOKUP_MIN", 1),
+    }
+
+
+def _drop_unsupported_engine_kwargs(kwargs):
+    """Remove engine kwargs this vLLM build does not accept.
+
+    vLLM renames and retires EngineArgs fields between releases (swap_space was
+    removed, and kv_cache_dtype / enforce_eager have moved before), which turns
+    an upgrade into "EngineArgs.__init__() got an unexpected keyword argument".
+    Introspect the dataclass and drop what it no longer knows, naming each one,
+    rather than failing the whole engine build over an optional tuning flag.
+    """
+    try:
+        from vllm.engine.arg_utils import EngineArgs
+    except Exception:
+        return kwargs
+    accepted = set()
+    try:
+        import dataclasses
+        accepted = {f.name for f in dataclasses.fields(EngineArgs)}
+    except Exception:
+        pass
+    if not accepted:
+        try:
+            import inspect
+            accepted = set(inspect.signature(EngineArgs.__init__).parameters) - {"self"}
+        except Exception:
+            return kwargs
+    dropped = sorted(k for k in kwargs if k not in accepted)
+    if dropped:
+        print(f"[vLLM] engine kwargs not supported by this vLLM build, "
+              f"dropped: {', '.join(dropped)}", flush=True)
+        kwargs = {k: v for k, v in kwargs.items() if k in accepted}
+    return kwargs
 
 
 class VLLMSleepEngine:
@@ -160,15 +673,23 @@ class VLLMSleepEngine:
                  gpu_memory_utilization=None, quantization=None,
                  max_lora_rank=None, enforce_eager=None, dtype="bfloat16",
                  served_model=None, max_num_seqs=None, trainer_reserve_gib=None,
-                 kv_cache_dtype=None):
+                 kv_cache_dtype=None, required_gib=None):
         from vllm import LLM
 
         self.tokenizer = tokenizer
+        # The engine is handed whatever the loader produced, which for a VL
+        # checkpoint is a processor. Keep both: the processor for anything that
+        # wants it, the unwrapped tokenizer for all text work.
+        self._tok = _unwrap_tokenizer(tokenizer)
+        if self._tok is not tokenizer:
+            print(f"[vLLM] {type(tokenizer).__name__} detected; using its "
+                  f"inner {type(self._tok).__name__} to encode prompts.",
+                  flush=True)
         self.system_prompt = None
         self.temperature = temperature
         self.top_k = top_k
         self.top_p = top_p
-        self.max_model_len = int(max_model_len)
+        self.max_model_len = _engine_window(max_model_len)
         self.suppress_thinking = False
         self.budget_tokens = None
 
@@ -192,6 +713,30 @@ class VLLMSleepEngine:
         if not gpu_memory_utilization:
             gpu_memory_utilization = max(0.10, min(0.95, budget / total)) if total else 0.90
 
+        # Refuse before loading rather than after. The engine needs roughly the
+        # same bytes the trainer held, and gpu_memory_utilization is derived
+        # from *free* memory, so when the trainer is still resident this budget
+        # is quietly smaller than the weights. Loading then dies about halfway
+        # through with a bare CUDA OOM, 25 seconds later, having said nothing
+        # about why. The headroom factor covers the loader's own working set and
+        # the CUDA context; it is a heuristic, so NNGPT_VLLM_REQUIRED_GIB
+        # overrides the estimate and 0 disables the check.
+        required = _env_float("NNGPT_VLLM_REQUIRED_GIB",
+                              required_gib if required_gib is not None else 0.0)
+        if required > 0:
+            headroom = _env_float("NNGPT_VLLM_REQUIRED_HEADROOM", 1.15)
+            need = required * headroom * GIB
+            have = gpu_memory_utilization * total
+            if have < need:
+                raise RuntimeError(
+                    f"engine needs about {need / GIB:.1f} GiB (weights "
+                    f"{required:.1f} GiB x {headroom:.2f} headroom) but its "
+                    f"budget is {have / GIB:.1f} GiB "
+                    f"(gpu_memory_utilization={gpu_memory_utilization:.3f} of "
+                    f"{total / GIB:.1f} GiB, {free / GIB:.1f} GiB free). The "
+                    f"trainer is most likely still on the card: parking it is "
+                    f"what frees the room. Not loading weights that cannot fit.")
+
         default_quant = "" if served_model != base_model_name else "bitsandbytes"
         quantization = quantization or os.getenv(
             "NNGPT_VLLM_QUANTIZATION", default_quant).strip() or None
@@ -203,6 +748,25 @@ class VLLMSleepEngine:
         enforce_eager = (enforce_eager if enforce_eager is not None
                          else _env_flag("NNGPT_VLLM_ENFORCE_EAGER", True))
         max_num_seqs = _env_int("NNGPT_VLLM_MAX_NUM_SEQS", max_num_seqs or 16)
+        # The profiling pass vLLM runs straight after loading weights does a
+        # forward of max_num_batched_tokens, and whatever that peaks at is
+        # memory the KV cache cannot have. vLLM 0.28 raised the default from
+        # 8192 to 16384, which is far too much here for two compounding
+        # reasons: a 16k-token prefill on a 27B model is large by itself, and
+        # bitsandbytes has no fused 4-bit gemm for prefill, so it dequantizes
+        # each weight to bf16 first (a 17408x5120 matrix is ~178 MB
+        # materialized, per layer, transiently). With ~6 GiB left after the
+        # weights that overflows, which is why the OOM lands after
+        # "Loading safetensors checkpoint shards: 100%" rather than during it.
+        # Chunked prefill (on by default in V1) splits long prompts to fit, so
+        # a smaller value costs throughput, not capability.
+        # 0 / unset => do not pass it at all, so vLLM keeps its own default.
+        # A small value is right only when the weights leave almost no KV: it
+        # caps the profiling forward and the prefill chunk, which is what the
+        # 27B needed. On a model with room to spare (a 14B keeps ~14 GiB of KV)
+        # forcing 2048 makes prefill 8x more chunked and is a straight
+        # throughput loss, so it must stay opt-in.
+        max_num_batched_tokens = _env_int("NNGPT_VLLM_MAX_NUM_BATCHED_TOKENS", 0)
         # "fp8" halves the KV cache, roughly doubling how many sequences fit,
         # at the cost of a small quantization error in attention. Left at "auto"
         # by default because the generated code is the measured output.
@@ -224,6 +788,13 @@ class VLLMSleepEngine:
             swap_space=0,
             kv_cache_dtype=kv_cache_dtype,
         )
+        if max_num_batched_tokens > 0:
+            kwargs["max_num_batched_tokens"] = max_num_batched_tokens
+
+        spec = _speculative_config()
+        if spec:
+            kwargs["speculative_config"] = spec
+
         if quantization:
             kwargs["quantization"] = quantization
             if quantization == "bitsandbytes":
@@ -231,10 +802,13 @@ class VLLMSleepEngine:
 
         print(f"[vLLM] Building engine: model={served_model} "
               f"max_model_len={self.max_model_len} max_num_seqs={max_num_seqs} "
+              f"max_num_batched_tokens={max_num_batched_tokens or 'default'} "
+              f"spec={spec['num_speculative_tokens'] if spec else 'off'} "
               f"quantization={quantization or 'from checkpoint'} "
               f"kv_cache_dtype={kv_cache_dtype} "
               f"gpu_memory_utilization={gpu_memory_utilization:.3f} "
               f"(free={free / GIB:.1f} GiB, total={total / GIB:.1f} GiB)", flush=True)
+        kwargs = _drop_unsupported_engine_kwargs(kwargs)
         _saved_alloc = _strip_expandable_segments()
         try:
             self.llm = LLM(**kwargs)
@@ -342,14 +916,8 @@ class VLLMSleepEngine:
         return messages
 
     def _token_ids(self, prompt_text):
-        messages = self._build_messages(prompt_text)
-        if hasattr(self.tokenizer, "apply_chat_template"):
-            return list(self.tokenizer.apply_chat_template(
-                messages, tokenize=True, add_generation_prompt=True))
-        body = "\n".join(f"{m['role'].capitalize()}: {m['content']}"
-                         for m in messages)
-        return list(self.tokenizer(f"{body}\nAssistant:",
-                                   add_special_tokens=False)["input_ids"])
+        return _encode_prompt(self._tok, self._build_messages(prompt_text),
+                              self.suppress_thinking)
 
     def token_length(self, prompt_text):
         return len(self._token_ids(prompt_text))
@@ -409,12 +977,14 @@ class VLLMSleepEngine:
 
 
 def build_engine(base_model_name, tokenizer, max_model_len, temperature=0.8,
-                 top_k=70, top_p=0.9, trainer_reserve_gib=None):
+                 top_k=70, top_p=0.9, trainer_reserve_gib=None,
+                 required_gib=None):
     try:
         return VLLMSleepEngine(
             base_model_name, tokenizer, max_model_len,
             temperature=temperature, top_k=top_k, top_p=top_p,
             trainer_reserve_gib=trainer_reserve_gib,
+            required_gib=required_gib,
         )
     except Exception as exc:
         print(f"[vLLM] ENGINE BUILD FAILED: {exc}", flush=True)
@@ -430,7 +1000,11 @@ class VLLMGeneration:
                  temperature=0.8, top_k=70, top_p=0.9):
         self.base_model_name = base_model_name
         self.tokenizer = tokenizer
-        self.max_model_len = int(max_model_len)
+        self._tok = _unwrap_tokenizer(tokenizer)
+        # Measure prompts against the window the engine will really use, so the
+        # fitting pass agrees with the engine even between epochs when the
+        # engine has been torn down and cannot be asked.
+        self.max_model_len = _engine_window(max_model_len)
         self.temperature = temperature
         self.top_k = top_k
         self.top_p = top_p
@@ -460,10 +1034,45 @@ class VLLMGeneration:
         if self._build_failed:
             return
         self._parked_device = park_trainer(trainer_model)
+
+        # A trainer that is still resident leaves far too little room, and the
+        # engine would spend ~25s loading weights only to OOM. park_trainer has
+        # already said why, so give up on vLLM for the rest of the run rather
+        # than repeating that cost once per epoch. NNGPT_VLLM_BUILD_UNPARKED=1
+        # forces the attempt anyway.
+        if (self.engine is None and self._parked_device is None
+                and trainer_model is not None
+                and not _env_flag("NNGPT_VLLM_BUILD_UNPARKED", False)):
+            resident = _model_gpu_bytes(trainer_model)
+            _free, total = _free_gpu()
+            # Refuse only when two copies genuinely cannot coexist. A small
+            # model can share the card -- an 8 GiB trainer plus an 8 GiB engine
+            # and its cache fits in 24 GiB -- and refusing there would disable
+            # vLLM for a configuration that works. Only a model whose two
+            # copies exceed the card is hopeless, and that is the 27B.
+            if (resident >= MIN_PARK_FREED and total
+                    and resident * 2 + MIN_PARK_FREED > total):
+                print(f"[vLLM] The trainer is still on the card "
+                      f"({resident / GIB:.1f} GiB) and the engine needs about "
+                      f"as much again, which does not fit in "
+                      f"{total / GIB:.1f} GiB. Generation uses the "
+                      f"HuggingFace path for this run.", flush=True)
+                self._build_failed = True
+                return
+            if resident >= MIN_PARK_FREED:
+                print(f"[vLLM] The trainer did not park ({resident / GIB:.1f} "
+                      f"GiB resident) but two copies should fit in "
+                      f"{total / GIB:.1f} GiB; building the engine anyway.",
+                      flush=True)
+
+        required_gib = (self._parked_device.gpu_bytes / GIB
+                        if self._parked_device is not None
+                        and hasattr(self._parked_device, "gpu_bytes") else None)
         if self.engine is None:
             self.engine = build_engine(
                 self.base_model_name, self.tokenizer, self.max_model_len,
                 temperature=self.temperature, top_k=self.top_k, top_p=self.top_p,
+                required_gib=required_gib,
             )
             if self.engine is None:
                 self._build_failed = True
@@ -516,15 +1125,10 @@ class VLLMGeneration:
         if target is not None:
             rendered = target._templated_from_messages(
                 target._build_messages(prompt_text))
-            return len(self.tokenizer(rendered, add_special_tokens=False)["input_ids"])
-        messages = self._build_messages(prompt_text)
-        if hasattr(self.tokenizer, "apply_chat_template"):
-            return len(self.tokenizer.apply_chat_template(
-                messages, tokenize=True, add_generation_prompt=True))
-        body = "\n".join(f"{m['role'].capitalize()}: {m['content']}"
-                          for m in messages)
-        return len(self.tokenizer(f"{body}\nAssistant:",
-                                  add_special_tokens=False)["input_ids"])
+            return len(_flatten_token_ids(
+                self._tok(text=rendered, add_special_tokens=False)))
+        return len(_encode_prompt(self._tok, self._build_messages(prompt_text),
+                                  self.suppress_thinking))
 
     def output_budget(self, in_len, max_new_tokens):
         if self.engine is not None:
@@ -545,6 +1149,7 @@ class VLLMGeneration:
         if target is None:
             return SKIPPED_OUTPUT
         target.system_prompt = self.system_prompt
+        target.suppress_thinking = self.suppress_thinking
         return target.chat(prompt, max_len=max_len, max_new_tokens=max_new_tokens,
                            engineer_prompt=engineer_prompt)
 
@@ -554,6 +1159,7 @@ class VLLMGeneration:
         if target is None:
             return [SKIPPED_OUTPUT for _ in prompts]
         target.system_prompt = self.system_prompt
+        target.suppress_thinking = self.suppress_thinking
         return target.chat_batch(prompts, max_len=max_len,
                                  max_new_tokens=max_new_tokens,
                                  engineer_prompt=engineer_prompt)
