@@ -269,6 +269,7 @@ PARAM_ORDER = (
     "optimizer", "lora_r", "lora_alpha", "lora_dropout",
     "per_device_train_batch_size", "gradient_accumulation_steps",
     "max_prompts", "sft_max_length", "context_length", "max_new_tokens",
+    "temperature", "top_p",
     "test_nn", "load_in_4bit", "unsloth", "vllm_sleep",
 )
 
@@ -289,6 +290,8 @@ PARAM_LABEL = {
     "max_prompts": "prompts",
     "context_length": "ctx",
     "max_new_tokens": "new_tok",
+    "temperature": "temp",
+    "top_p": "top_p",
     "sft_max_length": "sft_len",
     "load_in_4bit": "4bit",
 }

@@ -274,6 +274,8 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
         'context_length': context_length,
         'sft_max_length': sft_max_length,
         'max_new_tokens': max_new_tokens,
+        'temperature': temperature,
+        'top_p': top_p,
         'test_nn': test_nn,
         'load_in_4bit': load_in_4bit,
         'unsloth': use_unsloth,

@@ -565,6 +565,15 @@ def test_param_block_states_every_hyper_parameter_on_one_line():
     assert len(text) <= ES.PARAM_MAX_CHARS
 
 
+def test_param_block_states_the_sampling_settings():
+    """temperature and top_p decide what the LLM emits, so the curves move with
+    them; a figure that leaves them out cannot be reproduced from its caption."""
+    text = " ".join(ES._param_block(
+        dict(_FULL_TRAINING, temperature=0.8, top_p=0.9)))
+    assert "temp=0.8" in text
+    assert "top_p=0.9" in text
+
+
 def test_param_block_omits_what_the_figure_already_shows():
     """cycles is the x axis and test_nn is every label's denominator."""
     text = " ".join(ES._param_block(_FULL_TRAINING))
