@@ -76,6 +76,9 @@ class AgentState(BaseModel):
     lora_tuner: Optional[Any] = None
     chat_bot: Optional[Any] = None
     vllm_engine: Optional[Any] = None
+    # Adapter the vLLM engine generates with at epoch 0: the carried-over adapter
+    # (NNGPT_CARRY_ADAPTER), or None for the base weights.
+    vllm_init_adapter: Optional[str] = None
     chat_bot_hf: Optional[Any] = None
 
     # ---- Optional outputs (predictor / metrics) ----

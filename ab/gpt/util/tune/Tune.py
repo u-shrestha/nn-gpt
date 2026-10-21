@@ -835,6 +835,19 @@ def _has_generated_output(out_path) -> bool:
     return False
 
 
+def _vllm_peft_warning(vllm_engine, llm_path, init_adapter):
+    """Warning for vLLM generation with --peft but without NNGPT_CARRY_ADAPTER=1, else None.
+
+    vLLM loads the base weights by name and applies an adapter from disk; an adapter from --peft that
+    was merged into the in-memory model never reaches the engine. Behaviour is unchanged, only reported.
+    """
+    if vllm_engine is not None and llm_path and init_adapter is None:
+        return ("[vLLM] WARNING: --peft without NNGPT_CARRY_ADAPTER=1: the merged adapter is not visible to "
+                "the vLLM engine, which generates with the base weights at epoch 0. Set "
+                "NNGPT_CARRY_ADAPTER=1 to generate with the adapter.")
+    return None
+
+
 def generate_step(state: AgentState) -> dict:
     epoch = state["current_epoch"]
     skip_epoch = state.get("skip_epoch", 0)
@@ -851,7 +864,7 @@ def generate_step(state: AgentState) -> dict:
     if vllm_engine is not None:
         vllm_engine.fallback = state.get("chat_bot_hf")
         vllm_engine.prepare(
-            epoch_dir(epoch - 1) / state["base_model_name"] if epoch > 0 else None,
+            epoch_dir(epoch - 1) / state["base_model_name"] if epoch > 0 else state.get("vllm_init_adapter"),
             state.get("model"),
         )
 
@@ -1474,6 +1487,9 @@ def tune(
         temperature=temperature, top_k=top_k, top_p=top_p,
     ) if sleep_mode_enabled() else None
     _hf_chat_bot = chat_bot
+    _warning = _vllm_peft_warning(vllm_engine, llm_path, init_adapter)
+    if _warning:
+        print(_warning, flush=True)
     if vllm_engine is not None:
         vllm_engine.fallback = _hf_chat_bot
         chat_bot = vllm_engine
@@ -1493,6 +1509,7 @@ def tune(
         lora_tuner=lora_tuner,
         chat_bot=chat_bot,
         vllm_engine=vllm_engine,
+        vllm_init_adapter=str(init_adapter) if init_adapter else None,
         chat_bot_hf=_hf_chat_bot,
 
         prompt_dict=prompt_dict,
@@ -1542,8 +1559,11 @@ def tune(
             print(f'Skipped generation at epoch {epoch}')
         else:
             if vllm_engine is not None:
+                # Epoch 0 generates with the carried-over adapter (NNGPT_CARRY_ADAPTER), if any;
+                # later epochs with the adapter trained in the previous epoch.
                 vllm_engine.prepare(
-                    run_epoch_dir(epoch - 1) / base_model_name if epoch > 0 else None,
+                    run_epoch_dir(epoch - 1) / base_model_name if epoch > 0
+                    else (str(init_adapter) if init_adapter else None),
                     model)
             if trans_mode:
                 trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs,
