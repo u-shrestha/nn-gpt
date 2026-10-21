@@ -830,8 +830,6 @@ if __name__ == '__main__':
                         help="[Pipeline] Load best model at end (default: False).")
     parser.add_argument('--metric_for_best_model', type=str, default=None,
                         help="[Pipeline] Metric for best model (default: None).")
-    parser.add_argument('--warmup_steps', type=int, default=None,
-                        help="[Pipeline] Warmup steps override (default: None).")
     parser.add_argument('--weight_decay', type=float, default=None,
                         help="[Pipeline] Weight decay (default: None).")
     parser.add_argument('--trans_mode', action='store_true',
