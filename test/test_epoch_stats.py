@@ -554,7 +554,7 @@ _FULL_TRAINING = {
 
 
 #: The same run with the sampling settings recorded, as Tune.py writes them.
-_SAMPLING_TRAINING = dict(_FULL_TRAINING, temperature=0.8, top_p=0.9)
+_SAMPLING_TRAINING = dict(_FULL_TRAINING, temperature=0.8, top_k=70, top_p=0.9)
 
 
 def test_param_block_states_every_hyper_parameter_on_one_line():
@@ -574,6 +574,7 @@ def test_param_block_states_the_sampling_settings():
     them; a figure that leaves them out cannot be reproduced from its caption."""
     text = " ".join(ES._param_block(_SAMPLING_TRAINING))
     assert "temp=0.8" in text
+    assert "top_k=70" in text
     assert "top_p=0.9" in text
 
 
@@ -600,7 +601,7 @@ def test_the_sampling_settings_come_last():
     every training setting instead of among the optimiser's numbers."""
     lines = ES._param_block(_SAMPLING_TRAINING)
     assert len(lines) == 1, f"configuration spread over {len(lines)} lines"
-    assert lines[0].endswith("temp=0.8 top_p=0.9")
+    assert lines[0].endswith("temp=0.8 top_k=70 top_p=0.9")
 
 
 def test_the_full_configuration_including_sampling_stays_on_one_line():

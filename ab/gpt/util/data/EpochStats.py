@@ -279,10 +279,12 @@ PARAM_ORDER = (
 #: nothing until it is read next to an output budget of the same size.
 PARAM_TOKENS = ("sft_max_length", "context_length", "max_new_tokens")
 
-#: Sampling is not fine-tuning: temperature and top_p act on the finished model
-#: at generation time, and standing among the optimiser's numbers they invite a
-#: reader to compare them with a learning rate or a rank.
-PARAM_TAIL = ("temperature", "top_p")
+#: Sampling is not fine-tuning: temperature, top_k and top_p act on the
+#: finished model at generation time, and standing among the optimiser's
+#: numbers they invite a reader to compare them with a learning rate or a rank.
+#: In the order they apply -- the distribution is tempered, then truncated to a
+#: count, then to a mass -- so the line reads as the pipeline it describes.
+PARAM_TAIL = ("temperature", "top_k", "top_p")
 
 #: Groups lifted out of the main ordering and set down at the end of the line,
 #: in this order, after the named settings. Each is a block that is read as a
@@ -307,6 +309,7 @@ PARAM_LABEL = {
     "context_length": "ctx",
     "max_new_tokens": "new_tok",
     "temperature": "temp",
+    "top_k": "top_k",
     "top_p": "top_p",
     "sft_max_length": "sft_len",
     "load_in_4bit": "4bit",
@@ -325,11 +328,11 @@ PARAM_SKIP = ("cycles", "test_nn", "unsloth", "vllm_sleep")
 PARAM_FLAGS = ("load_in_4bit",)
 
 #: Width budget for the configuration line, in characters, paired with the
-#: point size it is drawn at: at 6.2pt monospace, 182 characters span ~94% of
+#: point size it is drawn at: at 6.0pt monospace, 187 characters span ~94% of
 #: the 10in figure, which clears the panels on both sides. Changing one without
 #: the other either wraps the line or lets it run past the axes.
-PARAM_MAX_CHARS = 182
-PARAM_FONTSIZE = 6.2
+PARAM_MAX_CHARS = 187
+PARAM_FONTSIZE = 6.0
 
 #: Near-black rather than a grey: the line is the only record of what produced
 #: the curves, and at this size a lightened grey stops being legible in print.
