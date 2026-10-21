@@ -22,3 +22,20 @@ def test_every_cli_option_is_defined_once():
     assert counts, "no add_argument calls found"
     duplicates = {opt: n for opt, n in counts.items() if n > 1}
     assert not duplicates, f"options defined more than once: {duplicates}"
+
+
+def _load_function(name):
+    """Compile one top-level function of Tune.py on its own (no module import)."""
+    tree = ast.parse(TUNE.read_text())
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    namespace = {}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(TUNE), "exec"), namespace)
+    return namespace[name]
+
+
+def test_warmup_steps_whole_numbers_stay_int():
+    # The iterative pipeline passes "--warmup_steps 20"; transformers 4.x rejects 20.0.
+    parse = _load_function("_warmup_steps_arg")
+    assert parse("20") == 20 and isinstance(parse("20"), int)
+    assert parse("20.0") == 20 and isinstance(parse("20.0"), int)
+    assert parse("0.05") == 0.05 and isinstance(parse("0.05"), float)
