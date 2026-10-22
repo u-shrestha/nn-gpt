@@ -533,9 +533,138 @@ def _fmt_duration(seconds):
     return f"{minutes}m"
 
 
+def _fmt_span(seconds):
+    """One cycle's cost, in the largest unit that fits, at a glance width.
+
+    A tick label is read in passing, so it carries one number: 11h, 2.4h, 45m.
+    The decimal appears only below ten of a unit, where dropping it would be a
+    real error -- 1.5d rounded to 2d overstates the cycle by a third -- and
+    disappears above it, where the extra digit buys nothing.
+    """
+    if seconds is None or seconds < 0:
+        return ""
+    if seconds < 60:
+        return "<1m"
+    minutes = seconds / 60.0
+    if minutes < 90:
+        return f"{int(round(minutes))}m"
+    hours = minutes / 60.0
+    if hours < 36:
+        return _scaled(hours, "h")
+    return _scaled(hours / 24.0, "d")
+
+
+def _scaled(value, unit):
+    """One decimal below ten, none above it, and never a trailing ".0"."""
+    if value >= 10 or round(value, 1) == round(value):
+        return f"{int(round(value))}{unit}"
+    return f"{value:.1f}{unit}"
+
+
+def _cycle_durations(config, rows):
+    """How long each plotted cycle took, in the order the rows are drawn.
+
+    A row's timestamp is the moment its cycle finished, so a cycle is measured
+    from the end of the one before it -- and the first from the start of the
+    run, which is the only place its own beginning is recorded.
+
+    A missing or unreadable stamp is a missing boundary, and it costs both of
+    the cycles that share it: the one that ends there and the one that starts
+    there. Carrying the last good stamp forward instead would charge the whole
+    gap to the next cycle, so a stats run repeated days later would show up as
+    days of work.
+    """
+    previous = _parse_time(config.get("started_at"))
+    spans = []
+    for row in rows:
+        stamp = _parse_time(row.get("timestamp"))
+        if stamp is None or previous is None or stamp < previous:
+            spans.append(None)
+        else:
+            spans.append((stamp - previous).total_seconds())
+        previous = stamp
+    return spans
+
+
+#: Size and colour of the per-cycle durations under the x axis. Quieter and
+#: smaller than the cycle numbers: the number is what a point is identified by
+#: and the duration is a note about it, and at equal weight the axis reads as
+#: two rows of numbers with no way to tell which is which.
+SPAN_FONTSIZE = 6.5
+SPAN_COLOR = "#6b7177"
+
+#: Clearance between the tick labels and the durations under them, in axes
+#: fractions.
+SPAN_GAP = 0.012
+
+#: Height to reserve under the tick labels for a row of durations, in points:
+#: the line itself plus the gaps on either side of it. Added to the axis
+#: label's padding BEFORE the layout is computed, because tight_layout sizes
+#: the figure from that padding -- claimed afterwards, the room comes off the
+#: bottom of the figure and the axis label is cut in half.
+#:
+#: Calibrated, not derived: at 15.0pt the axis label clears the durations by
+#: 3.4mm on the 10x9in figure. SPAN_LABEL_CLEARANCE_MM is the floor it is held
+#: to, and a test measures the rendered figure against it, because the gap
+#: depends on font metrics that no formula here can see.
+SPAN_RESERVE = 15.0
+
+#: The least space the axis label may leave under the durations. Below this
+#: the two rows read as one block and the label stops looking like a label.
+SPAN_LABEL_CLEARANCE_MM = 3.0
+
+
+def _reserve_cycle_spans(ax):
+    """Make room under the tick labels, before the layout is computed."""
+    ax.xaxis.labelpad = ax.xaxis.labelpad + SPAN_RESERVE
+
+
+def _draw_cycle_spans(ax, positions, spans):
+    """The time each cycle took, under its tick.
+
+    Placed by measuring the tick labels rather than at a fixed offset: the
+    offset that clears a 10pt number does not clear a larger one, and the
+    figure has been re-sized more than once. Call this after the layout is
+    settled -- an axes fraction means a different number of pixels before and
+    after tight_layout, and these texts have to clear real rendered glyphs.
+    """
+    cells = [(x, _fmt_span(span)) for x, span in zip(positions, spans)]
+    cells = [(x, t) for x, t in cells if t]
+    if not cells:
+        return False
+
+    ax.get_figure().canvas.draw()          # tick labels have no extent undrawn
+    to_axes = ax.transAxes.inverted()
+    bottoms = [to_axes.transform((0, label.get_window_extent().y0))[1]
+               for label in ax.get_xticklabels() if label.get_text()]
+    top = (min(bottoms) if bottoms else -0.026) - SPAN_GAP
+
+    for x, text in cells:
+        ax.text(x, top, text, transform=ax.get_xaxis_transform(),
+                ha="center", va="top", fontsize=SPAN_FONTSIZE,
+                color=SPAN_COLOR, family="monospace", clip_on=False)
+    return True
+
+
+#: What one point on the x axis is. The tracker calls it an epoch and its
+#: records still do -- the key is "epoch", the file is epoch_tracker.json, and
+#: renaming those would strand every tracker already written -- but the figure
+#: says cycle, because that is what it is: one round of generation, training
+#: and evaluation, containing ep/cyc training epochs, which the caption states.
+#: Calling both an epoch left the figure claiming a run of four epochs when it
+#: had trained twenty.
+AXIS_LABEL = "cycle"
+
 #: Label on the run time, so the figure says what the number measures. Without
 #: it a duration in the corner reads as a deadline, a budget or an age.
 RUNTIME_LABEL = "run time"
+
+
+#: The run time is set darker than the project mark beside it. The mark is an
+#: imprint and may recede; this is a number meant to be read, and at the mark's
+#: own grey it sat at 2.2:1 against white -- legible on a screen at full size,
+#: not in a printed figure or a slide. #53585e is 7.2:1 and still quiet.
+RUNTIME_COLOR = "#53585e"
 
 
 def _draw_runtime(fig, text):
@@ -548,7 +677,7 @@ def _draw_runtime(fig, text):
     if not text:
         return
     fig.text(0.0115, 0.9955, f"{RUNTIME_LABEL}  {text}", ha="left", va="top",
-             fontsize=7.5, color=BRAND_COLOR, family="monospace", zorder=0)
+             fontsize=7.5, color=RUNTIME_COLOR, family="monospace", zorder=0)
 
 
 #: Project mark set in the top-right corner, on the band occupied by the title
@@ -727,7 +856,7 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
     # the accuracy panel below: at 4/16 the interval runs 10-49% and swamps the
     # movement in the rate itself. Headroom leaves room for the n/N labels.
     axes[0].set_ylim(*_value_limits(pct, 0.0, 100.0))
-    axes[0].set_title("Valid generation rate per epoch")
+    axes[0].set_title("Valid generation rate per cycle")
     axes[0].legend(loc="best", fontsize=8, framealpha=0.75, fancybox=False)
     axes[0].grid(alpha=0.3)
 
@@ -854,18 +983,21 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
             annotation_clip=False)
 
     axes[1].set_ylabel("accuracy")
-    axes[1].set_xlabel("epoch")
+    axes[1].set_xlabel(AXIS_LABEL)
     axes[1].set_ylim(accuracy_lo, accuracy_hi)
-    axes[1].set_title("Accuracy per epoch: mean with 95% CI, and best model "
+    axes[1].set_title("Accuracy per cycle: mean with 95% CI, and best model "
                       "(generated vs. original networks)")
     if axes[1].get_legend_handles_labels()[0]:   # nothing to label on an all-failed epoch
         axes[1].legend(loc="best", fontsize=8, framealpha=0.75, ncol=2, fancybox=False)
     axes[1].grid(alpha=0.3)
 
+    spans = _cycle_durations(_run_config(base_dir) if base_dir else {}, rows)
     if ep:
         axes[1].set_xticks(sorted(set(ep)))
+        if any(_fmt_span(s) for s in spans):
+            _reserve_cycle_spans(axes[1])
         if len(set(ep)) == 1:
-            # A single epoch leaves matplotlib to invent an x range; fix it so
+            # A single cycle leaves matplotlib to invent an x range; fix it so
             # the whiskers drawn by _draw_band sit at a sensible width.
             only = ep[0]
             axes[1].set_xlim(only - 0.5, only + 0.5)
@@ -873,6 +1005,10 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
     _draw_runtime(fig, _fmt_duration(_run_duration(
         _run_config(base_dir) if base_dir else {}, rows)))
     fig.tight_layout(rect=(0, 0.022, 1, max(0.70, header_bottom)), pad=0.6)
+    if ep:
+        # After the layout: these are placed against the rendered tick labels,
+        # into the room reserved for them above.
+        _draw_cycle_spans(axes[1], ep, spans)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150)

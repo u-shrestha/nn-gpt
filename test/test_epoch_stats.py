@@ -817,6 +817,151 @@ def test_the_run_time_is_absent_rather_than_wrong_without_stamps():
     assert ES._fmt_duration(None) == ""
 
 
+@pytest.mark.parametrize("seconds, expected", [
+    (30, "<1m"), (45 * 60, "45m"), (89 * 60, "89m"),
+    (90 * 60, "1.5h"), (2.4 * 3600, "2.4h"),
+    (6 * 3600, "6h"),                       # never a trailing ".0"
+    (9.9 * 3600, "9.9h"), (11 * 3600, "11h"), (35 * 3600, "35h"),
+    (36 * 3600, "1.5d"), (12 * 86400, "12d"),
+    (None, ""), (-5, ""),
+])
+def test_a_cycle_span_is_one_number_wide(seconds, expected):
+    """It is read in passing, under a tick, so it carries one unit."""
+    assert ES._fmt_span(seconds) == expected
+
+
+def test_the_first_cycle_is_measured_from_the_start_of_the_run():
+    """Its own beginning is recorded nowhere else: measured off the row before
+    it, which does not exist, the most expensive cycle would show nothing."""
+    rows = _timed_rows(11, 23, 34)
+    spans = ES._cycle_durations({"started_at": _T0.isoformat()}, rows)
+    assert [ES._fmt_span(s) for s in spans] == ["11h", "12h", "11h"]
+    assert ES._fmt_span(ES._cycle_durations({}, rows)[0]) == ""
+
+
+def test_a_missing_stamp_costs_both_cycles_that_share_it():
+    """Carrying the last good stamp forward would charge the whole gap to the
+    next cycle: a stats run repeated days later as days of work."""
+    rows = [{"timestamp": "unreadable"}] + _timed_rows(11, 23, 34)[1:]
+    spans = ES._cycle_durations({"started_at": _T0.isoformat()}, rows)
+    assert [ES._fmt_span(s) for s in spans] == ["", "", "11h"]
+
+
+def test_a_cycle_span_is_drawn_under_each_tick(tmp_path, monkeypatch):
+    """Under the cycle number it belongs to, below the axis, never over data."""
+    plt = pytest.importorskip("matplotlib.pyplot")
+    rows = [dict(r, timestamp=(_T0 + timedelta(hours=9 * (i + 1))).isoformat())
+            for i, r in enumerate(_plot_rows())]
+    captured, real_close = {}, plt.close
+
+    def _capture(fig=None):
+        if fig is not None and fig.axes:
+            ax = fig.axes[-1]
+            captured["spans"] = [(t.get_text(), t.get_position())
+                                 for t in ax.texts
+                                 if t.get_color() == ES.SPAN_COLOR]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(rows, tmp_path / "p.png")
+    spans = captured.get("spans", [])
+    assert len(spans) == len(rows) - 1, f"one per stamped cycle: {spans}"
+    assert all(y < 0 for _, (x, y) in spans), f"a span is inside the axes: {spans}"
+
+
+def test_no_cycle_spans_are_drawn_when_the_rows_are_unstamped(
+        tmp_path, monkeypatch):
+    """An older tracker has no timestamps, and the axis is left as it was."""
+    plt = pytest.importorskip("matplotlib.pyplot")
+    captured, real_close = {}, plt.close
+
+    def _capture(fig=None):
+        if fig is not None and fig.axes:
+            captured["pad"] = fig.axes[-1].xaxis.labelpad
+            captured["texts"] = [t.get_text() for t in fig.axes[-1].texts
+                                 if t.get_color() == ES.SPAN_COLOR]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(_plot_rows(), tmp_path / "p.png")
+    assert not captured.get("texts"), captured.get("texts")
+    assert captured["pad"] < ES.SPAN_RESERVE, "room was reserved for nothing"
+
+
+def test_the_axis_label_clears_the_durations(tmp_path, monkeypatch):
+    """Measured on the rendered figure, in millimetres, because the gap
+    depends on font metrics no constant here can predict. Too close and the
+    durations and the label read as one block."""
+    plt = pytest.importorskip("matplotlib.pyplot")
+    rows = [dict(r, timestamp=(_T0 + timedelta(hours=9 * (i + 1))).isoformat())
+            for i, r in enumerate(_plot_rows())]
+    captured, real_close = {}, plt.close
+
+    def _capture(fig=None):
+        if fig is not None and fig.axes:
+            ax = fig.axes[-1]
+            fig.canvas.draw()
+            spans = [t for t in ax.texts if t.get_color() == ES.SPAN_COLOR]
+            if spans:
+                bottom = min(t.get_window_extent().y0 for t in spans)
+                top = ax.xaxis.label.get_window_extent().y1
+                captured["mm"] = (bottom - top) / fig.dpi * 25.4
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(rows, tmp_path / "p.png")
+    gap = captured.get("mm")
+    assert gap is not None, "no durations were drawn"
+    assert gap >= ES.SPAN_LABEL_CLEARANCE_MM, f"only {gap:.2f}mm of clearance"
+
+
+def test_the_run_time_is_dark_enough_to_read():
+    """It is a number to be read, not an imprint that may recede. 4.5:1
+    against white is the point below which small text stops being legible
+    off a screen -- the project mark's own grey sits at 2.2:1."""
+    def _luminance(colour):
+        parts = [int(colour[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        parts = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+                 for c in parts]
+        return 0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2]
+
+    contrast = 1.05 / (_luminance(ES.RUNTIME_COLOR) + 0.05)
+    assert contrast >= 4.5, f"run time at {contrast:.1f}:1 against white"
+    assert contrast > 1.05 / (_luminance(ES.BRAND_COLOR) + 0.05), \
+        "the run time is no darker than the mark it sits opposite"
+
+
+def test_the_axis_says_cycle_not_epoch(tmp_path, monkeypatch):
+    """A point is a cycle of generation, training and evaluation, holding
+    ep/cyc training epochs. Called an epoch, a run of 4 cycles at 5 epochs
+    each read off the figure as 4 epochs instead of 20."""
+    plt = pytest.importorskip("matplotlib.pyplot")
+    captured, real_close = {}, plt.close
+
+    def _capture(fig=None):
+        if fig is not None and fig.axes:
+            captured["labels"] = [fig.axes[-1].get_xlabel()]
+            captured["titles"] = [ax.get_title() for ax in fig.axes]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(_plot_rows(), tmp_path / "p.png")
+    shown = captured["labels"] + captured["titles"]
+    assert any("cycle" in t for t in shown), shown
+    assert not any("epoch" in t.lower() for t in shown), shown
+
+
+def test_the_recorded_key_is_still_epoch(tmp_path):
+    """Only the figure is renamed. The tracker's schema is not: an existing
+    epoch_tracker.json has to keep loading, and its rows are keyed by it."""
+    assert all("epoch" in r for r in _plot_rows())
+    assert ES.plot_epoch_stats(_plot_rows(), tmp_path / "keyed.png") is not None
+    renamed = [{k.replace("epoch", "cycle"): v for k, v in r.items()}
+               for r in _plot_rows()]
+    assert ES.plot_epoch_stats(renamed, tmp_path / "renamed.png") is None, \
+        "the plotter read a row keyed by cycle, so the schema moved too"
+
+
 def _figure_texts(tmp_path, monkeypatch, rows):
     plt = pytest.importorskip("matplotlib.pyplot")
     captured, real_close = {}, plt.close
