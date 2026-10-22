@@ -7,6 +7,7 @@ every generation attempt instead of only the ones the LLM modified successfully.
 import importlib.util
 import json
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -738,6 +739,98 @@ def test_brand_sits_in_the_top_right_corner(tmp_path, monkeypatch):
     (x, y), ha, va = marks[0]
     assert x > 0.9 and y > 0.9, f"mark at {(x, y)}, not the top-right corner"
     assert ha == "right" and va == "top"
+
+
+# --- the run time: what the run cost, stated once ------------------------
+
+_T0 = datetime(2026, 10, 18, 9, 0)
+
+
+def _timed_rows(*offsets):
+    """Epoch rows stamped at the given hours after _T0."""
+    return [{"epoch": i, "timestamp": (_T0 + timedelta(hours=h)).isoformat()}
+            for i, h in enumerate(offsets, 1)]
+
+
+@pytest.mark.parametrize("seconds, expected", [
+    (0, "<1m"), (59, "<1m"),                       # below the resolution shown
+    (60, "1m"), (20 * 60, "20m"),
+    (3600, "1h.00m"), (3 * 3600 + 12 * 60, "3h.12m"),
+    (86400, "1d.00h.00m"), (2 * 86400 + 7 * 3600 + 41 * 60, "2d.07h.41m"),
+])
+def test_a_duration_reads_as_days_hours_minutes(seconds, expected):
+    """An empty leading unit is a zero to count past, so it is left off."""
+    assert ES._fmt_duration(seconds) == expected
+
+
+def test_the_run_time_counts_from_the_start_of_the_run():
+    """The first epoch is generation, training and evaluation -- the most
+    expensive one. Measured between epoch rows it would not be counted."""
+    rows = _timed_rows(11, 22, 33)
+    config = {"started_at": _T0.isoformat()}
+    assert ES._fmt_duration(ES._run_duration(config, rows)) == "1d.09h.00m"
+    # ...which is the span of the rows plus the 11 hours before the first one.
+    assert ES._fmt_duration(ES._run_duration({}, rows)) == "22h.00m"
+
+
+def test_the_run_time_ends_at_the_last_epoch_not_at_the_clock():
+    """Re-drawing the figure later must report what the run cost, not how long
+    ago it ran, so the end is a recorded stamp and never datetime.now()."""
+    rows = _timed_rows(0, 5)
+    config = {"started_at": _T0.isoformat()}
+    assert ES._run_duration(config, rows) == 5 * 3600
+
+
+def test_a_resumed_run_covers_every_epoch_it_plots():
+    """--peft stamps a new start over the old one while the tracker keeps the
+    earlier epochs. The duration spans what is drawn, and cannot go negative."""
+    rows = _timed_rows(1, 2, 30)
+    config = {"started_at": (_T0 + timedelta(hours=20)).isoformat()}
+    seconds = ES._run_duration(config, rows)
+    assert seconds == 29 * 3600
+
+
+def test_the_run_time_is_absent_rather_than_wrong_without_stamps():
+    """Nothing recorded means nothing is claimed."""
+    assert ES._run_duration({}, [{"epoch": 1}]) is None
+    assert ES._run_duration({"started_at": "whenever"},
+                            [{"timestamp": "whenever"}]) is None
+    assert ES._fmt_duration(None) == ""
+
+
+def _figure_texts(tmp_path, monkeypatch, rows):
+    plt = pytest.importorskip("matplotlib.pyplot")
+    captured, real_close = {}, plt.close
+
+    def _capture(fig=None):
+        if fig is not None and hasattr(fig, "texts"):
+            captured["texts"] = [(t.get_text(), t.get_position(),
+                                  t.get_ha(), t.get_va()) for t in fig.texts]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(rows, tmp_path / "p.png")
+    return captured.get("texts", [])
+
+
+def test_the_run_time_sits_in_the_top_left_corner(tmp_path, monkeypatch):
+    """Opposite the project mark, on the same band: both identify the run
+    rather than reporting a result, and neither belongs over the data."""
+    rows = [dict(r, timestamp=(_T0 + timedelta(hours=9 * i)).isoformat())
+            for i, r in enumerate(_plot_rows())]
+    found = [t for t in _figure_texts(tmp_path, monkeypatch, rows)
+             if t[0].startswith(ES.RUNTIME_LABEL)]
+    assert len(found) == 1, "the run time was not drawn exactly once"
+    text, (x, y), ha, va = found[0]
+    assert "d." in text or "h." in text or text.endswith("m"), text
+    assert x < 0.1 and y > 0.9, f"run time at {(x, y)}, not the top-left corner"
+    assert ha == "left" and va == "top"
+
+
+def test_no_run_time_is_drawn_when_the_rows_are_unstamped(tmp_path, monkeypatch):
+    """An older tracker has no timestamps; the figure simply says nothing."""
+    texts = _figure_texts(tmp_path, monkeypatch, _plot_rows())
+    assert not [t for t in texts if t[0].startswith(ES.RUNTIME_LABEL)]
 
 
 @pytest.mark.parametrize("pair, suffix", [

@@ -12,6 +12,7 @@ from ab.gpt.util.Const import nngpt_dir, NN_TRAIN_EPOCHS, DEFAULT_DATASET, DEFAU
 from ab.nn.util.Const import out_dir
 
 import json
+from datetime import datetime
 from ab.gpt.util.Const import conf_llm_dir
 
 RUN_META = out_dir / 'nngpt' / 'run_config.json'
@@ -28,6 +29,11 @@ def persist_llm_conf(llm_conf, enable_merge=False, params=None,
     ``nn_gen_conf`` names the generation prompt config, which is where the task
     and the dataset are recorded. They are copied in under the keys the dataset
     itself uses, so the figure can be matched against the database.
+
+    ``started_at`` is stamped here, at the one moment that is the start of the
+    run for certain. The epoch rows carry the time each epoch finished, so the
+    two together are what the figure states the run cost; without the stamp the
+    first epoch -- generation, training and evaluation -- is uncounted.
     """
 
     RUN_META.parent.mkdir(parents=True, exist_ok=True)
@@ -47,7 +53,8 @@ def persist_llm_conf(llm_conf, enable_merge=False, params=None,
     # Save llm_conf, base_model_name, and enable_merge
     run_config = {
         "llm_conf": llm_conf,
-        "enable_merge": enable_merge
+        "enable_merge": enable_merge,
+        "started_at": datetime.now().isoformat(),
     }
     if base_model_name:
         run_config["base_model_name"] = base_model_name

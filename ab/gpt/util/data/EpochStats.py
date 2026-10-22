@@ -465,6 +465,76 @@ def _run_caption(config, rows):
             _param_block(config.get("training") or {}))
 
 
+def _parse_time(value):
+    """A recorded timestamp, or None if it is missing or unreadable."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _run_duration(config, rows):
+    """Wall-clock seconds from the start of the run to its last epoch.
+
+    The start is the stamp written when the run began; the end is the last
+    epoch's own timestamp rather than the clock now, so re-drawing the figure
+    a week later reports what the run cost and not how long ago it was.
+
+    A run resumed with --peft or --skip_epoches stamps a new start over the
+    old one while keeping the earlier epochs in the tracker, so the earliest
+    of the two is taken: the figure shows every epoch it plots, and the
+    duration covers all of them. It is also why this cannot come out negative.
+    """
+    stamps = [t for t in (_parse_time(r.get("timestamp")) for r in rows) if t]
+    if not stamps:
+        return None
+    started = _parse_time(config.get("started_at"))
+    first = min(stamps + ([started] if started else []))
+    seconds = (max(stamps) - first).total_seconds()
+    return seconds if seconds >= 0 else None
+
+
+def _fmt_duration(seconds):
+    """Days, hours and minutes, with the leading empty units left off.
+
+    A run of twenty minutes written 0d.00h.20m makes a reader count zeros to
+    find the one number that is there, so the units only appear once they have
+    a value. Seconds are not shown: nothing on this figure is decided by them.
+    """
+    if seconds is None:
+        return ""
+    if seconds < 60:
+        return "<1m"
+    minutes = int(seconds // 60)
+    days, rest = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(rest, 60)
+    if days:
+        return f"{days}d.{hours:02d}h.{minutes:02d}m"
+    if hours:
+        return f"{hours}h.{minutes:02d}m"
+    return f"{minutes}m"
+
+
+#: Label on the run time, so the figure says what the number measures. Without
+#: it a duration in the corner reads as a deadline, a budget or an age.
+RUNTIME_LABEL = "run time"
+
+
+def _draw_runtime(fig, text):
+    """The run's wall-clock duration, top-left, mirroring the project mark.
+
+    Set in the same quiet grey and on the same band: it identifies the run
+    rather than reporting a result, and drawn any heavier it would compete
+    with the accuracies for attention.
+    """
+    if not text:
+        return
+    fig.text(0.0115, 0.9955, f"{RUNTIME_LABEL}  {text}", ha="left", va="top",
+             fontsize=7.5, color=BRAND_COLOR, family="monospace", zorder=0)
+
+
 #: Project mark set in the top-right corner, on the band occupied by the title
 #: and the configuration. Letterspaced and in a light grey so it reads as a
 #: quiet imprint rather than a watermark over the data, and placed where it
@@ -784,6 +854,8 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
             only = ep[0]
             axes[1].set_xlim(only - 0.5, only + 0.5)
     _draw_brand(fig)
+    _draw_runtime(fig, _fmt_duration(_run_duration(
+        _run_config(base_dir) if base_dir else {}, rows)))
     fig.tight_layout(rect=(0, 0.022, 1, max(0.70, header_bottom)), pad=0.6)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
