@@ -263,15 +263,26 @@ def _run_config(base_dir):
 
 
 #: Display order for the fine-tuning settings. Anything in run_config.json that
-#: is not listed is appended, so a newly recorded setting still appears.
+#: is not listed is appended, so a newly recorded setting still appears. The
+#: settings belonging to a PARAM_TRAILING group are not listed here: a group
+#: fixes the order of its own members, and naming them twice would leave two
+#: places to look when one of them moves.
 PARAM_ORDER = (
     "learning_rate", "lora_dropout", "per_device_train_batch_size",
-    "lr_scheduler", "warmup_steps", "num_train_epochs", "cycles",
+    "lr_scheduler", "warmup_steps",
     "optimizer", "lora_r", "lora_alpha",
     "gradient_accumulation_steps",
-    "max_prompts", "sft_max_length", "context_length", "max_new_tokens",
+    "max_prompts",
     "test_nn", "load_in_4bit", "unsloth", "vllm_sleep",
 )
+
+#: How long the run was meant to be: the number of fine-tuning cycles planned,
+#: and the epochs trained within each. The x axis counts the cycles that
+#: finished, which is a different number whenever a run is still going or
+#: stopped early -- three points under cycles=10 is an unfinished run, and
+#: without the plan there is nothing on the figure that says so. The two are
+#: multiplied to get the epochs trained in total, so they stand together.
+PARAM_SCHEDULE = ("cycles", "num_train_epochs")
 
 #: The budgets measured in tokens: what a training example is truncated to,
 #: what the model is given, and what it may produce. One quantity in three
@@ -289,7 +300,7 @@ PARAM_TAIL = ("temperature", "top_k", "top_p")
 #: Groups lifted out of the main ordering and set down at the end of the line,
 #: in this order, after the named settings. Each is a block that is read as a
 #: block, which the one-per-setting ordering above cannot express.
-PARAM_TRAILING = (PARAM_TOKENS, PARAM_TAIL)
+PARAM_TRAILING = (PARAM_SCHEDULE, PARAM_TOKENS, PARAM_TAIL)
 
 #: Short labels so the whole configuration fits on one line; the settings
 #: themselves are unabridged.
@@ -316,11 +327,11 @@ PARAM_LABEL = {
 }
 
 #: Recorded settings that are not hyper-parameters of the fine-tuning, or that
-#: the figure already states. ``cycles`` is the length of the x axis and
-#: ``test_nn`` is the denominator of every label on the upper panel, so naming
-#: them again in the caption only costs line width. The runtime switches say
-#: nothing about the optimisation that produced these curves.
-PARAM_SKIP = ("cycles", "test_nn", "unsloth", "vllm_sleep")
+#: the figure already states. ``test_nn`` is the denominator of every label on
+#: the upper panel, so naming it again in the caption only costs line width.
+#: The runtime switches say nothing about the optimisation that produced these
+#: curves.
+PARAM_SKIP = ("test_nn", "unsloth", "vllm_sleep")
 
 #: Settings whose value is a plain on/off. Shown by name when enabled and left
 #: out entirely when not: "4bit=no" is the default state and reads as a
@@ -328,11 +339,16 @@ PARAM_SKIP = ("cycles", "test_nn", "unsloth", "vllm_sleep")
 PARAM_FLAGS = ("load_in_4bit",)
 
 #: Width budget for the configuration line, in characters, paired with the
-#: point size it is drawn at: at 6.0pt monospace, 187 characters span ~94% of
+#: point size it is drawn at: at 5.8pt monospace, 194 characters span ~94% of
 #: the 10in figure, which clears the panels on both sides. Changing one without
 #: the other either wraps the line or lets it run past the axes.
-PARAM_MAX_CHARS = 187
-PARAM_FONTSIZE = 6.0
+#:
+#: Every setting added to the line has been paid for in point size, and this is
+#: close to the floor: below ~5.5pt the figures stop resolving in print. The
+#: next addition should take a setting out, shorten a label, or accept two
+#: lines, rather than shrink this again.
+PARAM_MAX_CHARS = 194
+PARAM_FONTSIZE = 5.8
 
 #: Near-black rather than a grey: the line is the only record of what produced
 #: the curves, and at this size a lightened grey stops being legible in print.

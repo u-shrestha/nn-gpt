@@ -630,10 +630,29 @@ def test_the_configuration_line_clears_the_panels():
 
 
 def test_param_block_omits_what_the_figure_already_shows():
-    """cycles is the x axis and test_nn is every label's denominator."""
+    """test_nn is the denominator of every label on the upper panel."""
     text = " ".join(ES._param_block(_FULL_TRAINING))
-    for key in ("cycles", "test_nn", "unsloth", "vllm_sleep"):
+    for key in ("test_nn", "unsloth", "vllm_sleep"):
         assert ES.PARAM_LABEL.get(key, key) not in text, f"{key} is still shown"
+
+
+def test_the_plan_is_stated_even_though_the_x_axis_counts_the_cycles():
+    """The axis counts the cycles that finished; only the plan says how many
+    were meant to. Three points under cycles=10 is an unfinished run, and
+    nothing else on the figure distinguishes that from a run of three."""
+    cells = ES._param_block(dict(_SAMPLING_TRAINING, cycles=10))[0].split()
+    assert "cycles=10" in cells
+    assert cells[cells.index("cycles=10") + 1].startswith("ep/cyc="), \
+        f"the epochs per cycle do not follow the plan: {cells}"
+
+
+def test_the_plan_follows_the_settings_it_was_run_with():
+    """It is the length of the run, not one more knob to compare with a rank,
+    so it comes after every optimiser setting rather than among them."""
+    cells = ES._param_block(_SAMPLING_TRAINING)[0].split()
+    names = [c.split("=", 1)[0] for c in cells]
+    assert names.index("cycles") > names.index("opt")
+    assert names.index("ep/cyc") < names.index("sft_len")
 
 
 def test_a_flag_is_named_when_set_and_absent_when_not():
