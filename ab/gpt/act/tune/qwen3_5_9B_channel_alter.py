@@ -5,8 +5,8 @@ def main():
 
     TuneNNGen.main(
         llm_conf='qwen3.5_9b.json',
-        llm_tune_conf='NN_gen_train_channel.json',
-        nn_gen_conf='NN_gen_test_channel.json',
+        llm_tune_conf='NN_gen_train_nn_improve.json',
+        nn_gen_conf='NN_gen_test_nn_improve.json',
         nn_gen_conf_id='optimal_channel_configuration_test',
         test_nn=30,
         skip_epoches=-1,  # generate at epoch 0 => pre-fine-tuning baseline

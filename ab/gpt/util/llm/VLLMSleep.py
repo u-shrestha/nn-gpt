@@ -1,4 +1,5 @@
 import gc
+import json
 import os
 from pathlib import Path
 
@@ -14,6 +15,57 @@ GIB = 1024 ** 3
 # Params4bit can accept .to("cpu") while keeping its quantized storage on the
 # device, so the move is verified against the allocator instead of trusted.
 MIN_PARK_FREED = 1 * GIB
+
+
+# Sampling fields that model.generate() takes from the model's generation_config.json whenever the
+# caller does not pass them, mapped to their SamplingParams names. The HF path passes temperature,
+# top_k, top_p and the token budget explicitly but inherits these, so the vLLM path must apply them
+# too or the two backends sample from different distributions (Qwen2.5-Coder: repetition_penalty 1.1).
+_INHERITED_SAMPLING = {"repetition_penalty": "repetition_penalty", "min_p": "min_p"}
+# Fields that also change HF sampling but have no SamplingParams equivalent: reported, not applied.
+_HF_ONLY_SAMPLING = ("no_repeat_ngram_size", "typical_p", "epsilon_cutoff", "eta_cutoff",
+                     "encoder_repetition_penalty")
+_NEUTRAL_SAMPLING = {"repetition_penalty": 1.0, "min_p": 0.0, "no_repeat_ngram_size": 0,
+                     "typical_p": 1.0, "epsilon_cutoff": 0.0, "eta_cutoff": 0.0,
+                     "encoder_repetition_penalty": 1.0}
+
+
+def read_generation_config(*model_paths):
+    """The generation_config of the first model path that has one, as (dict, source); ({}, None) if none."""
+    for path in model_paths:
+        if not path:
+            continue
+        f = Path(path) / "generation_config.json"
+        if f.is_file():
+            try:
+                return json.loads(f.read_text()), str(f)
+            except (OSError, ValueError):
+                pass
+        try:
+            from transformers import GenerationConfig
+            return GenerationConfig.from_pretrained(path).to_dict(), str(path)
+        except Exception:
+            pass
+    return {}, None
+
+
+def inherited_sampling_params(generation_config, overrides=None):
+    """SamplingParams kwargs that the HF path inherits from generation_config.
+
+    Returns (kwargs, ignored): kwargs holds every inherited field with a non-neutral value, with explicit
+    overrides (values that are not None) taking precedence; ignored holds non-neutral HF-only fields.
+    """
+    kwargs = {}
+    for hf_name, vllm_name in _INHERITED_SAMPLING.items():
+        value = generation_config.get(hf_name)
+        if value is not None and value != _NEUTRAL_SAMPLING[hf_name]:
+            kwargs[vllm_name] = value
+    for name, value in (overrides or {}).items():
+        if value is not None:
+            kwargs[name] = value
+    ignored = {k: generation_config[k] for k in _HF_ONLY_SAMPLING
+               if generation_config.get(k) not in (None, _NEUTRAL_SAMPLING[k])}
+    return kwargs, ignored
 
 
 def _env_flag(name, default):
@@ -673,7 +725,7 @@ class VLLMSleepEngine:
                  gpu_memory_utilization=None, quantization=None,
                  max_lora_rank=None, enforce_eager=None, dtype="bfloat16",
                  served_model=None, max_num_seqs=None, trainer_reserve_gib=None,
-                 kv_cache_dtype=None, required_gib=None):
+                 kv_cache_dtype=None, required_gib=None, repetition_penalty=None, min_p=None):
         from vllm import LLM
 
         self.tokenizer = tokenizer
@@ -703,6 +755,30 @@ class VLLMSleepEngine:
                   f"(trainer keeps {base_model_name})", flush=True)
         else:
             served_model = base_model_name
+
+        # Opt-in (NNGPT_VLLM_INHERIT_GEN_CONFIG=1): apply what model.generate() inherits from the model's
+        # generation_config.json, so that vLLM samples like the HF path. An explicit argument or
+        # NNGPT_VLLM_REPETITION_PENALTY sets a value directly. With neither, SamplingParams are
+        # built from temperature, top_k, top_p and the token budget only, as before.
+        env_rp = os.getenv("NNGPT_VLLM_REPETITION_PENALTY", "").strip()
+        if repetition_penalty is None and env_rp:
+            repetition_penalty = float(env_rp)
+        explicit = {"repetition_penalty": repetition_penalty, "min_p": min_p}
+        self.sampling_extra = {}
+        if _env_flag("NNGPT_VLLM_INHERIT_GEN_CONFIG", False):
+            gen_cfg, gen_src = read_generation_config(served_model, base_model_name)
+            self.sampling_extra, ignored = inherited_sampling_params(gen_cfg, explicit)
+            print(f"[vLLM] Sampling: temperature={temperature} top_k={top_k} top_p={top_p} "
+                  f"{' '.join(f'{k}={v}' for k, v in self.sampling_extra.items()) or '(no inherited fields)'} "
+                  f"(generation_config: {gen_src or 'not found'})", flush=True)
+            if ignored:
+                print(f"[vLLM] WARNING: generation_config sets {ignored}, which SamplingParams cannot express; "
+                      f"vLLM and HF generation differ in these.", flush=True)
+        else:
+            self.sampling_extra = {k: v for k, v in explicit.items() if v is not None}
+            if self.sampling_extra:
+                print(f"[vLLM] Sampling: temperature={temperature} top_k={top_k} top_p={top_p} "
+                      f"{' '.join(f'{k}={v}' for k, v in self.sampling_extra.items())} (explicit)", flush=True)
 
         free, total = _free_gpu()
         reserve = _env_float("NNGPT_VLLM_TRAINER_RESERVE_GIB",
@@ -958,7 +1034,8 @@ class VLLMSleepEngine:
 
         sampling = [SamplingParams(temperature=self.temperature,
                                    top_k=self.top_k, top_p=self.top_p,
-                                   max_tokens=budget) for budget in budgets]
+                                   max_tokens=budget, **self.sampling_extra)
+                    for budget in budgets]
         print(f"[vLLM] generate: {len(kept)} prompts in one continuous batch, "
               f"max_new_tokens={max(budgets)}", flush=True)
         outputs = self.llm.generate(requests, sampling,

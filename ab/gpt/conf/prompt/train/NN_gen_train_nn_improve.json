@@ -7,7 +7,6 @@
       "Always follow LEMUR NN Dataset conventions and output only the requested XML tags (<hp>, <tr>, <nn>)."
     ],
     "type": "change_parameters",
-    "is_generation": false,
     "task": "img-classification",
     "dataset": "cifar-10",
     "min_accuracy": 0.60,
@@ -19,6 +18,9 @@
       "metric",
       "dataset",
       "task"
+    ],
+    "nn_prefixes": [
+      "ast-dimension-"
     ],
     "num_joint_nns": 2,
     "improve": 0.05,
