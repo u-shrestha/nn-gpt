@@ -101,6 +101,13 @@ LR_SCHEDULER = 'cosine'  # Learning rate scheduler
 PER_DEVICE_TRAIN_BATCH_SIZE = 1
 GRADIENT_ACCUMULATION_STEPS = 8  # Increased for better stability
 WARMUP_STEPS = 5  # Warmup as ratio of total steps
+
+
+def _warmup_steps_arg(value):
+    """--warmup_steps: whole numbers stay int, because transformers 4.x TrainingArguments rejects a float
+    warmup_steps ("must be of type int"); other values stay float (a ratio for transformers 5.x)."""
+    number = float(value)
+    return int(number) if number.is_integer() else number
 TEST_NN = 10
 SFT_MAX_LENGTH = 4096  # Packing/truncation budget for supervised fine-tuning
 LOGGING_STEPS = 96  # Less frequent logging
@@ -784,7 +791,7 @@ if __name__ == '__main__':
                         help=f'Per device train batch size (default: {PER_DEVICE_TRAIN_BATCH_SIZE}).')
     parser.add_argument('--gradient_accumulation_steps', type=int, default=GRADIENT_ACCUMULATION_STEPS,
                         help=f'Gradient accumulation steps (default: {GRADIENT_ACCUMULATION_STEPS}).')
-    parser.add_argument('--warmup_steps', type=float, default=WARMUP_STEPS,
+    parser.add_argument('--warmup_steps', type=_warmup_steps_arg, default=WARMUP_STEPS,
                         help=f'Warmup ratio (default: {WARMUP_STEPS}).')
     parser.add_argument('--logging_steps', type=int, default=LOGGING_STEPS,
                         help=f'Logging steps (default: {LOGGING_STEPS}).')
@@ -830,8 +837,6 @@ if __name__ == '__main__':
                         help="[Pipeline] Load best model at end (default: False).")
     parser.add_argument('--metric_for_best_model', type=str, default=None,
                         help="[Pipeline] Metric for best model (default: None).")
-    parser.add_argument('--warmup_steps', type=int, default=None,
-                        help="[Pipeline] Warmup steps override (default: None).")
     parser.add_argument('--weight_decay', type=float, default=None,
                         help="[Pipeline] Weight decay (default: None).")
     parser.add_argument('--trans_mode', action='store_true',
