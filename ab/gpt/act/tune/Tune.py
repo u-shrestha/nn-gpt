@@ -19,7 +19,7 @@ RUN_META = out_dir / 'nngpt' / 'run_config.json'
 
 
 def persist_llm_conf(llm_conf, enable_merge=False, params=None,
-                     nn_gen_conf=None, nn_gen_conf_id=None):
+                     nn_gen_conf=None, nn_gen_conf_id=None, llm_tune_conf=None):
     """Save run configuration including llm_conf, base_model_name, and enable_merge.
 
     ``params`` carries the fine-tuning settings so the plot can state which model
@@ -29,6 +29,11 @@ def persist_llm_conf(llm_conf, enable_merge=False, params=None,
     ``nn_gen_conf`` names the generation prompt config, which is where the task
     and the dataset are recorded. They are copied in under the keys the dataset
     itself uses, so the figure can be matched against the database.
+
+    The two prompt configs are recorded by name as well: ``llm_tune_conf`` is
+    what the model was fine-tuned on and ``nn_gen_conf`` is what it was asked
+    to generate from. Two runs of identical hyper-parameters on different
+    prompts produce different curves, and nothing else distinguishes them.
 
     ``started_at`` is stamped here, at the one moment that is the start of the
     run for certain. The epoch rows carry the time each epoch finished, so the
@@ -58,6 +63,11 @@ def persist_llm_conf(llm_conf, enable_merge=False, params=None,
     }
     if base_model_name:
         run_config["base_model_name"] = base_model_name
+    prompts = {"train": llm_tune_conf, "test": nn_gen_conf,
+               "test_id": nn_gen_conf_id}
+    prompts = {k: v for k, v in prompts.items() if v}
+    if prompts:
+        run_config["prompts"] = prompts
     if params:
         run_config["training"] = {k: v for k, v in params.items() if v is not None}
     if nn_gen_conf:
@@ -298,7 +308,8 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
     }
     persist_llm_conf(llm_conf, enable_merge, params=run_params,
                      nn_gen_conf=nn_gen_conf or NN_GEN_CONF,
-                     nn_gen_conf_id=nn_gen_conf_id)
+                     nn_gen_conf_id=nn_gen_conf_id,
+                     llm_tune_conf=llm_tune_conf)
 
     if run_iterative_pipeline:
         print("--- Initiating Iterative Fine-Tuning Pipeline ---")
@@ -584,7 +595,8 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
             # run_config.json was written into this directory before the reset
             persist_llm_conf(llm_conf, enable_merge, params=run_params,
                              nn_gen_conf=nn_gen_conf or NN_GEN_CONF,
-                             nn_gen_conf_id=nn_gen_conf_id)
+                             nn_gen_conf_id=nn_gen_conf_id,
+                             llm_tune_conf=llm_tune_conf)
         except Exception as exc:
             print(f"[RUN RESET] Skipped: {exc}")
     elif resuming:

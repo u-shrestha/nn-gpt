@@ -693,6 +693,97 @@ def test_param_block_wraps_rather_than_truncating():
     assert "opt=paged_adamw_8bit" in " ".join(lines)
 
 
+# --- the prompts: which configs produced these curves --------------------
+
+_STUDY = {"task": "img-classification", "dataset": ["cifar-10"]}
+
+
+def test_both_prompt_configs_are_named():
+    """Identical hyper-parameters on different prompts give different curves,
+    and nothing else on the figure tells the two runs apart."""
+    phrase = ES._prompt_phrase(dict(_STUDY, prompts={
+        "train": "Transform_gen.json", "test": "NN_gen.json"}))
+    assert phrase == "prompts train Transform_gen, test NN_gen"
+
+
+def test_one_config_in_both_roles_is_stated_once():
+    """The common case is a single file used for both; naming it twice spends
+    width on a repetition and reads as two different things."""
+    assert ES._prompt_phrase(dict(_STUDY, prompts={
+        "train": "NN_gen.json", "test": "NN_gen.json"})) == "prompts NN_gen"
+
+
+@pytest.mark.parametrize("prompts, expected", [
+    ({"test": "NN_gen.json"}, "prompts test NN_gen"),
+    ({"train": "NN_gen.json"}, "prompts train NN_gen"),
+    ({}, ""),
+    (None, ""),
+])
+def test_a_missing_prompt_config_is_left_out(prompts, expected):
+    """An older run_config.json records neither; the line is as it was."""
+    assert ES._prompt_phrase(dict(_STUDY, prompts=prompts)) == expected
+
+
+def test_the_study_line_carries_the_prompts():
+    line = ES._study_sentence(dict(_STUDY, prompts={
+        "train": "Transform_gen.json", "test": "NN_gen.json"}), [])
+    assert line.startswith("Automated generation")
+    assert line.endswith("prompts train Transform_gen, test NN_gen")
+
+
+def test_a_long_study_line_loses_point_size_not_a_second_row(tmp_path):
+    """The header band is a fixed height and the configuration line below is
+    already at the floor of its own size, so width is bought with points."""
+    plt = pytest.importorskip("matplotlib.pyplot")
+    fig = plt.figure(figsize=(10, 9))
+    try:
+        short = ES._study_sentence(_STUDY, [])
+        long = ES._study_sentence(dict(
+            _STUDY, dataset=["cifar-10", "cifar-100", "svhn", "imagenet"],
+            prompts={"train": "Transform_gen_channel_alter_v2.json",
+                     "test": "NN_gen_improve_classification_only_v3.json"}), [])
+        assert ES._fit_fontsize(fig, short, style="italic") == ES.STUDY_FONTSIZES[0]
+        chosen = ES._fit_fontsize(fig, long, style="italic")
+        assert chosen < ES.STUDY_FONTSIZES[0], "a line that overflows kept its size"
+
+        text = fig.text(0.5, 0.5, long, ha="center", fontsize=chosen,
+                        style="italic")
+        width = text.get_window_extent(
+            renderer=fig.canvas.get_renderer()).width / fig.bbox.width
+        assert width <= ES.STUDY_MAX_WIDTH, f"study line spans {width:.0%}"
+        assert "\n" not in long
+    finally:
+        plt.close(fig)
+
+
+def test_naming_the_prompts_costs_the_panels_no_room(tmp_path, monkeypatch):
+    """"Without extra space" is the requirement: the panels must sit exactly
+    where they sat before the prompts were added to the line."""
+    plt = pytest.importorskip("matplotlib.pyplot")
+
+    def _panel_box(config):
+        captured, real_close = {}, plt.close
+
+        def _capture(fig=None):
+            if fig is not None and fig.axes:
+                fig.canvas.draw()
+                captured["box"] = fig.axes[0].get_position().bounds
+            return real_close(fig)
+
+        monkeypatch.setattr(plt, "close", _capture)
+        base = tmp_path / str(abs(hash(str(config))))
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "run_config.json").write_text(json.dumps(config))
+        ES.plot_epoch_stats(_plot_rows(), base / "p.png", base_dir=base)
+        return captured["box"]
+
+    without = _panel_box(dict(_STUDY))
+    with_prompts = _panel_box(dict(_STUDY, prompts={
+        "train": "Transform_gen.json", "test": "NN_gen.json"}))
+    assert without == pytest.approx(with_prompts), \
+        f"the panels moved: {without} -> {with_prompts}"
+
+
 def test_study_sentence_uses_the_names_the_dataset_records():
     """Verbatim, so the figure can be matched against the database."""
     assert ES._study_sentence({"task": "img-classification", "dataset": "cifar-10"}, []) == (

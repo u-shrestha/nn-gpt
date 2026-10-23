@@ -441,6 +441,71 @@ def _dataset_phrase(names):
     return ", ".join(seen[:-1]) + " and " + seen[-1]
 
 
+#: Point sizes the study line may be set at, largest first. It is one line in
+#: a band of fixed height, so when the text outgrows the figure the size comes
+#: down rather than the line wrapping -- wrapping would need vertical room the
+#: header does not have, and the configuration line below is already at the
+#: floor of its own size. The smallest here still reads beside an 8.8pt line.
+STUDY_FONTSIZES = (8.8, 8.2, 7.6, 7.0, 6.6)
+
+#: The width the study line may occupy, as a fraction of the figure. The same
+#: budget the configuration line is held to, so the two end at the same margin.
+STUDY_MAX_WIDTH = 0.94
+
+
+def _fit_fontsize(fig, text, sizes=STUDY_FONTSIZES, max_width=STUDY_MAX_WIDTH,
+                  **kwargs):
+    """The largest of ``sizes`` at which ``text`` fits within ``max_width``.
+
+    Measured rather than estimated from the character count: this line is set
+    in a proportional face, where a dataset list of i's and a config name of
+    w's of equal length are nowhere near equal width.
+    """
+    renderer = fig.canvas.get_renderer()
+    chosen = sizes[-1]
+    for size in sizes:
+        probe = fig.text(0.5, 0.5, text, ha="center", fontsize=size, **kwargs)
+        width = probe.get_window_extent(renderer=renderer).width / fig.bbox.width
+        probe.remove()
+        if width <= max_width:
+            chosen = size
+            break
+    return chosen
+
+
+#: Separator between the statement of the study and the prompts it was run
+#: with. A middle dot rather than a comma or a dash: the two are not one
+#: sentence, and the eye should be able to stop between them.
+STUDY_JOIN = "  \u00b7  "
+
+
+def _prompt_phrase(config):
+    """The two prompt configs by name: what it was tuned on, what it generates.
+
+    Two runs of identical hyper-parameters on different prompts produce
+    different curves, and nothing else on the figure tells them apart. The
+    .json is dropped -- every one of them is a .json, so the extension is four
+    characters that distinguish nothing -- and a config named for both roles is
+    stated once rather than twice.
+    """
+    prompts = config.get("prompts")
+    if not isinstance(prompts, dict):
+        return ""
+
+    def _name(key):
+        value = str(prompts.get(key) or "").strip()
+        return Path(value).stem if value else ""
+
+    train, test = _name("train"), _name("test")
+    if not train and not test:
+        return ""
+    if train == test:
+        return f"prompts {train}"
+    if train and test:
+        return f"prompts train {train}, test {test}"
+    return f"prompts train {train}" if train else f"prompts test {test}"
+
+
 def _study_sentence(config, rows):
     """One-sentence statement of what the figure reports.
 
@@ -458,12 +523,19 @@ def _study_sentence(config, rows):
 
     subject = "Automated generation of neural network architectures"
     if task and data:
-        return f"{subject} for {task} on {data}"
-    if task:
-        return f"{subject} for {task}"
-    if data:
-        return f"{subject} evaluated on {data}"
-    return subject
+        sentence = f"{subject} for {task} on {data}"
+    elif task:
+        sentence = f"{subject} for {task}"
+    elif data:
+        sentence = f"{subject} evaluated on {data}"
+    else:
+        sentence = subject
+
+    # Appended here rather than given a line of its own: this line is half the
+    # width of the figure and the configuration line below it is at the floor
+    # of its point size, so the room already exists on exactly one of them.
+    prompts = _prompt_phrase(config)
+    return f"{sentence}{STUDY_JOIN}{prompts}" if prompts else sentence
 
 
 def _run_caption(config, rows):
@@ -828,8 +900,11 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
                  fontweight="bold")
         y -= 0.026
     if tail:
-        fig.text(0.5, y, tail, ha="center", va="top", fontsize=8.8,
-                 color="#44474b", style="italic")
+        # The band below keeps its height whatever size this lands at, so a
+        # long line costs point size and never a second row.
+        fig.text(0.5, y, tail, ha="center", va="top", style="italic",
+                 fontsize=_fit_fontsize(fig, tail, style="italic"),
+                 color="#44474b")
         y -= 0.0275
     if params:
         fig.text(0.5, y, "\n".join(params), ha="center", va="top",
