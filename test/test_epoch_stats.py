@@ -7,6 +7,7 @@ every generation attempt instead of only the ones the LLM modified successfully.
 import importlib.util
 import json
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -553,6 +554,10 @@ _FULL_TRAINING = {
 }
 
 
+#: The same run with the sampling settings recorded, as Tune.py writes them.
+_SAMPLING_TRAINING = dict(_FULL_TRAINING, temperature=0.8, top_k=70, top_p=0.9)
+
+
 def test_param_block_states_every_hyper_parameter_on_one_line():
     """All of them, once -- a setting left out cannot be recovered by a reader."""
     lines = ES._param_block(_FULL_TRAINING)
@@ -565,11 +570,89 @@ def test_param_block_states_every_hyper_parameter_on_one_line():
     assert len(text) <= ES.PARAM_MAX_CHARS
 
 
+def test_param_block_states_the_sampling_settings():
+    """temperature and top_p decide what the LLM emits, so the curves move with
+    them; a figure that leaves them out cannot be reproduced from its caption."""
+    text = " ".join(ES._param_block(_SAMPLING_TRAINING))
+    assert "temp=0.8" in text
+    assert "top_k=70" in text
+    assert "top_p=0.9" in text
+
+
+def test_the_line_opens_on_what_is_tuned_first():
+    """lr, dropout and batch size are the three a reader reaches for first, so
+    they open the line instead of being hunted for in the middle of it."""
+    cells = ES._param_block(_SAMPLING_TRAINING)[0].split()
+    assert [c.split("=", 1)[0] for c in cells[:3]] == ["lr", "dropout", "batch"]
+
+
+def test_the_token_budgets_stand_together_before_the_sampling_settings():
+    """They are one quantity in three places and only mean anything read
+    against each other, so they are not scattered through the line."""
+    cells = ES._param_block(_SAMPLING_TRAINING)[0].split()
+    names = [c.split("=", 1)[0] for c in cells]
+    where = [names.index(ES.PARAM_LABEL.get(k, k)) for k in ES.PARAM_TOKENS]
+    assert where == list(range(where[0], where[0] + len(ES.PARAM_TOKENS))), \
+        f"the token budgets are split apart: {cells}"
+    assert where[-1] < names.index("temp")
+
+
+def test_the_sampling_settings_come_last():
+    """They act at generation time, not during fine-tuning, so they sit after
+    every training setting instead of among the optimiser's numbers."""
+    lines = ES._param_block(_SAMPLING_TRAINING)
+    assert len(lines) == 1, f"configuration spread over {len(lines)} lines"
+    assert lines[0].endswith("temp=0.8 top_k=70 top_p=0.9")
+
+
+def test_the_full_configuration_including_sampling_stays_on_one_line():
+    """Two lines read as two unrelated statements; the configuration is one."""
+    lines = ES._param_block(_SAMPLING_TRAINING)
+    assert len(lines) == 1
+    assert len(lines[0]) <= ES.PARAM_MAX_CHARS
+
+
+def test_the_configuration_line_clears_the_panels():
+    """PARAM_MAX_CHARS is a width budget, so it is only correct paired with the
+    size the line is drawn at. A full-width line must stay inside the figure."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig = plt.figure(figsize=(10, 9))
+    try:
+        text = fig.text(0.5, 0.5, "x" * ES.PARAM_MAX_CHARS, ha="center",
+                        family="monospace", fontsize=ES.PARAM_FONTSIZE)
+        width = text.get_window_extent(
+            renderer=fig.canvas.get_renderer()).width / fig.bbox.width
+    finally:
+        plt.close(fig)
+    assert width <= 0.96, f"a full line spans {width:.0%} of the figure"
+
+
 def test_param_block_omits_what_the_figure_already_shows():
-    """cycles is the x axis and test_nn is every label's denominator."""
+    """test_nn is the denominator of every label on the upper panel."""
     text = " ".join(ES._param_block(_FULL_TRAINING))
-    for key in ("cycles", "test_nn", "unsloth", "vllm_sleep"):
+    for key in ("test_nn", "unsloth", "vllm_sleep"):
         assert ES.PARAM_LABEL.get(key, key) not in text, f"{key} is still shown"
+
+
+def test_the_plan_is_stated_even_though_the_x_axis_counts_the_cycles():
+    """The axis counts the cycles that finished; only the plan says how many
+    were meant to. Three points under cycles=10 is an unfinished run, and
+    nothing else on the figure distinguishes that from a run of three."""
+    cells = ES._param_block(dict(_SAMPLING_TRAINING, cycles=10))[0].split()
+    assert "cycles=10" in cells
+    assert cells[cells.index("cycles=10") + 1].startswith("ep/cyc="), \
+        f"the epochs per cycle do not follow the plan: {cells}"
+
+
+def test_the_plan_follows_the_settings_it_was_run_with():
+    """It is the length of the run, not one more knob to compare with a rank,
+    so it comes after every optimiser setting rather than among them."""
+    cells = ES._param_block(_SAMPLING_TRAINING)[0].split()
+    names = [c.split("=", 1)[0] for c in cells]
+    assert names.index("cycles") > names.index("opt")
+    assert names.index("ep/cyc") < names.index("sft_len")
 
 
 def test_a_flag_is_named_when_set_and_absent_when_not():
@@ -579,13 +662,23 @@ def test_a_flag_is_named_when_set_and_absent_when_not():
 
 
 def test_named_values_are_collected_after_the_numbers():
-    """Numbers are compared against their neighbours; a name breaks the run."""
+    """Numbers are compared against their neighbours; a name breaks the run.
+
+    The names are contiguous rather than last: the trailing groups are numbers
+    too, and they are set down after the names on purpose.
+    """
     cells = ES._param_block(_FULL_TRAINING)[0].split()
     named = [i for i, c in enumerate(cells)
              if not ES._is_numeric(c.split("=", 1)[-1])]
     assert named, "no named setting in the fixture"
-    assert named == list(range(min(named), len(cells))), \
+    assert named == list(range(named[0], named[-1] + 1)), \
         f"a named setting sits among the numbers: {cells}"
+    trailing = {k for group in ES.PARAM_TRAILING for k in group}
+    after = cells[named[-1] + 1:]
+    assert after, "nothing follows the names"
+    labels = {ES.PARAM_LABEL.get(k, k) for k in trailing}
+    assert all(c.split("=", 1)[0] in labels for c in after), \
+        f"a plain setting sits after the names: {after}"
 
 
 def test_param_block_keeps_an_unrecognised_setting():
@@ -598,6 +691,97 @@ def test_param_block_wraps_rather_than_truncating():
     lines = ES._param_block(_FULL_TRAINING, max_chars=40)
     assert len(lines) == 2
     assert "opt=paged_adamw_8bit" in " ".join(lines)
+
+
+# --- the prompts: which configs produced these curves --------------------
+
+_STUDY = {"task": "img-classification", "dataset": ["cifar-10"]}
+
+
+def test_both_prompt_configs_are_named():
+    """Identical hyper-parameters on different prompts give different curves,
+    and nothing else on the figure tells the two runs apart."""
+    phrase = ES._prompt_phrase(dict(_STUDY, prompts={
+        "train": "Transform_gen.json", "test": "NN_gen.json"}))
+    assert phrase == "prompts train Transform_gen, test NN_gen"
+
+
+def test_one_config_in_both_roles_is_stated_once():
+    """The common case is a single file used for both; naming it twice spends
+    width on a repetition and reads as two different things."""
+    assert ES._prompt_phrase(dict(_STUDY, prompts={
+        "train": "NN_gen.json", "test": "NN_gen.json"})) == "prompts NN_gen"
+
+
+@pytest.mark.parametrize("prompts, expected", [
+    ({"test": "NN_gen.json"}, "prompts test NN_gen"),
+    ({"train": "NN_gen.json"}, "prompts train NN_gen"),
+    ({}, ""),
+    (None, ""),
+])
+def test_a_missing_prompt_config_is_left_out(prompts, expected):
+    """An older run_config.json records neither; the line is as it was."""
+    assert ES._prompt_phrase(dict(_STUDY, prompts=prompts)) == expected
+
+
+def test_the_study_line_carries_the_prompts():
+    line = ES._study_sentence(dict(_STUDY, prompts={
+        "train": "Transform_gen.json", "test": "NN_gen.json"}), [])
+    assert line.startswith("Automated generation")
+    assert line.endswith("prompts train Transform_gen, test NN_gen")
+
+
+def test_a_long_study_line_loses_point_size_not_a_second_row(tmp_path):
+    """The header band is a fixed height and the configuration line below is
+    already at the floor of its own size, so width is bought with points."""
+    plt = pytest.importorskip("matplotlib.pyplot")
+    fig = plt.figure(figsize=(10, 9))
+    try:
+        short = ES._study_sentence(_STUDY, [])
+        long = ES._study_sentence(dict(
+            _STUDY, dataset=["cifar-10", "cifar-100", "svhn", "imagenet"],
+            prompts={"train": "Transform_gen_channel_alter_v2.json",
+                     "test": "NN_gen_improve_classification_only_v3.json"}), [])
+        assert ES._fit_fontsize(fig, short, style="italic") == ES.STUDY_FONTSIZES[0]
+        chosen = ES._fit_fontsize(fig, long, style="italic")
+        assert chosen < ES.STUDY_FONTSIZES[0], "a line that overflows kept its size"
+
+        text = fig.text(0.5, 0.5, long, ha="center", fontsize=chosen,
+                        style="italic")
+        width = text.get_window_extent(
+            renderer=fig.canvas.get_renderer()).width / fig.bbox.width
+        assert width <= ES.STUDY_MAX_WIDTH, f"study line spans {width:.0%}"
+        assert "\n" not in long
+    finally:
+        plt.close(fig)
+
+
+def test_naming_the_prompts_costs_the_panels_no_room(tmp_path, monkeypatch):
+    """"Without extra space" is the requirement: the panels must sit exactly
+    where they sat before the prompts were added to the line."""
+    plt = pytest.importorskip("matplotlib.pyplot")
+
+    def _panel_box(config):
+        captured, real_close = {}, plt.close
+
+        def _capture(fig=None):
+            if fig is not None and fig.axes:
+                fig.canvas.draw()
+                captured["box"] = fig.axes[0].get_position().bounds
+            return real_close(fig)
+
+        monkeypatch.setattr(plt, "close", _capture)
+        base = tmp_path / str(abs(hash(str(config))))
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "run_config.json").write_text(json.dumps(config))
+        ES.plot_epoch_stats(_plot_rows(), base / "p.png", base_dir=base)
+        return captured["box"]
+
+    without = _panel_box(dict(_STUDY))
+    with_prompts = _panel_box(dict(_STUDY, prompts={
+        "train": "Transform_gen.json", "test": "NN_gen.json"}))
+    assert without == pytest.approx(with_prompts), \
+        f"the panels moved: {without} -> {with_prompts}"
 
 
 def test_study_sentence_uses_the_names_the_dataset_records():
@@ -665,3 +849,289 @@ def test_brand_sits_in_the_top_right_corner(tmp_path, monkeypatch):
     (x, y), ha, va = marks[0]
     assert x > 0.9 and y > 0.9, f"mark at {(x, y)}, not the top-right corner"
     assert ha == "right" and va == "top"
+
+
+# --- the run time: what the run cost, stated once ------------------------
+
+_T0 = datetime(2026, 10, 18, 9, 0)
+
+
+def _timed_rows(*offsets):
+    """Epoch rows stamped at the given hours after _T0."""
+    return [{"epoch": i, "timestamp": (_T0 + timedelta(hours=h)).isoformat()}
+            for i, h in enumerate(offsets, 1)]
+
+
+@pytest.mark.parametrize("seconds, expected", [
+    (0, "<1m"), (59, "<1m"),                       # below the resolution shown
+    (60, "1m"), (20 * 60, "20m"),
+    (3600, "1h.00m"), (3 * 3600 + 12 * 60, "3h.12m"),
+    (86400, "1d.00h.00m"), (2 * 86400 + 7 * 3600 + 41 * 60, "2d.07h.41m"),
+])
+def test_a_duration_reads_as_days_hours_minutes(seconds, expected):
+    """An empty leading unit is a zero to count past, so it is left off."""
+    assert ES._fmt_duration(seconds) == expected
+
+
+def test_the_run_time_counts_from_the_start_of_the_run():
+    """The first epoch is generation, training and evaluation -- the most
+    expensive one. Measured between epoch rows it would not be counted."""
+    rows = _timed_rows(11, 22, 33)
+    config = {"started_at": _T0.isoformat()}
+    assert ES._fmt_duration(ES._run_duration(config, rows)) == "1d.09h.00m"
+    # ...which is the span of the rows plus the 11 hours before the first one.
+    assert ES._fmt_duration(ES._run_duration({}, rows)) == "22h.00m"
+
+
+def test_the_run_time_ends_at_the_last_epoch_not_at_the_clock():
+    """Re-drawing the figure later must report what the run cost, not how long
+    ago it ran, so the end is a recorded stamp and never datetime.now()."""
+    rows = _timed_rows(0, 5)
+    config = {"started_at": _T0.isoformat()}
+    assert ES._run_duration(config, rows) == 5 * 3600
+
+
+def test_a_resumed_run_covers_every_epoch_it_plots():
+    """--peft stamps a new start over the old one while the tracker keeps the
+    earlier epochs. The duration spans what is drawn, and cannot go negative."""
+    rows = _timed_rows(1, 2, 30)
+    config = {"started_at": (_T0 + timedelta(hours=20)).isoformat()}
+    seconds = ES._run_duration(config, rows)
+    assert seconds == 29 * 3600
+
+
+def test_the_run_time_is_absent_rather_than_wrong_without_stamps():
+    """Nothing recorded means nothing is claimed."""
+    assert ES._run_duration({}, [{"epoch": 1}]) is None
+    assert ES._run_duration({"started_at": "whenever"},
+                            [{"timestamp": "whenever"}]) is None
+    assert ES._fmt_duration(None) == ""
+
+
+@pytest.mark.parametrize("seconds, expected", [
+    (30, "<1m"), (45 * 60, "45m"), (89 * 60, "89m"),
+    (90 * 60, "1.5h"), (2.4 * 3600, "2.4h"),
+    (6 * 3600, "6h"),                       # never a trailing ".0"
+    (9.9 * 3600, "9.9h"), (11 * 3600, "11h"), (35 * 3600, "35h"),
+    (36 * 3600, "1.5d"), (12 * 86400, "12d"),
+    (None, ""), (-5, ""),
+])
+def test_a_cycle_span_is_one_number_wide(seconds, expected):
+    """It is read in passing, under a tick, so it carries one unit."""
+    assert ES._fmt_span(seconds) == expected
+
+
+def test_the_first_cycle_is_measured_from_the_start_of_the_run():
+    """Its own beginning is recorded nowhere else: measured off the row before
+    it, which does not exist, the most expensive cycle would show nothing."""
+    rows = _timed_rows(11, 23, 34)
+    spans = ES._cycle_durations({"started_at": _T0.isoformat()}, rows)
+    assert [ES._fmt_span(s) for s in spans] == ["11h", "12h", "11h"]
+    assert ES._fmt_span(ES._cycle_durations({}, rows)[0]) == ""
+
+
+def test_a_missing_stamp_costs_both_cycles_that_share_it():
+    """Carrying the last good stamp forward would charge the whole gap to the
+    next cycle: a stats run repeated days later as days of work."""
+    rows = [{"timestamp": "unreadable"}] + _timed_rows(11, 23, 34)[1:]
+    spans = ES._cycle_durations({"started_at": _T0.isoformat()}, rows)
+    assert [ES._fmt_span(s) for s in spans] == ["", "", "11h"]
+
+
+def test_a_cycle_span_is_drawn_under_each_tick(tmp_path, monkeypatch):
+    """Under the cycle number it belongs to, below the axis, never over data."""
+    plt = pytest.importorskip("matplotlib.pyplot")
+    rows = [dict(r, timestamp=(_T0 + timedelta(hours=9 * (i + 1))).isoformat())
+            for i, r in enumerate(_plot_rows())]
+    captured, real_close = {}, plt.close
+
+    def _capture(fig=None):
+        if fig is not None and fig.axes:
+            ax = fig.axes[-1]
+            captured["spans"] = [(t.get_text(), t.get_position())
+                                 for t in ax.texts
+                                 if t.get_color() == ES.SPAN_COLOR]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(rows, tmp_path / "p.png")
+    spans = captured.get("spans", [])
+    assert len(spans) == len(rows) - 1, f"one per stamped cycle: {spans}"
+    assert all(y < 0 for _, (x, y) in spans), f"a span is inside the axes: {spans}"
+
+
+def test_no_cycle_spans_are_drawn_when_the_rows_are_unstamped(
+        tmp_path, monkeypatch):
+    """An older tracker has no timestamps, and the axis is left as it was."""
+    plt = pytest.importorskip("matplotlib.pyplot")
+    captured, real_close = {}, plt.close
+
+    def _capture(fig=None):
+        if fig is not None and fig.axes:
+            captured["pad"] = fig.axes[-1].xaxis.labelpad
+            captured["texts"] = [t.get_text() for t in fig.axes[-1].texts
+                                 if t.get_color() == ES.SPAN_COLOR]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(_plot_rows(), tmp_path / "p.png")
+    assert not captured.get("texts"), captured.get("texts")
+    assert captured["pad"] < ES.SPAN_RESERVE, "room was reserved for nothing"
+
+
+def test_the_axis_label_clears_the_durations(tmp_path, monkeypatch):
+    """Measured on the rendered figure, in millimetres, because the gap
+    depends on font metrics no constant here can predict. Too close and the
+    durations and the label read as one block."""
+    plt = pytest.importorskip("matplotlib.pyplot")
+    rows = [dict(r, timestamp=(_T0 + timedelta(hours=9 * (i + 1))).isoformat())
+            for i, r in enumerate(_plot_rows())]
+    captured, real_close = {}, plt.close
+
+    def _capture(fig=None):
+        if fig is not None and fig.axes:
+            ax = fig.axes[-1]
+            fig.canvas.draw()
+            spans = [t for t in ax.texts if t.get_color() == ES.SPAN_COLOR]
+            if spans:
+                bottom = min(t.get_window_extent().y0 for t in spans)
+                top = ax.xaxis.label.get_window_extent().y1
+                captured["mm"] = (bottom - top) / fig.dpi * 25.4
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(rows, tmp_path / "p.png")
+    gap = captured.get("mm")
+    assert gap is not None, "no durations were drawn"
+    assert gap >= ES.SPAN_LABEL_CLEARANCE_MM, f"only {gap:.2f}mm of clearance"
+
+
+def test_the_run_time_is_dark_enough_to_read():
+    """It is a number to be read, not an imprint that may recede. 4.5:1
+    against white is the point below which small text stops being legible
+    off a screen -- the project mark's own grey sits at 2.2:1."""
+    def _luminance(colour):
+        parts = [int(colour[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        parts = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+                 for c in parts]
+        return 0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2]
+
+    contrast = 1.05 / (_luminance(ES.RUNTIME_COLOR) + 0.05)
+    assert contrast >= 4.5, f"run time at {contrast:.1f}:1 against white"
+    assert contrast > 1.05 / (_luminance(ES.BRAND_COLOR) + 0.05), \
+        "the run time is no darker than the mark it sits opposite"
+
+
+def test_the_axis_says_cycle_not_epoch(tmp_path, monkeypatch):
+    """A point is a cycle of generation, training and evaluation, holding
+    ep/cyc training epochs. Called an epoch, a run of 4 cycles at 5 epochs
+    each read off the figure as 4 epochs instead of 20."""
+    plt = pytest.importorskip("matplotlib.pyplot")
+    captured, real_close = {}, plt.close
+
+    def _capture(fig=None):
+        if fig is not None and fig.axes:
+            captured["labels"] = [fig.axes[-1].get_xlabel()]
+            captured["titles"] = [ax.get_title() for ax in fig.axes]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(_plot_rows(), tmp_path / "p.png")
+    shown = captured["labels"] + captured["titles"]
+    assert any("cycle" in t for t in shown), shown
+    assert not any("epoch" in t.lower() for t in shown), shown
+
+
+def test_the_recorded_key_is_still_epoch(tmp_path):
+    """Only the figure is renamed. The tracker's schema is not: an existing
+    epoch_tracker.json has to keep loading, and its rows are keyed by it."""
+    assert all("epoch" in r for r in _plot_rows())
+    assert ES.plot_epoch_stats(_plot_rows(), tmp_path / "keyed.png") is not None
+    renamed = [{k.replace("epoch", "cycle"): v for k, v in r.items()}
+               for r in _plot_rows()]
+    assert ES.plot_epoch_stats(renamed, tmp_path / "renamed.png") is None, \
+        "the plotter read a row keyed by cycle, so the schema moved too"
+
+
+def _figure_texts(tmp_path, monkeypatch, rows):
+    plt = pytest.importorskip("matplotlib.pyplot")
+    captured, real_close = {}, plt.close
+
+    def _capture(fig=None):
+        if fig is not None and hasattr(fig, "texts"):
+            captured["texts"] = [(t.get_text(), t.get_position(),
+                                  t.get_ha(), t.get_va()) for t in fig.texts]
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(rows, tmp_path / "p.png")
+    return captured.get("texts", [])
+
+
+def test_the_run_time_sits_in_the_top_left_corner(tmp_path, monkeypatch):
+    """Opposite the project mark, on the same band: both identify the run
+    rather than reporting a result, and neither belongs over the data."""
+    rows = [dict(r, timestamp=(_T0 + timedelta(hours=9 * i)).isoformat())
+            for i, r in enumerate(_plot_rows())]
+    found = [t for t in _figure_texts(tmp_path, monkeypatch, rows)
+             if t[0].startswith(ES.RUNTIME_LABEL)]
+    assert len(found) == 1, "the run time was not drawn exactly once"
+    text, (x, y), ha, va = found[0]
+    assert "d." in text or "h." in text or text.endswith("m"), text
+    assert x < 0.1 and y > 0.9, f"run time at {(x, y)}, not the top-left corner"
+    assert ha == "left" and va == "top"
+
+
+def test_no_run_time_is_drawn_when_the_rows_are_unstamped(tmp_path, monkeypatch):
+    """An older tracker has no timestamps; the figure simply says nothing."""
+    texts = _figure_texts(tmp_path, monkeypatch, _plot_rows())
+    assert not [t for t in texts if t[0].startswith(ES.RUNTIME_LABEL)]
+
+
+@pytest.mark.parametrize("pair, suffix", [
+    (("accuracy_mean", "baseline_accuracy_mean"), "mean"),
+    (("accuracy_max", "baseline_accuracy_max"), "best"),
+])
+def test_both_series_stay_visible_where_their_values_coincide(
+        pair, suffix, tmp_path, monkeypatch):
+    """Equal values must not render as a single marker.
+
+    Both series are accuracies on one axis, so they can land within a marker
+    width of each other -- which is what a cycle that changed nothing produces,
+    the case most worth seeing. At equal size the marker drawn second covered
+    the first outright and one series vanished while its legend entry stayed.
+    The generated value takes the larger marker and the original is stacked on
+    top of it, so a coincidence reads as a small marker centred on a large one.
+    """
+    plt = pytest.importorskip("matplotlib.pyplot")
+    generated_key, original_key = pair
+    captured = {}
+    real_close = plt.close
+
+    def _capture(fig=None):
+        if fig is not None and hasattr(fig, "axes"):
+            captured["drawn"] = {
+                l.get_label(): (l.get_markersize(), l.get_zorder(),
+                                tuple(l.get_ydata()))
+                for l in fig.axes[1].lines if l.get_label().endswith(suffix)}
+        return real_close(fig)
+
+    rows = _plot_rows()[:1]
+    rows[0][original_key] = rows[0][generated_key]
+
+    monkeypatch.setattr(plt, "close", _capture)
+    ES.plot_epoch_stats(rows, tmp_path / "p.png")
+
+    drawn = captured["drawn"]
+    original = next(v for k, v in drawn.items() if k.startswith("original"))
+    generated = next(v for k, v in drawn.items() if k.startswith("generated"))
+    assert original[2] == generated[2], "the fixture no longer makes them coincide"
+    assert generated[0] > original[0], "the generated marker is not the larger one"
+    assert original[1] > generated[1], \
+        "the smaller marker is stacked underneath, so the larger one hides it"
+
+
+def test_the_legend_still_reads_original_before_generated():
+    """Stacking is settled by zorder, so the listed order is free to stay."""
+    assert ES.MEAN_MARKER[0][0] < ES.MEAN_MARKER[1][0]
+    assert ES.BEST_MARKER[0][0] < ES.BEST_MARKER[1][0]

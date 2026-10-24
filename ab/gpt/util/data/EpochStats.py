@@ -263,14 +263,44 @@ def _run_config(base_dir):
 
 
 #: Display order for the fine-tuning settings. Anything in run_config.json that
-#: is not listed is appended, so a newly recorded setting still appears.
+#: is not listed is appended, so a newly recorded setting still appears. The
+#: settings belonging to a PARAM_TRAILING group are not listed here: a group
+#: fixes the order of its own members, and naming them twice would leave two
+#: places to look when one of them moves.
 PARAM_ORDER = (
-    "learning_rate", "lr_scheduler", "warmup_steps", "num_train_epochs", "cycles",
-    "optimizer", "lora_r", "lora_alpha", "lora_dropout",
-    "per_device_train_batch_size", "gradient_accumulation_steps",
-    "max_prompts", "sft_max_length", "context_length", "max_new_tokens",
+    "learning_rate", "lora_dropout", "per_device_train_batch_size",
+    "lr_scheduler", "warmup_steps",
+    "optimizer", "lora_r", "lora_alpha",
+    "gradient_accumulation_steps",
+    "max_prompts",
     "test_nn", "load_in_4bit", "unsloth", "vllm_sleep",
 )
+
+#: How long the run was meant to be: the number of fine-tuning cycles planned,
+#: and the epochs trained within each. The x axis counts the cycles that
+#: finished, which is a different number whenever a run is still going or
+#: stopped early -- three points under cycles=10 is an unfinished run, and
+#: without the plan there is nothing on the figure that says so. The two are
+#: multiplied to get the epochs trained in total, so they stand together.
+PARAM_SCHEDULE = ("cycles", "num_train_epochs")
+
+#: The budgets measured in tokens: what a training example is truncated to,
+#: what the model is given, and what it may produce. One quantity in three
+#: places, and only meaningful against each other -- a context of 8192 says
+#: nothing until it is read next to an output budget of the same size.
+PARAM_TOKENS = ("sft_max_length", "context_length", "max_new_tokens")
+
+#: Sampling is not fine-tuning: temperature, top_k and top_p act on the
+#: finished model at generation time, and standing among the optimiser's
+#: numbers they invite a reader to compare them with a learning rate or a rank.
+#: In the order they apply -- the distribution is tempered, then truncated to a
+#: count, then to a mass -- so the line reads as the pipeline it describes.
+PARAM_TAIL = ("temperature", "top_k", "top_p")
+
+#: Groups lifted out of the main ordering and set down at the end of the line,
+#: in this order, after the named settings. Each is a block that is read as a
+#: block, which the one-per-setting ordering above cannot express.
+PARAM_TRAILING = (PARAM_SCHEDULE, PARAM_TOKENS, PARAM_TAIL)
 
 #: Short labels so the whole configuration fits on one line; the settings
 #: themselves are unabridged.
@@ -289,23 +319,40 @@ PARAM_LABEL = {
     "max_prompts": "prompts",
     "context_length": "ctx",
     "max_new_tokens": "new_tok",
+    "temperature": "temp",
+    "top_k": "top_k",
+    "top_p": "top_p",
     "sft_max_length": "sft_len",
     "load_in_4bit": "4bit",
 }
 
 #: Recorded settings that are not hyper-parameters of the fine-tuning, or that
-#: the figure already states. ``cycles`` is the length of the x axis and
-#: ``test_nn`` is the denominator of every label on the upper panel, so naming
-#: them again in the caption only costs line width. The runtime switches say
-#: nothing about the optimisation that produced these curves.
-PARAM_SKIP = ("cycles", "test_nn", "unsloth", "vllm_sleep")
+#: the figure already states. ``test_nn`` is the denominator of every label on
+#: the upper panel, so naming it again in the caption only costs line width.
+#: The runtime switches say nothing about the optimisation that produced these
+#: curves.
+PARAM_SKIP = ("test_nn", "unsloth", "vllm_sleep")
 
 #: Settings whose value is a plain on/off. Shown by name when enabled and left
 #: out entirely when not: "4bit=no" is the default state and reads as a
 #: parameter that was chosen, which it was not.
 PARAM_FLAGS = ("load_in_4bit",)
 
-PARAM_MAX_CHARS = 170
+#: Width budget for the configuration line, in characters, paired with the
+#: point size it is drawn at: at 5.8pt monospace, 194 characters span ~94% of
+#: the 10in figure, which clears the panels on both sides. Changing one without
+#: the other either wraps the line or lets it run past the axes.
+#:
+#: Every setting added to the line has been paid for in point size, and this is
+#: close to the floor: below ~5.5pt the figures stop resolving in print. The
+#: next addition should take a setting out, shorten a label, or accept two
+#: lines, rather than shrink this again.
+PARAM_MAX_CHARS = 194
+PARAM_FONTSIZE = 5.8
+
+#: Near-black rather than a grey: the line is the only record of what produced
+#: the curves, and at this size a lightened grey stops being legible in print.
+PARAM_COLOR = "#111111"
 
 #: Clearance between the caption and the first panel's title. Enough to
 #: separate them, not enough to read as a break in the figure.
@@ -339,12 +386,16 @@ def _param_block(training, max_chars=PARAM_MAX_CHARS):
     the named ones -- the schedule, the optimiser, the quantisation -- are
     collected at the end. A number is read by comparing it with its neighbours,
     which only works while the numbers sit together; a name interrupting the
-    run forces the eye to re-anchor on every value after it.
+    run forces the eye to re-anchor on every value after it. The PARAM_TRAILING
+    groups come last of all, after the names, each kept whole: they are read
+    against their own members rather than against the optimiser's settings.
     """
     if not training:
         return []
-    keys = [k for k in PARAM_ORDER if k in training and k not in PARAM_SKIP]
-    keys += [k for k in training if k not in PARAM_ORDER and k not in PARAM_SKIP]
+    trailing_keys = {k for group in PARAM_TRAILING for k in group}
+    skip = set(PARAM_SKIP) | trailing_keys
+    keys = [k for k in PARAM_ORDER if k in training and k not in skip]
+    keys += [k for k in training if k not in PARAM_ORDER and k not in skip]
 
     numeric, named = [], []
     for k in keys:
@@ -357,7 +408,11 @@ def _param_block(training, max_chars=PARAM_MAX_CHARS):
         cell = f"{label}={_fmt_value(value)}"
         (numeric if _is_numeric(value) else named).append(cell)
 
-    cells = numeric + named
+    trailing = [f"{PARAM_LABEL.get(k, k)}={_fmt_value(training[k])}"
+                for group in PARAM_TRAILING for k in group
+                if k in training and training[k] is not None]
+
+    cells = numeric + named + trailing
     if not cells:
         return []
     line = " ".join(cells)
@@ -386,6 +441,71 @@ def _dataset_phrase(names):
     return ", ".join(seen[:-1]) + " and " + seen[-1]
 
 
+#: Point sizes the study line may be set at, largest first. It is one line in
+#: a band of fixed height, so when the text outgrows the figure the size comes
+#: down rather than the line wrapping -- wrapping would need vertical room the
+#: header does not have, and the configuration line below is already at the
+#: floor of its own size. The smallest here still reads beside an 8.8pt line.
+STUDY_FONTSIZES = (8.8, 8.2, 7.6, 7.0, 6.6)
+
+#: The width the study line may occupy, as a fraction of the figure. The same
+#: budget the configuration line is held to, so the two end at the same margin.
+STUDY_MAX_WIDTH = 0.94
+
+
+def _fit_fontsize(fig, text, sizes=STUDY_FONTSIZES, max_width=STUDY_MAX_WIDTH,
+                  **kwargs):
+    """The largest of ``sizes`` at which ``text`` fits within ``max_width``.
+
+    Measured rather than estimated from the character count: this line is set
+    in a proportional face, where a dataset list of i's and a config name of
+    w's of equal length are nowhere near equal width.
+    """
+    renderer = fig.canvas.get_renderer()
+    chosen = sizes[-1]
+    for size in sizes:
+        probe = fig.text(0.5, 0.5, text, ha="center", fontsize=size, **kwargs)
+        width = probe.get_window_extent(renderer=renderer).width / fig.bbox.width
+        probe.remove()
+        if width <= max_width:
+            chosen = size
+            break
+    return chosen
+
+
+#: Separator between the statement of the study and the prompts it was run
+#: with. A middle dot rather than a comma or a dash: the two are not one
+#: sentence, and the eye should be able to stop between them.
+STUDY_JOIN = "  \u00b7  "
+
+
+def _prompt_phrase(config):
+    """The two prompt configs by name: what it was tuned on, what it generates.
+
+    Two runs of identical hyper-parameters on different prompts produce
+    different curves, and nothing else on the figure tells them apart. The
+    .json is dropped -- every one of them is a .json, so the extension is four
+    characters that distinguish nothing -- and a config named for both roles is
+    stated once rather than twice.
+    """
+    prompts = config.get("prompts")
+    if not isinstance(prompts, dict):
+        return ""
+
+    def _name(key):
+        value = str(prompts.get(key) or "").strip()
+        return Path(value).stem if value else ""
+
+    train, test = _name("train"), _name("test")
+    if not train and not test:
+        return ""
+    if train == test:
+        return f"prompts {train}"
+    if train and test:
+        return f"prompts train {train}, test {test}"
+    return f"prompts train {train}" if train else f"prompts test {test}"
+
+
 def _study_sentence(config, rows):
     """One-sentence statement of what the figure reports.
 
@@ -403,12 +523,19 @@ def _study_sentence(config, rows):
 
     subject = "Automated generation of neural network architectures"
     if task and data:
-        return f"{subject} for {task} on {data}"
-    if task:
-        return f"{subject} for {task}"
-    if data:
-        return f"{subject} evaluated on {data}"
-    return subject
+        sentence = f"{subject} for {task} on {data}"
+    elif task:
+        sentence = f"{subject} for {task}"
+    elif data:
+        sentence = f"{subject} evaluated on {data}"
+    else:
+        sentence = subject
+
+    # Appended here rather than given a line of its own: this line is half the
+    # width of the figure and the configuration line below it is at the floor
+    # of its point size, so the room already exists on exactly one of them.
+    prompts = _prompt_phrase(config)
+    return f"{sentence}{STUDY_JOIN}{prompts}" if prompts else sentence
 
 
 def _run_caption(config, rows):
@@ -424,6 +551,205 @@ def _run_caption(config, rows):
     model = str(model).rstrip("/").split("/")[-1].replace(".json", "")
     return (model, _study_sentence(config, rows),
             _param_block(config.get("training") or {}))
+
+
+def _parse_time(value):
+    """A recorded timestamp, or None if it is missing or unreadable."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _run_duration(config, rows):
+    """Wall-clock seconds from the start of the run to its last epoch.
+
+    The start is the stamp written when the run began; the end is the last
+    epoch's own timestamp rather than the clock now, so re-drawing the figure
+    a week later reports what the run cost and not how long ago it was.
+
+    A run resumed with --peft or --skip_epoches stamps a new start over the
+    old one while keeping the earlier epochs in the tracker, so the earliest
+    of the two is taken: the figure shows every epoch it plots, and the
+    duration covers all of them. It is also why this cannot come out negative.
+    """
+    stamps = [t for t in (_parse_time(r.get("timestamp")) for r in rows) if t]
+    if not stamps:
+        return None
+    started = _parse_time(config.get("started_at"))
+    first = min(stamps + ([started] if started else []))
+    seconds = (max(stamps) - first).total_seconds()
+    return seconds if seconds >= 0 else None
+
+
+def _fmt_duration(seconds):
+    """Days, hours and minutes, with the leading empty units left off.
+
+    A run of twenty minutes written 0d.00h.20m makes a reader count zeros to
+    find the one number that is there, so the units only appear once they have
+    a value. Seconds are not shown: nothing on this figure is decided by them.
+    """
+    if seconds is None:
+        return ""
+    if seconds < 60:
+        return "<1m"
+    minutes = int(seconds // 60)
+    days, rest = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(rest, 60)
+    if days:
+        return f"{days}d.{hours:02d}h.{minutes:02d}m"
+    if hours:
+        return f"{hours}h.{minutes:02d}m"
+    return f"{minutes}m"
+
+
+def _fmt_span(seconds):
+    """One cycle's cost, in the largest unit that fits, at a glance width.
+
+    A tick label is read in passing, so it carries one number: 11h, 2.4h, 45m.
+    The decimal appears only below ten of a unit, where dropping it would be a
+    real error -- 1.5d rounded to 2d overstates the cycle by a third -- and
+    disappears above it, where the extra digit buys nothing.
+    """
+    if seconds is None or seconds < 0:
+        return ""
+    if seconds < 60:
+        return "<1m"
+    minutes = seconds / 60.0
+    if minutes < 90:
+        return f"{int(round(minutes))}m"
+    hours = minutes / 60.0
+    if hours < 36:
+        return _scaled(hours, "h")
+    return _scaled(hours / 24.0, "d")
+
+
+def _scaled(value, unit):
+    """One decimal below ten, none above it, and never a trailing ".0"."""
+    if value >= 10 or round(value, 1) == round(value):
+        return f"{int(round(value))}{unit}"
+    return f"{value:.1f}{unit}"
+
+
+def _cycle_durations(config, rows):
+    """How long each plotted cycle took, in the order the rows are drawn.
+
+    A row's timestamp is the moment its cycle finished, so a cycle is measured
+    from the end of the one before it -- and the first from the start of the
+    run, which is the only place its own beginning is recorded.
+
+    A missing or unreadable stamp is a missing boundary, and it costs both of
+    the cycles that share it: the one that ends there and the one that starts
+    there. Carrying the last good stamp forward instead would charge the whole
+    gap to the next cycle, so a stats run repeated days later would show up as
+    days of work.
+    """
+    previous = _parse_time(config.get("started_at"))
+    spans = []
+    for row in rows:
+        stamp = _parse_time(row.get("timestamp"))
+        if stamp is None or previous is None or stamp < previous:
+            spans.append(None)
+        else:
+            spans.append((stamp - previous).total_seconds())
+        previous = stamp
+    return spans
+
+
+#: Size and colour of the per-cycle durations under the x axis. Quieter and
+#: smaller than the cycle numbers: the number is what a point is identified by
+#: and the duration is a note about it, and at equal weight the axis reads as
+#: two rows of numbers with no way to tell which is which.
+SPAN_FONTSIZE = 6.5
+SPAN_COLOR = "#6b7177"
+
+#: Clearance between the tick labels and the durations under them, in axes
+#: fractions.
+SPAN_GAP = 0.012
+
+#: Height to reserve under the tick labels for a row of durations, in points:
+#: the line itself plus the gaps on either side of it. Added to the axis
+#: label's padding BEFORE the layout is computed, because tight_layout sizes
+#: the figure from that padding -- claimed afterwards, the room comes off the
+#: bottom of the figure and the axis label is cut in half.
+#:
+#: Calibrated, not derived: at 15.0pt the axis label clears the durations by
+#: 3.4mm on the 10x9in figure. SPAN_LABEL_CLEARANCE_MM is the floor it is held
+#: to, and a test measures the rendered figure against it, because the gap
+#: depends on font metrics that no formula here can see.
+SPAN_RESERVE = 15.0
+
+#: The least space the axis label may leave under the durations. Below this
+#: the two rows read as one block and the label stops looking like a label.
+SPAN_LABEL_CLEARANCE_MM = 3.0
+
+
+def _reserve_cycle_spans(ax):
+    """Make room under the tick labels, before the layout is computed."""
+    ax.xaxis.labelpad = ax.xaxis.labelpad + SPAN_RESERVE
+
+
+def _draw_cycle_spans(ax, positions, spans):
+    """The time each cycle took, under its tick.
+
+    Placed by measuring the tick labels rather than at a fixed offset: the
+    offset that clears a 10pt number does not clear a larger one, and the
+    figure has been re-sized more than once. Call this after the layout is
+    settled -- an axes fraction means a different number of pixels before and
+    after tight_layout, and these texts have to clear real rendered glyphs.
+    """
+    cells = [(x, _fmt_span(span)) for x, span in zip(positions, spans)]
+    cells = [(x, t) for x, t in cells if t]
+    if not cells:
+        return False
+
+    ax.get_figure().canvas.draw()          # tick labels have no extent undrawn
+    to_axes = ax.transAxes.inverted()
+    bottoms = [to_axes.transform((0, label.get_window_extent().y0))[1]
+               for label in ax.get_xticklabels() if label.get_text()]
+    top = (min(bottoms) if bottoms else -0.026) - SPAN_GAP
+
+    for x, text in cells:
+        ax.text(x, top, text, transform=ax.get_xaxis_transform(),
+                ha="center", va="top", fontsize=SPAN_FONTSIZE,
+                color=SPAN_COLOR, family="monospace", clip_on=False)
+    return True
+
+
+#: What one point on the x axis is. The tracker calls it an epoch and its
+#: records still do -- the key is "epoch", the file is epoch_tracker.json, and
+#: renaming those would strand every tracker already written -- but the figure
+#: says cycle, because that is what it is: one round of generation, training
+#: and evaluation, containing ep/cyc training epochs, which the caption states.
+#: Calling both an epoch left the figure claiming a run of four epochs when it
+#: had trained twenty.
+AXIS_LABEL = "cycle"
+
+#: Label on the run time, so the figure says what the number measures. Without
+#: it a duration in the corner reads as a deadline, a budget or an age.
+RUNTIME_LABEL = "run time"
+
+
+#: The run time is set darker than the project mark beside it. The mark is an
+#: imprint and may recede; this is a number meant to be read, and at the mark's
+#: own grey it sat at 2.2:1 against white -- legible on a screen at full size,
+#: not in a printed figure or a slide. #53585e is 7.2:1 and still quiet.
+RUNTIME_COLOR = "#53585e"
+
+
+def _draw_runtime(fig, text):
+    """The run's wall-clock duration, top-left, mirroring the project mark.
+
+    Set in the same quiet grey and on the same band: it identifies the run
+    rather than reporting a result, and drawn any heavier it would compete
+    with the accuracies for attention.
+    """
+    if not text:
+        return
+    fig.text(0.0115, 0.9955, f"{RUNTIME_LABEL}  {text}", ha="left", va="top",
+             fontsize=7.5, color=RUNTIME_COLOR, family="monospace", zorder=0)
 
 
 #: Project mark set in the top-right corner, on the band occupied by the title
@@ -487,6 +813,22 @@ CI_EDGE_ALPHA = 0.35
 #: they overlap almost everywhere. The valid-rate band uses it too, so an
 #: interval reads the same way on both panels.
 CI_ALPHA = 0.22
+
+#: Marker size and stacking order of the two accuracy series, in the order the
+#: series are listed (original first, then generated), for the mean and for the
+#: best model.
+#:
+#: The generated networks are the result the figure is about, so they carry the
+#: larger marker; the networks they were derived from carry the smaller one and
+#: are stacked ON TOP of it. Both values are accuracies on one axis and can land
+#: within a marker width of each other -- which is precisely what a cycle that
+#: changed nothing produces, the case most worth seeing -- and at equal size the
+#: marker drawn second covered the first outright, so one series simply vanished
+#: while its legend entry stayed. Sized and stacked this way, a coincidence
+#: reads as a small grey marker centred on a larger coloured one.
+MEAN_MARKER = ((5.5, 6), (9.0, 5))
+BEST_MARKER = ((5.0, 7), (8.0, 6))
+MARKER_EDGE = dict(markeredgecolor="white", markeredgewidth=0.7)
 
 
 def _draw_band(ax, xs, lo, hi, line_colour, fill_colour, alpha, label):
@@ -558,12 +900,16 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
                  fontweight="bold")
         y -= 0.026
     if tail:
-        fig.text(0.5, y, tail, ha="center", va="top", fontsize=8.8,
-                 color="#44474b", style="italic")
+        # The band below keeps its height whatever size this lands at, so a
+        # long line costs point size and never a second row.
+        fig.text(0.5, y, tail, ha="center", va="top", style="italic",
+                 fontsize=_fit_fontsize(fig, tail, style="italic"),
+                 color="#44474b")
         y -= 0.0275
     if params:
         fig.text(0.5, y, "\n".join(params), ha="center", va="top",
-                 fontsize=7.0, family="monospace", color="#333333", linespacing=1.5)
+                 fontsize=PARAM_FONTSIZE, family="monospace",
+                 color=PARAM_COLOR, linespacing=1.5)
         y -= 0.013 * len(params)
     header_bottom = y - HEADER_GAP
 
@@ -585,7 +931,7 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
     # the accuracy panel below: at 4/16 the interval runs 10-49% and swamps the
     # movement in the rate itself. Headroom leaves room for the n/N labels.
     axes[0].set_ylim(*_value_limits(pct, 0.0, 100.0))
-    axes[0].set_title("Valid generation rate per epoch")
+    axes[0].set_title("Valid generation rate per cycle")
     axes[0].legend(loc="best", fontsize=8, framealpha=0.75, fancybox=False)
     axes[0].grid(alpha=0.3)
 
@@ -641,13 +987,18 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
                    f"{label} 95% CI")
         drawn[label] = (xs, ms, line_colour)
 
-    # Mean lines last so neither band hides them.
-    for label, *_ in series_spec:
+    # Mean lines last so neither band hides them. Size and stacking come from
+    # MEAN_MARKER: the series are plotted in their listed order so the legend
+    # keeps reading original-then-generated, and which one ends up on top is
+    # settled by zorder rather than by call order.
+    for i, (label, *_) in enumerate(series_spec):
         if label not in drawn:
             continue
         xs, ms, colour = drawn[label]
-        axes[1].plot(xs, ms, marker="o", linestyle="-", linewidth=1.6, color=colour,
-                     label=f"{label} mean", zorder=5)
+        size, z = MEAN_MARKER[min(i, len(MEAN_MARKER) - 1)]
+        axes[1].plot(xs, ms, marker="o", markersize=size, **MARKER_EDGE,
+                     linestyle="-", linewidth=1.6, color=colour,
+                     label=f"{label} mean", zorder=z)
 
     # Best model per epoch, formerly its own panel. Same quantity, same scale as
     # the mean, so it belongs on the same axes: the question "does the best
@@ -667,14 +1018,17 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
     picked = _pick("baseline_accuracy_max")
     if picked is not None:
         xs, ys = picked
-        axes[1].plot(xs, ys, marker="s", markersize=5, linestyle="--", linewidth=1.1,
-                     color=ORIGINAL, alpha=0.9, zorder=6,
+        axes[1].plot(xs, ys, marker="s", markersize=BEST_MARKER[0][0], **MARKER_EDGE,
+                     linestyle="--", linewidth=1.1,
+                     color=ORIGINAL, alpha=0.9, zorder=BEST_MARKER[0][1],
                      label="original best")
     picked = _pick("accuracy_max")
     if picked is not None:
         xs, ys = picked
-        axes[1].plot(xs, ys, marker="s", markersize=5, linestyle="--", linewidth=1.3,
-                     color=BEST, alpha=0.95, zorder=6, label="generated best")
+        axes[1].plot(xs, ys, marker="s", markersize=BEST_MARKER[1][0], **MARKER_EDGE,
+                     linestyle="--", linewidth=1.3,
+                     color=BEST, alpha=0.95, zorder=BEST_MARKER[1][1],
+                     label="generated best")
         running, best = [], float("-inf")
         for y in ys:
             best = max(best, y)
@@ -704,23 +1058,32 @@ def plot_epoch_stats(rows, out_path, base_dir=None):
             annotation_clip=False)
 
     axes[1].set_ylabel("accuracy")
-    axes[1].set_xlabel("epoch")
+    axes[1].set_xlabel(AXIS_LABEL)
     axes[1].set_ylim(accuracy_lo, accuracy_hi)
-    axes[1].set_title("Accuracy per epoch: mean with 95% CI, and best model "
+    axes[1].set_title("Accuracy per cycle: mean with 95% CI, and best model "
                       "(generated vs. original networks)")
     if axes[1].get_legend_handles_labels()[0]:   # nothing to label on an all-failed epoch
         axes[1].legend(loc="best", fontsize=8, framealpha=0.75, ncol=2, fancybox=False)
     axes[1].grid(alpha=0.3)
 
+    spans = _cycle_durations(_run_config(base_dir) if base_dir else {}, rows)
     if ep:
         axes[1].set_xticks(sorted(set(ep)))
+        if any(_fmt_span(s) for s in spans):
+            _reserve_cycle_spans(axes[1])
         if len(set(ep)) == 1:
-            # A single epoch leaves matplotlib to invent an x range; fix it so
+            # A single cycle leaves matplotlib to invent an x range; fix it so
             # the whiskers drawn by _draw_band sit at a sensible width.
             only = ep[0]
             axes[1].set_xlim(only - 0.5, only + 0.5)
     _draw_brand(fig)
+    _draw_runtime(fig, _fmt_duration(_run_duration(
+        _run_config(base_dir) if base_dir else {}, rows)))
     fig.tight_layout(rect=(0, 0.022, 1, max(0.70, header_bottom)), pad=0.6)
+    if ep:
+        # After the layout: these are placed against the rendered tick labels,
+        # into the room reserved for them above.
+        _draw_cycle_spans(axes[1], ep, spans)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150)
@@ -761,6 +1124,8 @@ def reset_run_dir(base_dir, dry_run=False):
     import shutil
     from ab.gpt.util.data.LemurSubmission import archive_submission
     archive_submission(base_dir)
+    from ab.gpt.util.data.RunArchive import archive_run_results
+    archive_run_results(base_dir)
     try:
         shutil.rmtree(base_dir)
         print(f"[RUN RESET] Removed the previous run directory: {base_dir}")
