@@ -1,6 +1,8 @@
+import ctypes
 import gc
 import json
 import os
+import sys
 from pathlib import Path
 
 import torch
@@ -382,6 +384,46 @@ def _force_unpark(parked):
         _move_quant_state(tensor, origin)
 
 
+def _host_rss_gib():
+    """This process's resident set, in GiB, or None when it cannot be read."""
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    return float(line.split()[1]) / (1024.0 * 1024.0)
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _trim_host_arena() -> None:
+    """Return memory freed inside this process to the operating system.
+
+    Building the engine is a large host-side transaction even though the
+    weights end up on the GPU: the safetensors shards are read into host
+    memory and, with the bitsandbytes loader, quantised there before the
+    copy. Python frees all of it when the build finishes, but glibc keeps
+    the pages in its arena rather than handing them back, so the process's
+    resident set ratchets up by that working set on every build and never
+    comes down. Over a long run of cycles that is indistinguishable from a
+    leak, and it is what pushed a 31 GiB machine to 3 GiB free by the
+    seventh cycle -- after which the evaluation worker had nowhere to live.
+
+    malloc_trim releases the arena's free pages. ab.gpt.util.Reward already
+    does this for the same reason; the engine teardown simply never did.
+    """
+    gc.collect()
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        malloc_trim = getattr(libc, "malloc_trim", None)
+        if callable(malloc_trim):
+            malloc_trim(0)
+    except Exception:
+        pass
+
+
 def park_trainer(model):
     """Move the trainer off the GPU so the engine can have the card.
 
@@ -484,6 +526,9 @@ def unpark_trainer(model, parked):
             model.to(parked)
             gc.collect()
             torch.cuda.empty_cache()
+            # The host copies of the weights have just been dropped; hand their
+            # pages back rather than leaving them in this process's arena.
+            _trim_host_arena()
             print(f"[vLLM] Trainer restored to {parked}.", flush=True)
         except Exception as exc:
             print(f"[vLLM] Could not restore the trainer to {parked}: {exc}",
@@ -503,10 +548,17 @@ def unpark_trainer(model, parked):
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+    # Restoring the weights to the card drops this process's host copies of
+    # them -- about 7 GiB for a 9B model. Freeing them inside the process is
+    # not enough: without the trim those pages stay in glibc's arena and the
+    # resident set keeps whichever cycle's copy was largest, for every cycle.
+    _trim_host_arena()
     free, total = _free_gpu()
     resident = _model_gpu_bytes(model)
+    host_rss = _host_rss_gib()
     print(f"[vLLM] Trainer restored to the card ({resident / GIB:.2f} GiB "
-          f"resident, {free / GIB:.1f} GiB of {total / GIB:.1f} GiB free).",
+          f"resident, {free / GIB:.1f} GiB of {total / GIB:.1f} GiB free"
+          + (f", host {host_rss:.2f} GiB)." if host_rss is not None else ")."),
           flush=True)
 
     if parked.fingerprint is not None:
@@ -953,6 +1005,14 @@ class VLLMSleepEngine:
                         fn()
                     except Exception:
                         pass
+        # owner and fn outlive the loop and the last owner IS llm, so deleting
+        # only llm and engine leaves the engine strongly referenced from this
+        # frame: the collect and empty_cache below would then run against a
+        # live engine, and the "released" figure printed at the end would
+        # describe a teardown that had not happened yet.
+        owner = None
+        fn = None
+        del owner, fn
         del llm, engine
         # The next build initialises the model-parallel group again; leaving
         # the old one registered makes that build fail outright, so a torn-down
@@ -973,9 +1033,19 @@ class VLLMSleepEngine:
                 pass
             torch.cuda.empty_cache()
         after, _ = _free_gpu()
+        rss_before_trim = _host_rss_gib()
+        _trim_host_arena()
+        rss_after_trim = _host_rss_gib()
         print(f"[vLLM] Engine destroyed; {after / GIB:.1f} GiB of "
               f"{total / GIB:.1f} GiB free "
               f"(+{(after - before) / GIB:.1f} GiB released).", flush=True)
+        if rss_before_trim is not None and rss_after_trim is not None:
+            # Printed every teardown so a host-side ratchet is visible in the
+            # log instead of having to be inferred from the machine running out.
+            print(f"[vLLM] Host memory after teardown: "
+                  f"{rss_after_trim:.2f} GiB resident "
+                  f"(trim returned {max(0.0, rss_before_trim - rss_after_trim):.2f} GiB).",
+                  flush=True)
 
     def _lora_request(self):
         if self._adapter_path is None:

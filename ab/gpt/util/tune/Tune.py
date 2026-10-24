@@ -26,6 +26,7 @@ import torch
 import ab.nn.api as lemur
 import deepspeed
 from ab.nn.util.Util import release_memory, create_file
+from ab.gpt.util.HostMemory import release_host_memory
 from peft import PeftModel
 from tqdm import tqdm
 
@@ -1608,6 +1609,18 @@ def tune(
             if vllm_engine is not None:
                 vllm_engine.fallback = chat_bot
                 chat_bot = vllm_engine
+
+        # One cycle is the natural place to give host memory back: generation
+        # has torn its engine down, evaluation's workers have exited and the
+        # trainer is finished with this cycle's corpus and optimizer. What the
+        # process still holds at this point it will hold for the rest of the
+        # run, so anything retained here accumulates cycle on cycle -- which is
+        # what ends a long run on a machine that had memory to spare at the
+        # start. The logged figures say whether the run can keep going: a
+        # resident set that comes back to roughly the same value each cycle can
+        # continue indefinitely, one that climbs names the cycle where
+        # something started being kept.
+        release_host_memory(label=f"cycle {epoch}")
 
     # Closing validation pass for the classic loop, mirroring the agent path:
     # the loop fine-tunes after evaluating, so without this the final adapter
